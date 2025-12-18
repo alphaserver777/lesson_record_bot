@@ -16,6 +16,7 @@ def admin_buttons() -> InlineKeyboardMarkup:
     keyboard_builder.button(text="Общая рассылка на день", callback_data="sending_message")
     keyboard_builder.button(text="Удалить все записи на день", callback_data="del_all_record_day")
     keyboard_builder.button(text="Синхронизировать календарь", callback_data="sync_calendar")
+    keyboard_builder.button(text="Список должников", callback_data="list_debtors")
     keyboard_builder.button(text="Вернуться к календарю", callback_data="start_command=calendar_day")
     keyboard_builder.adjust(1)
     return keyboard_builder.as_markup()

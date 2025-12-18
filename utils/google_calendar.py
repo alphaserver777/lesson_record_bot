@@ -22,7 +22,6 @@ class GoogleCalendarError(Exception):
     """Исключения, связанные с работой Google Calendar."""
 
 
-_service = None
 logger = logging.getLogger(__name__)
 try:
     _tz = ZoneInfo(GOOGLE_TIMEZONE) if GOOGLE_TIMEZONE else ZoneInfo("UTC")
@@ -36,14 +35,12 @@ def _ensure_settings():
 
 
 def _get_service():
-    global _service
     _ensure_settings()
-    if _service is None:
-        creds = service_account.Credentials.from_service_account_file(
-            GOOGLE_CREDENTIALS_FILE, scopes=SCOPES
-        )
-        _service = build("calendar", "v3", credentials=creds, cache_discovery=False)
-    return _service
+    creds = service_account.Credentials.from_service_account_file(
+        GOOGLE_CREDENTIALS_FILE, scopes=SCOPES
+    )
+    # Создаем новый экземпляр клиента на каждый вызов, чтобы избежать проблем с потокобезопасностью httplib2.
+    return build("calendar", "v3", credentials=creds, cache_discovery=False)
 
 
 def _parse_iso(dt_str: str) -> datetime.datetime:
@@ -205,7 +202,10 @@ async def create_full_day_block_event(date: datetime.date, note: str = "Резе
 
 
 async def delete_events(event_ids: Iterable[str]) -> None:
-    """Удаляет события по списку event_id (тихо пропуская пустые)."""
+    """
+    Удаляет события по списку event_id (тихо пропуская пустые).
+    Делаем последовательно, чтобы избежать сбоев SSL при большом числе параллельных запросов.
+    """
     ids = [event_id for event_id in event_ids if event_id]
     if not ids:
         return
@@ -216,17 +216,22 @@ async def delete_events(event_ids: Iterable[str]) -> None:
         # Если Google не сконфигурирован, просто выходим.
         return
 
-    def _call(event_id):
-        try:
-            _get_service().events().delete(calendarId=GOOGLE_CALENDAR_ID, eventId=event_id).execute()
-        except HttpError:
-            # Игнорируем, если событие уже удалено или нет прав.
-            return
+    async def _delete_one(event_id: str) -> None:
+        def _call():
+            try:
+                _get_service().events().delete(calendarId=GOOGLE_CALENDAR_ID, eventId=event_id).execute()
+            except HttpError:
+                # Игнорируем, если событие уже удалено или нет прав.
+                return
 
-    try:
-        await asyncio.gather(*(asyncio.to_thread(_call, event_id) for event_id in ids))
-    except Exception as exc:  # pylint: disable=broad-except
-        logger.warning("Не удалось удалить события в календаре: %s", exc)
+        # Запускаем в отдельном потоке без массовой конкуренции
+        try:
+            await asyncio.to_thread(_call)
+        except Exception as exc:  # pylint: disable=broad-except
+            logger.warning("Ошибка при удалении события %s: %s", event_id, exc)
+
+    for ev_id in ids:
+        await _delete_one(ev_id)
 
 
 async def delete_events_in_range(
@@ -267,13 +272,17 @@ async def delete_events_in_range(
     if not items:
         return
 
-    def _delete(event_id):
-        try:
-            _get_service().events().delete(calendarId=GOOGLE_CALENDAR_ID, eventId=event_id).execute()
-        except HttpError:
-            return
+    async def _delete(event_id: str):
+        def _call():
+            try:
+                _get_service().events().delete(calendarId=GOOGLE_CALENDAR_ID, eventId=event_id).execute()
+            except HttpError:
+                return
 
-    try:
-        await asyncio.gather(*(asyncio.to_thread(_delete, ev["id"]) for ev in items))
-    except Exception as exc:  # pylint: disable=broad-except
-        logger.warning("Ошибка при удалении событий: %s", exc)
+        try:
+            await asyncio.to_thread(_call)
+        except Exception as exc:  # pylint: disable=broad-except
+            logger.warning("Ошибка при удалении события %s: %s", event_id, exc)
+
+    for ev in items:
+        await _delete(ev["id"])

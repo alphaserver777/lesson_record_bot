@@ -1,19 +1,25 @@
-"""Модуль конфиг для проверки создано ли окружение."""
+"""Модуль конфиг для загрузки переменных окружения."""
 import os
 
-from dotenv import find_dotenv, load_dotenv
+from dotenv import load_dotenv
 
-if not find_dotenv():
-    exit("Переменные окружения не загружены т.к отсутствует файл .env")
+from config_data.messages import START_MESSAGE as DEFAULT_START_MESSAGE
+
+
+# Пытаемся загрузить из файла, указанного в ENV_FILE, иначе из .env (если есть),
+# но не падаем, если файл отсутствует — значения могут быть переданы через env.
+env_path = os.getenv("ENV_FILE")
+if env_path and os.path.exists(env_path):
+    load_dotenv(env_path)
 else:
     load_dotenv()
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-START_MESSAGE = os.getenv("START_MESSAGE")
+START_MESSAGE = os.getenv("START_MESSAGE") or DEFAULT_START_MESSAGE
 BEGINNING_WORKING_DAY = int(os.getenv("BEGINNING_WORKING_DAY"))
 END_WORKING_DAY = int(os.getenv("END_WORKING_DAY"))
-ADMINS_TELEGRAM_ID = [int(i) for i in os.getenv("ADMINS_TELEGRAM_ID").split()]
-WEEKENDS = [i.capitalize() for i in os.getenv("WEEKENDS").split()]
+ADMINS_TELEGRAM_ID = [int(i) for i in os.getenv("ADMINS_TELEGRAM_ID").split()] if os.getenv("ADMINS_TELEGRAM_ID") else []
+WEEKENDS = [i.capitalize() for i in os.getenv("WEEKENDS").split()] if os.getenv("WEEKENDS") else []
 LOCAL_UTC = os.getenv("LOCAL_UTC")
 REMINDER_TIME = os.getenv("REMINDER_TIME")
 GOOGLE_CREDENTIALS_FILE = os.getenv("GOOGLE_CREDENTIALS_FILE")

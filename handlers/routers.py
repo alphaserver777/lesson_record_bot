@@ -45,6 +45,7 @@ from handlers.custom_handlers.actions_with_admin.search_client import (
     search_client_1,
     search_client_2,
 )
+from handlers.custom_handlers.actions_with_admin.set_price import handle_price_reply
 from handlers.custom_handlers.actions_with_admin.sending_messages import (
     sending_message_1,
     sending_message_2,
@@ -60,6 +61,11 @@ from handlers.custom_handlers.actions_with_admin.viewing_recordings_day import (
 )
 from handlers.custom_handlers.actions_with_admin.weekend import weekend
 from handlers.custom_handlers.actions_with_admin.sync_calendar import sync_calendar_handler
+from handlers.custom_handlers.actions_with_admin.payment_callbacks import (
+    payment_no,
+    payment_yes,
+)
+from handlers.custom_handlers.actions_with_admin.list_debtors import list_debtors
 from handlers.default_heandlers.cancel import cancel_handler
 from handlers.default_heandlers.start import start_command
 from handlers.default_heandlers.registration import (
@@ -127,10 +133,16 @@ def register_routers(router: Router):
     router.message.register(sending_message_3, ServiceDateState.mailing_for_day)
     router.callback_query.register(sending_message_4, F.data == "sending_message_3")
     router.callback_query.register(sync_calendar_handler, F.data == "sync_calendar")
+    router.callback_query.register(payment_yes, F.data.startswith("pay_yes="))
+    router.callback_query.register(payment_no, F.data.startswith("pay_no="))
+    router.callback_query.register(list_debtors, F.data == "list_debtors")
 
     router.callback_query.register(unblocked_user, F.data.startswith("blocked="))
 
     router.callback_query.register(view_clients, F.data == "view_clients")
+
+    # Ответ админа с ценой за час для нового студента
+    router.message.register(handle_price_reply)
 
     router.callback_query.register(viewing_recordings_day_1, F.data == "viewing_recordings_day")
     router.callback_query.register(viewing_recordings_day_2, F.data.startswith("view_recs_day"))

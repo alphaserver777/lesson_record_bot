@@ -2,9 +2,8 @@
 .flake8
 
 # Database
-database/*.db
-database_copy/
-database/database.db-journal
+database_dev/*.db
+database_prod/*dev.db
 
 
 
@@ -142,6 +141,10 @@ dmypy.json
 
 # Logs
 logs/
+logs_dev/
+logs_prod/
+.env.dev
+.env.prod
 
 # Exm
 exm.py

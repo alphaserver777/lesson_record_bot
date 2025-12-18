@@ -9,6 +9,8 @@ from database import transactions
 from keyboards.reply.phone_request import contact_button
 from states.states import RegistrationState
 from handlers.default_heandlers.start import start_command
+from handlers.custom_handlers.actions_with_admin.set_price import request_price_for_student
+from config_data.config import ADMINS_TELEGRAM_ID
 
 
 async def registration_full_name(message: types.Message, state: FSMContext):
@@ -59,6 +61,10 @@ async def registration_phone(message: types.Message, state: FSMContext):
         age=age,
     )
     await transactions.update_visit_date(telegram_id)
+
+    # Уведомляем администраторов и просим указать стоимость
+    if ADMINS_TELEGRAM_ID:
+        await request_price_for_student(full_name, telegram_id, username)
 
     await state.clear()
     await message.answer("Спасибо, регистрация завершена. Можно выбирать время записи.", reply_markup=ReplyKeyboardRemove())

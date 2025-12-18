@@ -1,20 +1,18 @@
-#docker-compose.yml
 version: "2"
 
 services:
   app:
     build: .
-    container_name: bot_service_appointment
+    container_name: bot_service_appointment_prod
     restart: unless-stopped
-    env_file: .env
+    env_file: .env.prod
     environment:
-      # Путь до ключа внутри контейнера
       - GOOGLE_CREDENTIALS_FILE=/app/creds/nixos-ai-001-051cfeb5722e.json
       - DB_PATH=/app/data/database.db
       - TZ=Europe/Moscow
     volumes:
-      - ./database:/app/data/
-      - ./logs/:/app/logs/
+      - ./database_prod:/app/data/
+      - ./logs_prod:/app/logs/
       - ./nixos-ai-001-051cfeb5722e.json:/app/creds/nixos-ai-001-051cfeb5722e.json:ro
     command: ["python", "main.py"]
     healthcheck:

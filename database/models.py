@@ -1,4 +1,4 @@
-"""Модуль моделей с баз данных (основные таблицы студентов и записей)."""
+"""Модели БД."""
 from sqlalchemy import Column, ForeignKey
 from sqlalchemy.types import Boolean, Date, Integer, String
 
@@ -6,8 +6,6 @@ from database.connect import Base
 
 
 class RecordDate(Base):
-    """Модель записей на даты/время."""
-
     __tablename__ = "record_dates"
     __table_args__ = {'extend_existing': True}
 
@@ -21,8 +19,6 @@ class RecordDate(Base):
 
 
 class RegularLesson(Base):
-    """Модель постоянных занятий (фиксированные слоты)."""
-
     __tablename__ = "regular_lessons"
     __table_args__ = {'extend_existing': True}
 
@@ -31,17 +27,14 @@ class RegularLesson(Base):
     full_name = Column(String(100), nullable=False)
     username = Column(String(100), nullable=True)
     cost = Column(Integer, nullable=True)
-    # day_of_week: 0 - Monday, ... 6 - Sunday
     day_of_week = Column(Integer, nullable=True)
-    lesson_date = Column(Date, nullable=True)  # legacy, можно не заполнять для еженедельных
-    hour = Column(Integer, nullable=True)   # время начала
-    minute = Column(Integer, nullable=True) # минуты начала
+    lesson_date = Column(Date, nullable=True)
+    hour = Column(Integer, nullable=True)
+    minute = Column(Integer, nullable=True)
     duration_minutes = Column(Integer, nullable=False, default=60)
 
 
 class StudentProfile(Base):
-    """Дополнительная информация об ученике (основная таблица студентов)."""
-
     __tablename__ = "student_profiles"
     __table_args__ = {"extend_existing": True}
 
@@ -49,9 +42,27 @@ class StudentProfile(Base):
     full_name = Column(String(100), nullable=True)
     age = Column(Integer, nullable=True)
     price = Column(Integer, nullable=True)
-    direction = Column(String(100), nullable=True)  # направление обучения
-    goal = Column(String(255), nullable=True)       # цель обучения
-    notes = Column(String(255), nullable=True)      # прочие заметки
+    direction = Column(String(100), nullable=True)
+    goal = Column(String(255), nullable=True)
+    notes = Column(String(255), nullable=True)
     telephone = Column(String(20), nullable=True)
     blocked = Column(Boolean, default=False)
     last_visit_date = Column(String(50), nullable=True)
+    balance_lessons = Column(Integer, nullable=False, default=0)
+
+
+class Payment(Base):
+    __tablename__ = "payments"
+    __table_args__ = {'extend_existing': True}
+
+    id = Column(Integer, primary_key=True)
+    telegram_id = Column(Integer, nullable=True)
+    full_name = Column(String(100), nullable=True)
+    lesson_date = Column(Date, nullable=False)
+    hour = Column(Integer, nullable=False)
+    minute = Column(Integer, nullable=False, default=0)
+    duration_minutes = Column(Integer, nullable=False, default=60)
+    amount = Column(Integer, nullable=True)
+    status = Column(String(20), nullable=False, default="paid")  # paid/unpaid
+    created_at = Column(String(50), nullable=True)
+    source = Column(String(50), nullable=True)  # balance/manual

@@ -35,16 +35,26 @@ def _slot_is_busy(busy_intervals, date_obj: datetime.date, hour: int, minute: in
     return False
 
 
+def _strike(text: str) -> str:
+    """Возвращает строку с перечеркиванием символов."""
+    return "".join(ch + "\u0336" for ch in text)
+
+
+def _underline(text: str) -> str:
+    """Возвращает строку с подчёркиванием символов."""
+    return "".join(ch + "\u0332" for ch in text)
+
+
 async def _day_marker(date_obj: datetime.date) -> tuple[str, str]:
     """Возвращает (текст_кнопки, callback_data) с пометкой занятости."""
     slots = slots_for_date(date_obj)
     if not slots:
-        return f"⛔{date_obj.day}", "ignore"
+        return _strike(str(date_obj.day)), "ignore"
 
     try:
         busy_intervals = await get_busy_intervals(date_obj)
     except GoogleCalendarError:
-        return f"❓{date_obj.day}", "ignore"
+        return _strike(str(date_obj.day)), "ignore"
 
     free_slots = 0
     for hour, minute in slots:
@@ -52,19 +62,11 @@ async def _day_marker(date_obj: datetime.date) -> tuple[str, str]:
             free_slots += 1
 
     if free_slots == 0:
-        mark = "❌"
-        callback = "ignore"
-    elif free_slots <= 2:
-        mark = "⚠️"
-        callback = None
-    else:
-        mark = "✅"
-        callback = None
-
-    text = f"{mark}{date_obj.day}"
-    if callback is None:
-        callback = f"calendar_day_{date_obj}"
-    return text, callback
+        return _strike(str(date_obj.day)), "ignore"
+    if free_slots <= 2:
+        text = _underline(str(date_obj.day))
+        return text, f"calendar_day_{date_obj}"
+    return str(date_obj.day), f"calendar_day_{date_obj}"
 
 
 async def calendar_buttons(date: datetime, action: str) -> InlineKeyboardBuilder:
@@ -100,26 +102,29 @@ async def calendar_buttons(date: datetime, action: str) -> InlineKeyboardBuilder
     weekends_obj = ListWeekends()
     list_weekends = await weekends_obj.get_list_weekends()
 
-    btns = [InlineKeyboardButton(text="-", callback_data="ignore") for _ in range(date.weekday())]
+    btns = []
 
-    day_ind = 1
-    for day_num in obj.itermonthdays(date.year, date.month):
-        if day_num >= date.day:
+    today = datetime.date.today()
+    for week in obj.monthdayscalendar(date.year, date.month):
+        for day_num in week:
+            if day_num == 0:
+                btns.append(InlineKeyboardButton(text="-", callback_data="ignore"))
+                continue
+
             current_date = date.replace(day=day_num)
+            if current_date < today:
+                btns.append(InlineKeyboardButton(text="-", callback_data="ignore"))
+                continue
+
             if action == "calendar_day":
                 text, callback_data = await _day_marker(current_date)
                 btns.append(InlineKeyboardButton(text=text, callback_data=callback_data))
             else:
                 callback_data = f"{action}_{current_date}"
-                # старое поведение пометки выходных для админских действий
-                if day_ind in list_weekends and action == "calendar_day":
+                if current_date.weekday() in list_weekends and action == "calendar_day":
                     btns.append(InlineKeyboardButton(text="вых", callback_data="weekend"))
                 else:
                     btns.append(InlineKeyboardButton(text=str(day_num), callback_data=callback_data))
-
-        if day_ind == 7:
-            day_ind = 0
-        day_ind += 1
 
     keyboard_builder.row(*btns, width=7)
 
