@@ -17,5 +17,6 @@ def details_client_buttons(telegram_id: int, user_blocked: int) -> InlineKeyboar
                 )
     keyboard_builder.button(text="Удалить клиента",
                     callback_data=f"confirm_yes_no=del_user={telegram_id}=null")
+    keyboard_builder.button(text="Редактировать данные", callback_data=f"edit_client={telegram_id}")
     keyboard_builder.adjust(1)
     return keyboard_builder.as_markup()

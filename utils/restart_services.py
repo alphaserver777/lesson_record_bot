@@ -4,12 +4,12 @@ import datetime
 
 from config_data.config import LOCAL_UTC, REMINDER_TIME
 from database import transactions
-from utils.misc.region_datetime import region_current_datetime
+from utils.google_calendar import get_calendar_tz
 from utils.misc.reminder import reminder, reminder_before_start
 from keyboards.inline.payment_confirm import payment_confirm_kb
 from config_data.config import ADMINS_TELEGRAM_ID
 from loader import bot
-from database.transactions import add_payment, change_balance, get_student_profile
+from database.transactions import add_payment, change_balance, get_student_profile, get_lesson_kind
 
 
 async def restarting_services() -> None:
@@ -32,7 +32,7 @@ async def restarting_services() -> None:
         reminder_minute = 30
 
     while True:
-        region_time = await region_current_datetime()
+        region_time = datetime.datetime.now(get_calendar_tz())
 
         if region_time.hour == reminder_hour and region_time.minute == reminder_minute:
             await transactions.deleting_records_older_7_days()
@@ -47,12 +47,18 @@ async def restarting_services() -> None:
         # Уведомление об оплате по окончании слота
         lessons_today = await transactions.lessons_for_date(region_time.date())
         for user_id, hour, minute, duration in lessons_today:
-            end_time = datetime.datetime.combine(region_time.date(), datetime.time(hour, minute)) + datetime.timedelta(minutes=duration)
+            end_time = datetime.datetime.combine(region_time.date(), datetime.time(hour, minute), tzinfo=get_calendar_tz()) + datetime.timedelta(minutes=duration)
             if end_time.hour == region_time.hour and end_time.minute == region_time.minute:
                 date_str = region_time.date().isoformat()
                 time_str = f"{hour:02d}_{minute:02d}"
                 profile = await get_student_profile(user_id) if user_id else None
                 student_name = profile.full_name if profile else "Ученик"
+
+                kind = await get_lesson_kind(region_time.date(), hour, minute, user_id)
+                kind_text = "регулярное" if kind == "regular" else "разовое" if kind == "single" else "неизвестно"
+                price_text = f"{profile.price} ₽" if profile and profile.price is not None else "не указана"
+                profile_link = f'<a href="tg://user?id={user_id}">профиль</a>' if user_id else ""
+                username_note = f" (@{profile.notes.split('@',1)[1].strip()})" if profile and profile.notes and '@' in profile.notes else ""
 
                 if profile and (profile.balance_lessons or 0) > 0:
                     new_balance = (profile.balance_lessons or 0) - 1
@@ -71,9 +77,15 @@ async def restarting_services() -> None:
                     for admin_id in ADMINS_TELEGRAM_ID:
                         await bot.send_message(
                             chat_id=admin_id,
-                            text=f"{student_name}: занятие {hour:02d}:{minute:02d} оплачено с баланса (осталось {new_balance}).",
-                        )
+                            text=(
+                                f"{student_name}{username_note} {profile_link}\n"
+                                f"Тип: {kind_text}\n"
+                                f"Дата/время: {region_time.date().isoformat()} {hour:02d}:{minute:02d} ({duration} мин)\n"
+                                f"Оплачено с баланса. Остаток: {new_balance}."
+                            ),
+                            )
                 else:
+                    current_balance = profile.balance_lessons if profile else 0
                     pay = await add_payment(
                         telegram_id=user_id,
                         full_name=student_name,
@@ -81,7 +93,7 @@ async def restarting_services() -> None:
                         hour=hour,
                         minute=minute,
                         duration_minutes=duration,
-                        amount=None,
+                        amount=profile.price if profile else None,
                         status="unpaid",
                         source="manual",
                     )
@@ -89,7 +101,14 @@ async def restarting_services() -> None:
                     for admin_id in ADMINS_TELEGRAM_ID:
                         await bot.send_message(
                             chat_id=admin_id,
-                            text=f"{student_name}: занятие {hour:02d}:{minute:02d} завершилось. Оплата получена?",
+                            text=(
+                                f"{student_name}{username_note} {profile_link}\n"
+                                f"Тип: {kind_text}\n"
+                                f"Дата/время: {region_time.date().isoformat()} {hour:02d}:{minute:02d} ({duration} мин)\n"
+                                f"Сумма к оплате: {price_text}\n"
+                                f"Баланс занятий: {current_balance}\n"
+                                "Оплата получена?"
+                            ),
                             reply_markup=kb
                         )
 

@@ -148,6 +148,40 @@ async def create_booking(contact, date: datetime.date, hour: int, minute: int = 
         raise GoogleCalendarError(f"Не удалось создать событие: {exc}") from exc
 
 
+async def create_simple_event(
+    date: datetime.date,
+    hour: int,
+    minute: int = 0,
+    duration_minutes: int = 60,
+    summary: str = "Запись",
+    description: str | None = None,
+) -> str:
+    """
+    Создаёт событие без контакта (используется для синхронизации из БД).
+    """
+    start = datetime.datetime.combine(date, datetime.time(hour=hour, minute=minute), tzinfo=_tz)
+    end = start + datetime.timedelta(minutes=duration_minutes)
+    body = {
+        "summary": summary,
+        "description": description or "",
+        "start": {"dateTime": start.isoformat(), "timeZone": str(_tz)},
+        "end": {"dateTime": end.isoformat(), "timeZone": str(_tz)},
+        "extendedProperties": {"private": {"source": "bot_service"}},
+    }
+
+    def _call():
+        return _get_service().events().insert(calendarId=GOOGLE_CALENDAR_ID, body=body).execute()
+
+    try:
+        event = await asyncio.to_thread(_call)
+        return event["id"]
+    except HttpError as exc:
+        raise GoogleCalendarError(f"Не удалось создать событие: {exc}") from exc
+    except Exception as exc:  # pylint: disable=broad-except
+        logger.warning("Ошибка при создании события в календаре: %s", exc)
+        raise GoogleCalendarError(f"Не удалось создать событие: {exc}") from exc
+
+
 async def create_block_event(date: datetime.date, hour: int, minute: int, duration_minutes: int, note: str = "Зарезервировано") -> str:
     """
     Создаёт блокирующее событие на указанный слот (для резервирования дня админом).

@@ -13,7 +13,6 @@ from keyboards.reply.list_button import list_button
 from keyboards.inline.approve_decline import approve_decline_kb
 from loader import bot
 from states.states import ServiceDateState
-from utils.misc.region_datetime import region_current_datetime
 from utils.google_calendar import GoogleCalendarError, get_busy_intervals, get_calendar_tz
 from utils.schedule import SLOT_DURATION_MINUTES, format_slot, slots_for_date
 from aiogram.exceptions import TelegramBadRequest
@@ -48,7 +47,7 @@ async def service_appointment_1(message: types.Message, state: FSMContext):
         await start_command(message, state)
         return
 
-    region_time: datetime = await region_current_datetime()
+    region_time = datetime.datetime.now(get_calendar_tz()).replace(tzinfo=None)
     available_slots = slots_for_date(selected_date, region_time)
 
     def _is_busy(slot_hour: int, slot_minute: int) -> bool:

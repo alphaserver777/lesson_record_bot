@@ -4,6 +4,7 @@ from aiogram import types
 from database import transactions
 from keyboards.inline.payment_confirm import payment_confirm_kb
 from keyboards.inline.back_admin_menu import back_admin_menu_button
+from utils.misc.weekday_name import weekday_name
 
 
 async def list_debtors(callback: types.CallbackQuery):
@@ -16,10 +17,11 @@ async def list_debtors(callback: types.CallbackQuery):
             date = pay.lesson_date
             time_text = f"{pay.hour:02d}:{pay.minute:02d}"
             dur = pay.duration_minutes or 60
+            day_name = weekday_name(date)
             kb = payment_confirm_kb(pay.id, date.isoformat(), f"{pay.hour:02d}_{pay.minute:02d}", dur)
             await callback.message.answer(
                 f"""Ученик: {pay.full_name or 'не указан'}
-Дата: {date.day:02d}-{date.month:02d}-{date.year}
+Дата: {date.day:02d}-{date.month:02d}-{date.year} ({day_name})
 Время: {time_text}
 Длительность: {dur} мин
 Статус: {pay.status}

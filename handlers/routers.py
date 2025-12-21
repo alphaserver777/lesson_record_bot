@@ -46,6 +46,13 @@ from handlers.custom_handlers.actions_with_admin.search_client import (
     search_client_2,
 )
 from handlers.custom_handlers.actions_with_admin.set_price import handle_price_reply
+from handlers.custom_handlers.actions_with_admin.edit_client import (
+    edit_client_menu,
+    edit_price_start,
+    edit_price_set,
+    edit_balance_start,
+    edit_balance_set,
+)
 from handlers.custom_handlers.actions_with_admin.sending_messages import (
     sending_message_1,
     sending_message_2,
@@ -73,7 +80,7 @@ from handlers.default_heandlers.registration import (
     registration_full_name,
     registration_phone,
 )
-from states.states import RegistrationState, ServiceDateState
+from states.states import RegistrationState, ServiceDateState, AdminEditState
 
 
 def register_routers(router: Router):
@@ -140,6 +147,11 @@ def register_routers(router: Router):
     router.callback_query.register(unblocked_user, F.data.startswith("blocked="))
 
     router.callback_query.register(view_clients, F.data == "view_clients")
+    router.callback_query.register(edit_client_menu, F.data.startswith("edit_client="))
+    router.callback_query.register(edit_price_start, F.data.startswith("edit_price="))
+    router.callback_query.register(edit_balance_start, F.data.startswith("edit_balance="))
+    router.message.register(edit_price_set, AdminEditState.edit_price)
+    router.message.register(edit_balance_set, AdminEditState.edit_balance)
 
     # Ответ админа с ценой за час для нового студента
     router.message.register(handle_price_reply)

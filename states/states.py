@@ -22,3 +22,10 @@ class RegistrationState(StatesGroup):
     full_name = State()
     age = State()
     phone = State()
+
+
+class AdminEditState(StatesGroup):
+    """Редактирование данных студента администратором."""
+
+    edit_price = State()
+    edit_balance = State()

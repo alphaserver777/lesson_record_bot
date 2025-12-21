@@ -197,6 +197,13 @@ async def count_date_rec(telegram_id: int) -> int:
     return res.one_or_none()
 
 
+async def set_balance(telegram_id: int, balance: int) -> None:
+    profile = await session.get(StudentProfile, telegram_id)
+    if profile:
+        profile.balance_lessons = balance
+        await session.commit()
+
+
 async def get_date_time_appointment(date: datetime) -> list[Any]:
     res = await session.execute(
         select(RecordDate.hour, RecordDate.minute, RecordDate.telegram_id).where(RecordDate.record_date == date)
@@ -428,6 +435,41 @@ async def lessons_for_date(date: datetime.date) -> list[Any]:
     )
     result.extend((row.telegram_id, row.hour, row.minute, row.duration_minutes) for row in regular)
     return result
+
+
+async def get_lesson_kind(date: datetime.date, hour: int, minute: int, telegram_id: int | None) -> str | None:
+    """
+    Возвращает тип занятия для указанного слота:
+    - "single" если найдено в record_dates
+    - "regular" если найдено в regular_lessons
+    - None если не найдено.
+    """
+    if telegram_id is None:
+        return None
+
+    rec = await session.execute(
+        select(RecordDate.id).where(
+            RecordDate.record_date == date,
+            RecordDate.hour == hour,
+            RecordDate.minute == minute,
+            RecordDate.telegram_id == telegram_id,
+        )
+    )
+    if rec.first():
+        return "single"
+
+    weekday = date.weekday()
+    reg = await session.execute(
+        select(RegularLesson.id).where(
+            RegularLesson.day_of_week == weekday,
+            RegularLesson.hour == hour,
+            RegularLesson.minute == minute,
+            RegularLesson.telegram_id == telegram_id,
+        )
+    )
+    if reg.first():
+        return "regular"
+    return None
 
 
 # --- Оплаты ---
