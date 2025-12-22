@@ -52,6 +52,20 @@ from handlers.custom_handlers.actions_with_admin.edit_client import (
     edit_price_set,
     edit_balance_start,
     edit_balance_set,
+    add_single_start,
+    add_single_date,
+    add_single_time,
+    add_regular_start,
+    add_regular_day,
+    add_regular_time,
+    add_regular_duration,
+    cancel_lesson_start,
+    cancel_single_date,
+    cancel_regular_once,
+    cancel_regular_all,
+    cancel_date_input,
+    cancel_day_input,
+    cancel_time_input,
 )
 from handlers.custom_handlers.actions_with_admin.sending_messages import (
     sending_message_1,
@@ -80,7 +94,14 @@ from handlers.default_heandlers.registration import (
     registration_full_name,
     registration_phone,
 )
-from states.states import RegistrationState, ServiceDateState, AdminEditState
+from states.states import (
+    RegistrationState,
+    ServiceDateState,
+    AdminEditState,
+    AdminAddSingleState,
+    AdminAddRegularState,
+    AdminCancelState,
+)
 
 
 def register_routers(router: Router):
@@ -152,6 +173,20 @@ def register_routers(router: Router):
     router.callback_query.register(edit_balance_start, F.data.startswith("edit_balance="))
     router.message.register(edit_price_set, AdminEditState.edit_price)
     router.message.register(edit_balance_set, AdminEditState.edit_balance)
+    router.callback_query.register(add_single_start, F.data.startswith("add_single="))
+    router.callback_query.register(add_regular_start, F.data.startswith("add_regular="))
+    router.callback_query.register(cancel_lesson_start, F.data.startswith("cancel_lesson="))
+    router.callback_query.register(cancel_single_date, F.data == "cancel_single_date")
+    router.callback_query.register(cancel_regular_once, F.data == "cancel_regular_once")
+    router.callback_query.register(cancel_regular_all, F.data == "cancel_regular_all")
+    router.message.register(add_single_date, AdminAddSingleState.date)
+    router.message.register(add_single_time, AdminAddSingleState.time)
+    router.message.register(add_regular_day, AdminAddRegularState.day)
+    router.message.register(add_regular_time, AdminAddRegularState.time)
+    router.message.register(add_regular_duration, AdminAddRegularState.duration)
+    router.message.register(cancel_date_input, AdminCancelState.date)
+    router.message.register(cancel_day_input, AdminCancelState.mode)
+    router.message.register(cancel_time_input, AdminCancelState.time)
 
     # Ответ админа с ценой за час для нового студента
     router.message.register(handle_price_reply)

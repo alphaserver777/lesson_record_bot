@@ -268,6 +268,128 @@ async def set_date_time_appointment(contact, date: datetime, hour: int, minute: 
     return True
 
 
+async def add_single_slot(
+    telegram_id: int,
+    date: datetime.date,
+    hour: int,
+    minute: int,
+    duration_minutes: int = SLOT_DURATION_MINUTES,
+    summary: str | None = None,
+) -> bool:
+    """
+    Добавляет разовое занятие от имени администратора: создаёт событие в календаре и запись в БД.
+    """
+    try:
+        event_id = await create_simple_event(
+            date,
+            hour,
+            minute,
+            duration_minutes,
+            summary=summary or "Запись (админ)",
+        )
+    except GoogleCalendarError:
+        return False
+
+    record = RecordDate(
+        telegram_id=telegram_id,
+        record_date=date,
+        hour=hour,
+        minute=minute,
+        duration_minutes=duration_minutes,
+        event_id=event_id,
+    )
+    session.add(record)
+    await session.commit()
+    return True
+
+
+async def add_regular_slot(
+    telegram_id: int,
+    day_of_week: int,
+    hour: int,
+    minute: int,
+    duration_minutes: int = SLOT_DURATION_MINUTES,
+    full_name: str | None = None,
+) -> None:
+    lesson = RegularLesson(
+        telegram_id=telegram_id,
+        full_name=full_name or "Регулярное занятие",
+        username=None,
+        cost=None,
+        day_of_week=day_of_week,
+        lesson_date=None,
+        hour=hour,
+        minute=minute,
+        duration_minutes=duration_minutes,
+    )
+    session.add(lesson)
+    await session.commit()
+
+
+async def delete_single_slot(
+    telegram_id: int,
+    date: datetime.date,
+    hour: int,
+    minute: int,
+) -> None:
+    rec = await session.execute(
+        select(RecordDate).where(
+            RecordDate.telegram_id == telegram_id,
+            RecordDate.record_date == date,
+            RecordDate.hour == hour,
+            RecordDate.minute == minute,
+        )
+    )
+    rec = rec.scalar()
+    if rec:
+        await delete_events([rec.event_id])
+        try:
+            await delete_events_in_range(date, hour, minute, rec.duration_minutes or SLOT_DURATION_MINUTES)
+        except Exception:
+            pass
+        await session.delete(rec)
+        await session.commit()
+
+
+async def delete_regular_slot(
+    telegram_id: int,
+    day_of_week: int,
+    hour: int,
+    minute: int,
+    delete_future_single: bool = True,
+) -> None:
+    lessons = await session.execute(
+        select(RegularLesson).where(
+            RegularLesson.telegram_id == telegram_id,
+            RegularLesson.day_of_week == day_of_week,
+            RegularLesson.hour == hour,
+            RegularLesson.minute == minute,
+        )
+    )
+    for lesson in lessons.scalars():
+        await session.delete(lesson)
+
+    if delete_future_single:
+        today = datetime.date.today()
+        records = await session.execute(
+            select(RecordDate).where(
+                RecordDate.telegram_id == telegram_id,
+                RecordDate.record_date >= today,
+                RecordDate.hour == hour,
+                RecordDate.minute == minute,
+            )
+        )
+        for rec in records.scalars():
+            await delete_events([rec.event_id])
+            try:
+                await delete_events_in_range(rec.record_date, rec.hour, rec.minute, rec.duration_minutes or SLOT_DURATION_MINUTES)
+            except Exception:
+                pass
+            await session.delete(rec)
+
+    await session.commit()
+
+
 async def del_record(date: datetime, hour: int, minute: int) -> None:
     record = await session.execute(
         select(RecordDate).where(RecordDate.record_date == date, RecordDate.hour == hour, RecordDate.minute == minute)

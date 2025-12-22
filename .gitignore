@@ -150,3 +150,4 @@ logs_prod/
 exm.py
 database/database.db.bk
 nixos-ai-001-051cfeb5722e.json
+database.db

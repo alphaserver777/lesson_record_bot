@@ -29,3 +29,26 @@ class AdminEditState(StatesGroup):
 
     edit_price = State()
     edit_balance = State()
+
+
+class AdminAddSingleState(StatesGroup):
+    """Добавление разового занятия администратором."""
+
+    date = State()
+    time = State()
+
+
+class AdminAddRegularState(StatesGroup):
+    """Добавление регулярного занятия администратором."""
+
+    day = State()
+    time = State()
+    duration = State()
+
+
+class AdminCancelState(StatesGroup):
+    """Отмена занятий (разовых или регулярных) админом."""
+
+    date = State()
+    time = State()
+    mode = State()
