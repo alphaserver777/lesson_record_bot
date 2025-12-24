@@ -63,6 +63,14 @@ async def sync_calendar(days_ahead: int = 30) -> Tuple[int, int]:
         duration = int((end - start).total_seconds() // 60)
         duration = duration if duration > 0 else SLOT_DURATION_MINUTES
 
+        extended = event.get("extendedProperties", {}).get("private", {}) or {}
+        tg_id_raw = extended.get("telegram_id")
+        tg_id = None
+        try:
+            tg_id = int(tg_id_raw) if tg_id_raw is not None else None
+        except (TypeError, ValueError):
+            tg_id = None
+
         status = event.get("status")
         if status == "cancelled":
             original_start = _parse_dt(event.get("originalStartTime", {}))
@@ -130,19 +138,30 @@ async def sync_calendar(days_ahead: int = 30) -> Tuple[int, int]:
             reg_added += 1
         else:
             # одиночное событие
-            await session.execute(
-                delete(RecordDate).where(RecordDate.event_id == event.get("id"))
+            existing = await session.execute(
+                select(RecordDate).where(RecordDate.event_id == event_id)
             )
-            record = RecordDate(
-                telegram_id=None,
-                record_date=start.date(),
-                hour=start.hour,
-                minute=start.minute,
-                duration_minutes=duration,
-                event_id=event_id,
-            )
-            session.add(record)
-            single_added += 1
+            existing_rec = existing.scalar_one_or_none()
+
+            if existing_rec:
+                # Обновляем время/длительность, но сохраняем привязку к ученику
+                existing_rec.record_date = start.date()
+                existing_rec.hour = start.hour
+                existing_rec.minute = start.minute
+                existing_rec.duration_minutes = duration
+                if tg_id is not None:
+                    existing_rec.telegram_id = tg_id
+            else:
+                record = RecordDate(
+                    telegram_id=tg_id,
+                    record_date=start.date(),
+                    hour=start.hour,
+                    minute=start.minute,
+                    duration_minutes=duration,
+                    event_id=event_id,
+                )
+                session.add(record)
+                single_added += 1
 
     # Удаляем устаревшие одиночные записи, которых уже нет в календаре
     max_date = (now_tz + datetime.timedelta(days=days_ahead)).date()
@@ -212,6 +231,7 @@ async def push_db_events_to_calendar(days_ahead: int = 30) -> int:
     singles = await session.execute(
         select(RecordDate).where(
             RecordDate.event_id.is_(None),
+            RecordDate.telegram_id.is_not(None),  # блокеры отменённых регулярок пропускаем
             RecordDate.record_date >= today,
             RecordDate.record_date <= max_date,
         )
@@ -235,6 +255,9 @@ async def push_db_events_to_calendar(days_ahead: int = 30) -> int:
                 rec.minute,
                 rec.duration_minutes,
                 summary="Запись (ручная)",
+                telegram_id=rec.telegram_id,
+                record_id=rec.id,
+                kind="single",
             )
             rec.event_id = event_id
             created += 1
@@ -288,6 +311,9 @@ async def push_db_events_to_calendar(days_ahead: int = 30) -> int:
                             lesson.minute or 0,
                             lesson.duration_minutes or SLOT_DURATION_MINUTES,
                             summary=lesson.full_name or "Регулярное занятие",
+                            telegram_id=lesson.telegram_id,
+                            record_id=None,
+                            kind="regular",
                         )
                         rec = RecordDate(
                             telegram_id=lesson.telegram_id,

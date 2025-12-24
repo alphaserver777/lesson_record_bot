@@ -8,6 +8,7 @@ from database import transactions
 from keyboards.inline.back_admin_menu import back_admin_menu_button
 from keyboards.inline.confirm_yes_no import conf_yes_no_button
 from loader import bot
+from utils.schedule import SLOT_DURATION_MINUTES
 
 logger = logging.getLogger(__name__)
 
@@ -28,7 +29,9 @@ async def del_record_day_1(message: [types.CallbackQuery, types.Message]):
 
     info_user = await transactions.get_info_user(date, hour, minute)
     if not info_user:
-        await message.message.answer("Запись не найдена или уже удалена.")
+        # Возможно, это регулярка без записи в БД — ставим блокер и чистим календарь
+        await transactions.ensure_block_slot(date, hour, minute, SLOT_DURATION_MINUTES)
+        await message.message.answer("Запись не найдена, слот заблокирован и очищен в календаре.")
         await message.answer()
         return
 

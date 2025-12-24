@@ -56,36 +56,67 @@ async def restarting_services() -> None:
 
                 kind = await get_lesson_kind(region_time.date(), hour, minute, user_id)
                 kind_text = "регулярное" if kind == "regular" else "разовое" if kind == "single" else "неизвестно"
-                price_text = f"{profile.price} ₽" if profile and profile.price is not None else "не указана"
+                price_value = profile.price if profile else None
+                price_text = f"{price_value} ₽" if price_value is not None else "не указана"
                 profile_link = f'<a href="tg://user?id={user_id}">профиль</a>' if user_id else ""
                 username_note = f" (@{profile.notes.split('@',1)[1].strip()})" if profile and profile.notes and '@' in profile.notes else ""
 
-                if profile and (profile.balance_lessons or 0) > 0:
-                    new_balance = (profile.balance_lessons or 0) - 1
-                    await change_balance(user_id, -1)
-                    await add_payment(
-                        telegram_id=user_id,
-                        full_name=student_name,
-                        lesson_date=region_time.date(),
-                        hour=hour,
-                        minute=minute,
-                        duration_minutes=duration,
-                        amount=None,
-                        status="paid",
-                        source="balance",
-                    )
-                    for admin_id in ADMINS_TELEGRAM_ID:
-                        await bot.send_message(
-                            chat_id=admin_id,
-                            text=(
-                                f"{student_name}{username_note} {profile_link}\n"
-                                f"Тип: {kind_text}\n"
-                                f"Дата/время: {region_time.date().isoformat()} {hour:02d}:{minute:02d} ({duration} мин)\n"
-                                f"Оплачено с баланса. Остаток: {new_balance}."
-                            ),
+                balance_amount = profile.balance_lessons if profile else 0
+                if profile and balance_amount > 0 and price_value and price_value > 0:
+                    paid_from_balance = min(balance_amount, price_value)
+                    await change_balance(user_id, -paid_from_balance)
+                    new_balance = balance_amount - paid_from_balance
+                    remaining_amount = price_value - paid_from_balance
+
+                    if remaining_amount <= 0:
+                        await add_payment(
+                            telegram_id=user_id,
+                            full_name=student_name,
+                            lesson_date=region_time.date(),
+                            hour=hour,
+                            minute=minute,
+                            duration_minutes=duration,
+                            amount=price_value,
+                            status="paid",
+                            source="balance",
+                        )
+                        for admin_id in ADMINS_TELEGRAM_ID:
+                            await bot.send_message(
+                                chat_id=admin_id,
+                                text=(
+                                    f"{student_name}{username_note} {profile_link}\n"
+                                    f"Тип: {kind_text}\n"
+                                    f"Дата/время: {region_time.date().isoformat()} {hour:02d}:{minute:02d} ({duration} мин)\n"
+                                    f"Оплачено с баланса: {paid_from_balance} ₽. Остаток: {new_balance} ₽."
+                                ),
+                            )
+                    else:
+                        pay = await add_payment(
+                            telegram_id=user_id,
+                            full_name=student_name,
+                            lesson_date=region_time.date(),
+                            hour=hour,
+                            minute=minute,
+                            duration_minutes=duration,
+                            amount=remaining_amount,
+                            status="unpaid",
+                            source="balance+manual",
+                        )
+                        kb = payment_confirm_kb(payment_id=pay.id, date_str=date_str, time_str=time_str, duration=duration)
+                        for admin_id in ADMINS_TELEGRAM_ID:
+                            await bot.send_message(
+                                chat_id=admin_id,
+                                text=(
+                                    f"{student_name}{username_note} {profile_link}\n"
+                                    f"Тип: {kind_text}\n"
+                                    f"Дата/время: {region_time.date().isoformat()} {hour:02d}:{minute:02d} ({duration} мин)\n"
+                                    f"Часть оплачено с баланса: {paid_from_balance} ₽. К доплате: {remaining_amount} ₽.\n"
+                                    f"Баланс после списания: {new_balance} ₽."
+                                ),
+                                reply_markup=kb
                             )
                 else:
-                    current_balance = profile.balance_lessons if profile else 0
+                    current_balance = balance_amount
                     pay = await add_payment(
                         telegram_id=user_id,
                         full_name=student_name,
@@ -93,7 +124,7 @@ async def restarting_services() -> None:
                         hour=hour,
                         minute=minute,
                         duration_minutes=duration,
-                        amount=profile.price if profile else None,
+                        amount=price_value if price_value is not None else None,
                         status="unpaid",
                         source="manual",
                     )
@@ -106,7 +137,7 @@ async def restarting_services() -> None:
                                 f"Тип: {kind_text}\n"
                                 f"Дата/время: {region_time.date().isoformat()} {hour:02d}:{minute:02d} ({duration} мин)\n"
                                 f"Сумма к оплате: {price_text}\n"
-                                f"Баланс занятий: {current_balance}\n"
+                                f"Баланс: {current_balance} ₽\n"
                                 "Оплата получена?"
                             ),
                             reply_markup=kb

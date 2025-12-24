@@ -304,6 +304,8 @@ async def add_single_slot(
             minute,
             duration_minutes,
             summary=summary_text,
+            telegram_id=telegram_id,
+            kind="single",
         )
     except GoogleCalendarError:
         return False
@@ -423,6 +425,7 @@ async def del_record(date: datetime, hour: int, minute: int) -> None:
     record = record.scalar()
 
     if record:
+        duration = record.duration_minutes or SLOT_DURATION_MINUTES
         await delete_events([record.event_id])
         try:
             await delete_events_in_range(date, hour, minute, SLOT_DURATION_MINUTES)
@@ -430,6 +433,8 @@ async def del_record(date: datetime, hour: int, minute: int) -> None:
             pass
         await session.delete(record)
         await session.commit()
+
+        await ensure_block_slot(date, hour, minute, duration)
 
 
 async def del_record_all_day(date: datetime) -> None:
@@ -449,6 +454,44 @@ async def del_record_all_day(date: datetime) -> None:
         for obj in res:
             await session.delete(obj[0])
         await session.commit()
+
+
+async def ensure_block_slot(
+    date: datetime.date,
+    hour: int,
+    minute: int,
+    duration_minutes: int = SLOT_DURATION_MINUTES,
+) -> None:
+    """
+    Создаёт блокирующую запись (telegram_id=None) для слота,
+    чтобы регулярка/синхронизация не восстанавливала удалённое занятие.
+    """
+    exists_block = await session.execute(
+        select(RecordDate.id).where(
+            RecordDate.record_date == date,
+            RecordDate.hour == hour,
+            RecordDate.minute == minute,
+            RecordDate.telegram_id.is_(None),
+        )
+    )
+    if exists_block.first():
+        return
+
+    try:
+        await delete_events_in_range(date, hour, minute, duration_minutes)
+    except Exception:
+        pass
+
+    block = RecordDate(
+        telegram_id=None,
+        record_date=date,
+        hour=hour,
+        minute=minute,
+        duration_minutes=duration_minutes,
+        event_id=None,
+    )
+    session.add(block)
+    await session.commit()
 
 
 async def view_clients() -> list[Any]:
@@ -533,6 +576,14 @@ async def viewing_recordings_day_db(date: datetime) -> list[Any]:
     """
     target_date = date.date() if isinstance(date, datetime.datetime) else date
 
+    blocks = await session.execute(
+        select(RecordDate.hour, RecordDate.minute).where(
+            RecordDate.record_date == target_date,
+            RecordDate.telegram_id.is_(None),
+        )
+    )
+    blocked_times = {(row.hour, row.minute) for row in blocks}
+
     singles = await session.execute(
         select(
             StudentProfile.full_name,
@@ -570,6 +621,8 @@ async def viewing_recordings_day_db(date: datetime) -> list[Any]:
     )
 
     for row in regulars:
+        if (row.hour, row.minute) in blocked_times:
+            continue
         key = (row.telegram_id, row.hour, row.minute)
         if key in seen_slots:
             continue

@@ -49,6 +49,7 @@ async def view_clients(
                 f"""Полное имя: {profile.full_name or "не указано"}
             Телефон: {profile.telephone if profile.telephone else "нет телефона"}
             Статус: {"заблокирован" if profile.blocked else "разблокирован"}
+            Баланс: {profile.balance_lessons or 0} ₽
             Количество записей: {count_date_rec[0]}
             Последний вход: {last_visit_date}
             {regular_text}

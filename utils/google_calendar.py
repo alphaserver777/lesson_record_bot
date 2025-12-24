@@ -29,6 +29,18 @@ except ZoneInfoNotFoundError:
     _tz = ZoneInfo("UTC")
 
 
+def _extended_props(telegram_id: int | None = None, record_id: int | None = None, kind: str | None = None) -> dict:
+    """Формирует блок private extendedProperties для событий бота."""
+    props: dict = {"source": "bot_service"}
+    if telegram_id is not None:
+        props["telegram_id"] = str(telegram_id)
+    if record_id is not None:
+        props["record_id"] = str(record_id)
+    if kind:
+        props["kind"] = kind
+    return props
+
+
 def _ensure_settings():
     if not GOOGLE_CREDENTIALS_FILE or not GOOGLE_CALENDAR_ID:
         raise GoogleCalendarError("Не заданы GOOGLE_CREDENTIALS_FILE или GOOGLE_CALENDAR_ID в .env")
@@ -107,7 +119,14 @@ async def get_busy_intervals(target_date: datetime.date) -> List[Tuple[datetime.
     return busy_intervals
 
 
-async def create_booking(contact, date: datetime.date, hour: int, minute: int = 0, duration_minutes: int = 60) -> str:
+async def create_booking(
+    contact,
+    date: datetime.date,
+    hour: int,
+    minute: int = 0,
+    duration_minutes: int = 60,
+    record_id: int | None = None,
+) -> str:
     """
     Создаёт событие записи на час и возвращает event_id.
     contact ожидает объект Message.contact (aiogram).
@@ -126,13 +145,14 @@ async def create_booking(contact, date: datetime.date, hour: int, minute: int = 
     ]
     summary = " ".join(part for part in summary_parts if part).strip() or "Запись"
     description = f"Телефон: {phone_number}" if phone_number else ""
+    telegram_id = getattr(contact, "user_id", None) or (contact.get("user_id") if isinstance(contact, dict) else None)
 
     body = {
         "summary": summary,
         "description": description,
         "start": {"dateTime": start.isoformat(), "timeZone": str(_tz)},
         "end": {"dateTime": end.isoformat(), "timeZone": str(_tz)},
-        "extendedProperties": {"private": {"source": "bot_service"}},
+        "extendedProperties": {"private": _extended_props(telegram_id=telegram_id, record_id=record_id, kind="single")},
     }
 
     def _call():
@@ -155,6 +175,9 @@ async def create_simple_event(
     duration_minutes: int = 60,
     summary: str = "Запись",
     description: str | None = None,
+    telegram_id: int | None = None,
+    record_id: int | None = None,
+    kind: str | None = None,
 ) -> str:
     """
     Создаёт событие без контакта (используется для синхронизации из БД).
@@ -166,7 +189,7 @@ async def create_simple_event(
         "description": description or "",
         "start": {"dateTime": start.isoformat(), "timeZone": str(_tz)},
         "end": {"dateTime": end.isoformat(), "timeZone": str(_tz)},
-        "extendedProperties": {"private": {"source": "bot_service"}},
+        "extendedProperties": {"private": _extended_props(telegram_id=telegram_id, record_id=record_id, kind=kind or "single")},
     }
 
     def _call():
@@ -193,7 +216,7 @@ async def create_block_event(date: datetime.date, hour: int, minute: int, durati
         "summary": note,
         "start": {"dateTime": start.isoformat(), "timeZone": str(_tz)},
         "end": {"dateTime": end.isoformat(), "timeZone": str(_tz)},
-        "extendedProperties": {"private": {"source": "bot_service"}},
+        "extendedProperties": {"private": _extended_props(kind="block")},
     }
 
     def _call():
@@ -219,7 +242,7 @@ async def create_full_day_block_event(date: datetime.date, note: str = "Резе
         "summary": note,
         "start": {"date": start_date_str, "timeZone": str(_tz)},
         "end": {"date": end_date_str, "timeZone": str(_tz)},
-        "extendedProperties": {"private": {"source": "bot_service", "type": "full_day_block"}},
+        "extendedProperties": {"private": {**_extended_props(kind="full_day_block"), "type": "full_day_block"}},
     }
 
     def _call():
