@@ -84,6 +84,7 @@ from handlers.custom_handlers.actions_with_admin.weekend import weekend
 from handlers.custom_handlers.actions_with_admin.sync_calendar import sync_calendar_handler
 from handlers.custom_handlers.actions_with_admin.payment_callbacks import (
     payment_no,
+    payment_cancel,
     payment_yes,
 )
 from handlers.custom_handlers.actions_with_admin.list_debtors import list_debtors
@@ -163,6 +164,7 @@ def register_routers(router: Router):
     router.callback_query.register(sync_calendar_handler, F.data == "sync_calendar")
     router.callback_query.register(payment_yes, F.data.startswith("pay_yes="))
     router.callback_query.register(payment_no, F.data.startswith("pay_no="))
+    router.callback_query.register(payment_cancel, F.data.startswith("pay_cancel="))
     router.callback_query.register(list_debtors, F.data == "list_debtors")
 
     router.callback_query.register(unblocked_user, F.data.startswith("blocked="))

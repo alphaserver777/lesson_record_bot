@@ -18,6 +18,10 @@ async def payment_no(callback: types.CallbackQuery):
     await _handle_payment(callback, status="unpaid")
 
 
+async def payment_cancel(callback: types.CallbackQuery):
+    await _handle_payment(callback, status="canceled")
+
+
 async def _handle_payment(callback: types.CallbackQuery, status: str):
     try:
         _, pay_id_str, date_str, time_str, duration_str = callback.data.split("=")
@@ -48,7 +52,12 @@ async def _handle_payment(callback: types.CallbackQuery, status: str):
             source="manual",
         )
 
-    await callback.message.answer(
-        f"Отметка оплаты: {('получена ✅' if status=='paid' else 'не получена ❌')}"
-    )
+    if status == "paid":
+        text = "Отметка оплаты: получена ✅"
+    elif status == "unpaid":
+        text = "Отметка оплаты: не получена ❌"
+    else:
+        text = "Отметка: занятие отменено 🚫"
+
+    await callback.message.answer(text)
     await callback.answer()

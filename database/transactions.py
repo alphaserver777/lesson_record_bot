@@ -1,5 +1,6 @@
 """Модуль работы с базой данных."""
 import datetime
+import logging
 from typing import Any
 
 from sqlalchemy import delete, func, select, text
@@ -16,7 +17,10 @@ from utils.google_calendar import (
     get_busy_intervals,
     get_calendar_tz,
 )
+from utils.sync_calendar import push_db_events_to_calendar
 from utils.schedule import SLOT_DURATION_MINUTES, slots_for_date
+
+logger = logging.getLogger(__name__)
 
 
 async def init_db() -> None:
@@ -325,6 +329,12 @@ async def add_regular_slot(
     session.add(lesson)
     await session.commit()
 
+    # Выгружаем новые регулярки в календарь сразу, чтобы слоты были забронированы
+    try:
+        await push_db_events_to_calendar(days_ahead=30)
+    except Exception as exc:  # pylint: disable=broad-except
+        logger.warning("Не удалось синхронизировать регулярку в календарь: %s", exc)
+
 
 async def delete_single_slot(
     telegram_id: int,
@@ -501,12 +511,51 @@ async def mailing_for_day(date: datetime) -> list[Any]:
 
 
 async def viewing_recordings_day_db(date: datetime) -> list[Any]:
-    res = await session.execute(
-        select(StudentProfile.full_name, StudentProfile.telephone, RecordDate.hour, RecordDate.minute).
-        join(StudentProfile, StudentProfile.telegram_id == RecordDate.telegram_id).
-        where(RecordDate.record_date == date).order_by(RecordDate.hour, RecordDate.minute)
+    """
+    Возвращает список записей на день, включая разовые и регулярные.
+    Приоритет: если для регулярки уже есть разовая запись на этот слот, дубликат не показываем.
+    """
+    target_date = date.date() if isinstance(date, datetime.datetime) else date
+
+    singles = await session.execute(
+        select(
+            StudentProfile.full_name,
+            StudentProfile.telephone,
+            RecordDate.hour,
+            RecordDate.minute,
+            RecordDate.telegram_id,
+        )
+        .join(StudentProfile, StudentProfile.telegram_id == RecordDate.telegram_id)
+        .where(RecordDate.record_date == target_date)
     )
-    return res.all()
+
+    result = []
+    seen_slots: set[tuple[int | None, int, int]] = set()
+    for row in singles:
+        key = (row.telegram_id, row.hour, row.minute)
+        seen_slots.add(key)
+        result.append((row.full_name, row.telephone, row.hour, row.minute))
+
+    weekday = target_date.weekday()
+    regulars = await session.execute(
+        select(
+            StudentProfile.full_name,
+            StudentProfile.telephone,
+            RegularLesson.hour,
+            RegularLesson.minute,
+            RegularLesson.telegram_id,
+        )
+        .join(StudentProfile, StudentProfile.telegram_id == RegularLesson.telegram_id, isouter=True)
+        .where(RegularLesson.day_of_week == weekday)
+    )
+
+    for row in regulars:
+        key = (row.telegram_id, row.hour, row.minute)
+        if key in seen_slots:
+            continue
+        result.append((row.full_name or "Регулярное занятие", row.telephone, row.hour, row.minute))
+
+    return sorted(result, key=lambda r: (r[2], r[3]))
 
 
 async def get_info_user(date: datetime, hour: int, minute: int) -> Any:
