@@ -42,13 +42,15 @@ async def viewing_recordings_day_2(message: [types.CallbackQuery, types.Message]
     if res:
         for user in res:
             time_text = f"{user[2]:02d}:{user[3]:02d}"
+            kind = user[4] if len(user) > 4 else "Неизвестно"
             callback_rec_del_button = f"confirm_yes_no=rec_del_with_day={selected_date}={user[2]}_{user[3]}"
             kb_rec_del = rec_del_button(callback_rec_del_button)
             await message.message.answer(
                 f"""Клиент: {user[0]}
-        Телефон: {user[1]}
-        Записан на {time_text}
-        """,
+Телефон: {user[1]}
+Тип: {kind}
+Записан на {time_text}
+""",
                 reply_markup=kb_rec_del
             )
     else:

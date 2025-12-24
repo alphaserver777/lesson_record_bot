@@ -540,6 +540,7 @@ async def viewing_recordings_day_db(date: datetime) -> list[Any]:
             RecordDate.hour,
             RecordDate.minute,
             RecordDate.telegram_id,
+            RecordDate.event_id,
         )
         .join(StudentProfile, StudentProfile.telegram_id == RecordDate.telegram_id)
         .where(RecordDate.record_date == target_date)
@@ -550,7 +551,9 @@ async def viewing_recordings_day_db(date: datetime) -> list[Any]:
     for row in singles:
         key = (row.telegram_id, row.hour, row.minute)
         seen_slots.add(key)
-        result.append((row.full_name, row.telephone, row.hour, row.minute))
+        # event_id позволяет отличать разовые от развёрнутых регулярок без ссылки на оригинал
+        kind = "Разовое" if row.event_id else "Регулярное"
+        result.append((row.full_name, row.telephone, row.hour, row.minute, kind))
 
     weekday = target_date.weekday()
     regulars = await session.execute(
@@ -560,6 +563,7 @@ async def viewing_recordings_day_db(date: datetime) -> list[Any]:
             RegularLesson.hour,
             RegularLesson.minute,
             RegularLesson.telegram_id,
+            RegularLesson.duration_minutes,
         )
         .join(StudentProfile, StudentProfile.telegram_id == RegularLesson.telegram_id, isouter=True)
         .where(RegularLesson.day_of_week == weekday)
@@ -569,7 +573,7 @@ async def viewing_recordings_day_db(date: datetime) -> list[Any]:
         key = (row.telegram_id, row.hour, row.minute)
         if key in seen_slots:
             continue
-        result.append((row.full_name or "Регулярное занятие", row.telephone, row.hour, row.minute))
+        result.append((row.full_name or "Регулярное занятие", row.telephone, row.hour, row.minute, "Регулярное"))
 
     return sorted(result, key=lambda r: (r[2], r[3]))
 
