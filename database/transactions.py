@@ -81,6 +81,9 @@ async def _ensure_student_profiles_columns() -> None:
     if "balance_lessons" not in column_names:
         await session.execute(text("ALTER TABLE student_profiles ADD COLUMN balance_lessons INTEGER DEFAULT 0"))
         await session.commit()
+    if "telegram_username" not in column_names:
+        await session.execute(text("ALTER TABLE student_profiles ADD COLUMN telegram_username VARCHAR(100)"))
+        await session.commit()
 
 
 async def _ensure_payments_columns() -> None:
@@ -147,7 +150,7 @@ async def upsert_student_profile(
     if age is not None:
         profile.age = age
     if username is not None:
-        profile.notes = (profile.notes or "") + f"\nusername: @{username}" if profile.notes else f"username: @{username}"
+        profile.telegram_username = username
     if price is not None:
         profile.price = price
     if direction is not None:

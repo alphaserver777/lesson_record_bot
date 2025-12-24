@@ -1,5 +1,6 @@
 """Модуль удаления определённой записи на день."""
 import datetime
+import logging
 
 from aiogram import types
 
@@ -7,6 +8,8 @@ from database import transactions
 from keyboards.inline.back_admin_menu import back_admin_menu_button
 from keyboards.inline.confirm_yes_no import conf_yes_no_button
 from loader import bot
+
+logger = logging.getLogger(__name__)
 
 
 async def del_record_day_1(message: [types.CallbackQuery, types.Message]):
@@ -24,11 +27,27 @@ async def del_record_day_1(message: [types.CallbackQuery, types.Message]):
     minute = int(time_parts[1]) if len(time_parts) > 1 else 0
 
     info_user = await transactions.get_info_user(date, hour, minute)
+    if not info_user:
+        await message.message.answer("Запись не найдена или уже удалена.")
+        await message.answer()
+        return
 
     sending_text = f"Ваша запись на {date.day}-{date.month}-{date.year} в {hour:02d}:{minute:02d} аннулирована"
-    await bot.send_message(chat_id=info_user[0], text=sending_text, parse_mode="HTML")
+    telegram_id = info_user[0]
+    if telegram_id:
+        try:
+            await bot.send_message(chat_id=telegram_id, text=sending_text, parse_mode="HTML")
+        except Exception as exc:  # pylint: disable=broad-except
+            logger.warning("Не удалось отправить уведомление об удалении %s: %s", telegram_id, exc)
 
-    await transactions.del_record(date, hour, minute)
+    try:
+        await transactions.del_record(date, hour, minute)
+    except Exception as exc:  # pylint: disable=broad-except
+        logger.exception("Ошибка при удалении записи %s %s:%s: %s", date, hour, minute, exc)
+        await message.message.answer("Не удалось удалить запись, попробуйте позже.")
+        await message.answer()
+        return
 
     kb = back_admin_menu_button()
     await message.message.answer("Запись удалена", reply_markup=kb)
+    await message.answer()

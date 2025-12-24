@@ -1,5 +1,6 @@
 """Редактирование данных студента администратором."""
 import datetime
+import logging
 
 from aiogram import types
 from aiogram.fsm.context import FSMContext
@@ -16,6 +17,8 @@ from states.states import (
     AdminAddRegularState,
     AdminCancelState,
 )
+
+logger = logging.getLogger(__name__)
 
 
 async def edit_client_menu(callback: types.CallbackQuery, state: FSMContext):
@@ -114,14 +117,25 @@ async def add_single_time(message: types.Message, state: FSMContext):
     data = await state.get_data()
     telegram_id = data.get("edit_telegram_id")
     date = data.get("single_date")
-    ok = await transactions.add_single_slot(
-        telegram_id=telegram_id,
-        date=date,
-        hour=time.hour,
-        minute=time.minute,
-        duration_minutes=60,
-        summary="Запись (админ)",
-    )
+    if not date or telegram_id is None:
+        logger.warning("Нет данных состояния для добавления занятия: date=%s, telegram_id=%s", date, telegram_id)
+        await message.answer("Не хватает данных для записи. Начните добавление заново.")
+        await state.clear()
+        return
+    try:
+        ok = await transactions.add_single_slot(
+            telegram_id=telegram_id,
+            date=date,
+            hour=time.hour,
+            minute=time.minute,
+            duration_minutes=60,
+            summary="Запись (админ)",
+        )
+    except Exception as exc:  # pylint: disable=broad-except
+        logger.exception("Ошибка при добавлении разового занятия: %s", exc)
+        await message.answer("Не удалось добавить запись. Попробуйте позже.")
+        await state.clear()
+        return
     if ok:
         await message.answer(f"Запись добавлена: {date} {time.strftime('%H:%M')}")
     else:

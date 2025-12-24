@@ -40,6 +40,7 @@ class StudentProfile(Base):
 
     telegram_id = Column(Integer, primary_key=True)
     full_name = Column(String(100), nullable=True)
+    telegram_username = Column(String(100), nullable=True)
     age = Column(Integer, nullable=True)
     price = Column(Integer, nullable=True)
     direction = Column(String(100), nullable=True)

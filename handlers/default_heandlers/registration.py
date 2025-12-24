@@ -59,6 +59,7 @@ async def registration_phone(message: types.Message, state: FSMContext):
         telegram_id=telegram_id,
         full_name=full_name,
         age=age,
+        username=username,
     )
     await transactions.update_visit_date(telegram_id)
 
