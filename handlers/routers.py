@@ -137,6 +137,7 @@ def register_routers(router: Router):
     router.callback_query.register(view_recordings, F.data.startswith("view_recordings="))
 
     router.callback_query.register(admin_menu, F.data == "admin_menu")
+    router.message.register(admin_menu, F.text == "Админ меню")
 
     router.callback_query.register(confirm_yes_no, F.data.startswith("confirm_yes_no"))
 

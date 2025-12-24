@@ -9,6 +9,7 @@ from aiogram.types import ReplyKeyboardRemove
 from config_data.config import ADMINS_TELEGRAM_ID, START_MESSAGE
 from database import transactions
 from keyboards.inline.calendar_v1 import calendar_buttons
+from keyboards.reply.admin_menu import admin_reply_kb
 from states.states import RegistrationState
 from utils.calendar import InternalCalendar
 
@@ -53,8 +54,9 @@ async def start_command(message: [types.CallbackQuery, types.Message], state: FS
 
     if isinstance(message, types.Message):
         if message.text and message.text.startswith("/start"):
+            reply_kb = admin_reply_kb() if telegram_id in ADMINS_TELEGRAM_ID else ReplyKeyboardRemove()
             await message.answer(
-                START_MESSAGE, parse_mode="HTML", reply_markup=ReplyKeyboardRemove()
+                START_MESSAGE, parse_mode="HTML", reply_markup=reply_kb
             )
         await message.answer(text="Выберите дату:", reply_markup=kb)
 
