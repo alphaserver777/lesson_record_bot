@@ -11,6 +11,7 @@ from utils.google_calendar import (
     GoogleCalendarError,
     create_block_event,
     create_booking,
+    create_simple_event,
     create_full_day_block_event,
     delete_events,
     delete_events_in_range,
