@@ -302,6 +302,7 @@ async def cancel_time_input(message: types.Message, state: FSMContext):
             hour=time.hour,
             minute=time.minute,
             duration_minutes=SLOT_DURATION_MINUTES,
+            kind="block",
             event_id=event_id,
         )
         session.add(rec)

@@ -36,9 +36,11 @@ async def init_db() -> None:
         await conn.run_sync(Base.metadata.create_all)
     await _ensure_event_id_column()
     await _ensure_minute_column()
+    await _ensure_record_kind_column()
     await _ensure_regular_lessons_columns()
     await _ensure_student_profiles_columns()
     await _ensure_payments_columns()
+    await _normalize_record_kinds()
 
 
 async def _ensure_event_id_column() -> None:
@@ -58,6 +60,43 @@ async def _ensure_minute_column() -> None:
     if "duration_minutes" not in column_names:
         await session.execute(text("ALTER TABLE record_dates ADD COLUMN duration_minutes INTEGER DEFAULT 60 NOT NULL"))
         await session.commit()
+
+
+async def _ensure_record_kind_column() -> None:
+    columns = await session.execute(text("PRAGMA table_info('record_dates')"))
+    column_names = {row[1] for row in columns}
+    if "kind" not in column_names:
+        await session.execute(text("ALTER TABLE record_dates ADD COLUMN kind VARCHAR(20) DEFAULT 'single'"))
+        await session.commit()
+
+
+async def _normalize_record_kinds() -> None:
+    # Блокеры без владельца помечаем как block
+    await session.execute(
+        text(
+            "UPDATE record_dates SET kind='block' "
+            "WHERE telegram_id IS NULL AND (kind IS NULL OR kind != 'block')"
+        )
+    )
+    # Записи, совпадающие с регулярками по дню недели/времени, помечаем как regular
+    await session.execute(
+        text(
+            """
+            UPDATE record_dates
+            SET kind='regular'
+            WHERE telegram_id IS NOT NULL
+              AND (kind IS NULL OR kind != 'regular')
+              AND EXISTS (
+                SELECT 1 FROM regular_lessons rl
+                WHERE rl.telegram_id = record_dates.telegram_id
+                  AND rl.day_of_week = ((CAST(strftime('%w', record_dates.record_date) AS INTEGER) + 6) % 7)
+                  AND rl.hour = record_dates.hour
+                  AND rl.minute = record_dates.minute
+              )
+            """
+        )
+    )
+    await session.commit()
 
 
 async def _ensure_regular_lessons_columns() -> None:
@@ -276,6 +315,7 @@ async def set_date_time_appointment(contact, date: datetime, hour: int, minute: 
         hour=hour,
         minute=minute,
         duration_minutes=SLOT_DURATION_MINUTES,
+        kind="single",
         event_id=event_id,
     )
     session.add(record)
@@ -316,6 +356,7 @@ async def add_single_slot(
         hour=hour,
         minute=minute,
         duration_minutes=duration_minutes,
+        kind="single",
         event_id=event_id,
     )
     session.add(record)
@@ -488,6 +529,7 @@ async def ensure_block_slot(
         hour=hour,
         minute=minute,
         duration_minutes=duration_minutes,
+        kind="block",
         event_id=None,
     )
     session.add(block)
@@ -501,7 +543,10 @@ async def view_clients() -> list[Any]:
 
 async def view_record(telegram_id: int) -> list[Any]:
     res = await session.execute(
-        select(RecordDate.record_date, RecordDate.hour, RecordDate.minute).where(RecordDate.telegram_id == telegram_id).order_by(
+        select(RecordDate.record_date, RecordDate.hour, RecordDate.minute).where(
+            RecordDate.telegram_id == telegram_id,
+            (RecordDate.kind.is_(None) | (RecordDate.kind == "single")),
+        ).order_by(
             RecordDate.record_date, RecordDate.hour, RecordDate.minute)
     )
     return res.all()
@@ -554,6 +599,7 @@ async def reserve_day(
         hour=0,
         minute=0,
         duration_minutes=SLOT_DURATION_MINUTES,
+        kind="block",
         event_id=event_id,
     )
     session.add(record)
@@ -563,7 +609,11 @@ async def reserve_day(
 
 async def mailing_for_day(date: datetime) -> list[Any]:
     res = await session.execute(
-        select(RecordDate.telegram_id, RecordDate.hour, RecordDate.minute).where(RecordDate.record_date == date).group_by(
+        select(RecordDate.telegram_id, RecordDate.hour, RecordDate.minute).where(
+            RecordDate.record_date == date,
+            RecordDate.telegram_id.is_not(None),
+            RecordDate.kind != "block",
+        ).group_by(
             RecordDate.telegram_id, RecordDate.hour, RecordDate.minute)
     )
     return res.all()
@@ -592,6 +642,7 @@ async def viewing_recordings_day_db(date: datetime) -> list[Any]:
             RecordDate.minute,
             RecordDate.telegram_id,
             RecordDate.event_id,
+            RecordDate.kind,
         )
         .join(StudentProfile, StudentProfile.telegram_id == RecordDate.telegram_id)
         .where(RecordDate.record_date == target_date)
@@ -600,10 +651,12 @@ async def viewing_recordings_day_db(date: datetime) -> list[Any]:
     result = []
     seen_slots: set[tuple[int | None, int, int]] = set()
     for row in singles:
+        if getattr(row, "kind", None) == "block":
+            continue
         key = (row.telegram_id, row.hour, row.minute)
         seen_slots.add(key)
-        # event_id позволяет отличать разовые от развёрнутых регулярок без ссылки на оригинал
-        kind = "Разовое" if row.event_id else "Регулярное"
+        kind_raw = getattr(row, "kind", None)
+        kind = "Регулярное" if kind_raw == "regular" else "Разовое"
         result.append((row.full_name, row.telephone, row.hour, row.minute, kind))
 
     weekday = target_date.weekday()
@@ -664,7 +717,10 @@ async def lessons_for_date(date: datetime.date) -> list[Any]:
             RecordDate.hour,
             RecordDate.minute,
             RecordDate.duration_minutes,
-        ).where(RecordDate.record_date == date)
+        ).where(
+            RecordDate.record_date == date,
+            RecordDate.kind != "block",
+        )
     )
     result = [(row.telegram_id, row.hour, row.minute, row.duration_minutes) for row in single]
 

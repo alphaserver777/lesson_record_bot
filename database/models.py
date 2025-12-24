@@ -15,6 +15,7 @@ class RecordDate(Base):
     hour = Column(Integer, nullable=False)
     minute = Column(Integer, nullable=False, default=0)
     duration_minutes = Column(Integer, nullable=False, default=60)
+    kind = Column(String(20), nullable=True, default="single")  # single/regular/block
     event_id = Column(String(255), nullable=True)
 
 

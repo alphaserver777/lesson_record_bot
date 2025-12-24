@@ -70,6 +70,8 @@ async def sync_calendar(days_ahead: int = 30) -> Tuple[int, int]:
             tg_id = int(tg_id_raw) if tg_id_raw is not None else None
         except (TypeError, ValueError):
             tg_id = None
+        kind_prop = (extended.get("kind") or "").lower()
+        kind_value = "block" if kind_prop == "block" else "regular" if kind_prop == "regular" else "single"
 
         status = event.get("status")
         if status == "cancelled":
@@ -97,6 +99,7 @@ async def sync_calendar(days_ahead: int = 30) -> Tuple[int, int]:
                         hour=original_start.hour,
                         minute=original_start.minute,
                         duration_minutes=SLOT_DURATION_MINUTES,
+                        kind="block",
                         event_id=None,
                     )
                     session.add(record)
@@ -151,6 +154,8 @@ async def sync_calendar(days_ahead: int = 30) -> Tuple[int, int]:
                 existing_rec.duration_minutes = duration
                 if tg_id is not None:
                     existing_rec.telegram_id = tg_id
+                if kind_value:
+                    existing_rec.kind = kind_value
             else:
                 record = RecordDate(
                     telegram_id=tg_id,
@@ -158,6 +163,7 @@ async def sync_calendar(days_ahead: int = 30) -> Tuple[int, int]:
                     hour=start.hour,
                     minute=start.minute,
                     duration_minutes=duration,
+                    kind=kind_value,
                     event_id=event_id,
                 )
                 session.add(record)
@@ -260,6 +266,7 @@ async def push_db_events_to_calendar(days_ahead: int = 30) -> int:
                 kind="single",
             )
             rec.event_id = event_id
+            rec.kind = rec.kind or "single"
             created += 1
         except Exception as exc:  # pylint: disable=broad-except
             logger.warning("Не удалось создать событие для записи %s: %s", rec.id, exc)
@@ -272,14 +279,16 @@ async def push_db_events_to_calendar(days_ahead: int = 30) -> int:
             weekday = day_iter.weekday()
             for lesson in regulars:
                 if lesson.day_of_week == weekday:
-                    exists = await session.execute(
+                    existing = await session.execute(
                         select(RecordDate).where(
                             RecordDate.record_date == day_iter,
                             RecordDate.hour == lesson.hour,
                             RecordDate.minute == lesson.minute,
                         )
                     )
-                    if exists.first():
+                    existing_rec = existing.scalar_one_or_none()
+                    if existing_rec:
+                        existing_rec.kind = "regular"
                         continue
                     try:
                         if await _is_slot_busy(
@@ -321,6 +330,7 @@ async def push_db_events_to_calendar(days_ahead: int = 30) -> int:
                             hour=lesson.hour or 0,
                             minute=lesson.minute or 0,
                             duration_minutes=lesson.duration_minutes or SLOT_DURATION_MINUTES,
+                            kind="regular",
                             event_id=event_id,
                         )
                         session.add(rec)
