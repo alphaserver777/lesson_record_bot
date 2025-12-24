@@ -129,7 +129,6 @@ async def add_single_time(message: types.Message, state: FSMContext):
             hour=time.hour,
             minute=time.minute,
             duration_minutes=60,
-            summary="Запись (админ)",
         )
     except Exception as exc:  # pylint: disable=broad-except
         logger.exception("Ошибка при добавлении разового занятия: %s", exc)
@@ -211,7 +210,6 @@ async def add_regular_duration(message: types.Message, state: FSMContext):
         hour=time.hour,
         minute=time.minute,
         duration_minutes=duration,
-        full_name="Регулярное занятие",
     )
     await message.answer(f"Регулярное занятие добавлено: день {day}, {time.strftime('%H:%M')} ({duration} мин).")
     await state.clear()

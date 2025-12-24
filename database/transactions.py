@@ -24,6 +24,13 @@ from utils.schedule import SLOT_DURATION_MINUTES, slots_for_date
 logger = logging.getLogger(__name__)
 
 
+def _build_event_summary(full_name: str | None, kind: str) -> str:
+    """Формирует заголовок события с именем ученика и типом записи."""
+    kind_label = "Регулярное" if kind == "regular" else "Разовое"
+    name = (full_name or "").strip() or "Запись"
+    return f"{name} ({kind_label})"
+
+
 async def init_db() -> None:
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
@@ -287,13 +294,16 @@ async def add_single_slot(
     """
     Добавляет разовое занятие от имени администратора: создаёт событие в календаре и запись в БД.
     """
+    profile = await session.get(StudentProfile, telegram_id)
+    summary_text = summary or _build_event_summary(profile.full_name if profile else None, "single")
+
     try:
         event_id = await create_simple_event(
             date,
             hour,
             minute,
             duration_minutes,
-            summary=summary or "Запись (админ)",
+            summary=summary_text,
         )
     except GoogleCalendarError:
         return False
@@ -319,9 +329,11 @@ async def add_regular_slot(
     duration_minutes: int = SLOT_DURATION_MINUTES,
     full_name: str | None = None,
 ) -> None:
+    profile = await session.get(StudentProfile, telegram_id) if telegram_id else None
+    lesson_title = _build_event_summary(full_name or (profile.full_name if profile else None), "regular")
     lesson = RegularLesson(
         telegram_id=telegram_id,
-        full_name=full_name or "Регулярное занятие",
+        full_name=lesson_title,
         username=None,
         cost=None,
         day_of_week=day_of_week,

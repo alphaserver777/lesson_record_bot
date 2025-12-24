@@ -65,6 +65,33 @@ async def sync_calendar(days_ahead: int = 30) -> Tuple[int, int]:
 
         status = event.get("status")
         if status == "cancelled":
+            original_start = _parse_dt(event.get("originalStartTime", {}))
+            if original_start:
+                # Помечаем разовую отмену регулярного события, чтобы не восстановить его.
+                await session.execute(
+                    delete(RecordDate).where(
+                        RecordDate.record_date == original_start.date(),
+                        RecordDate.hour == original_start.hour,
+                        RecordDate.minute == original_start.minute,
+                    )
+                )
+                exists = await session.execute(
+                    select(RecordDate).where(
+                        RecordDate.record_date == original_start.date(),
+                        RecordDate.hour == original_start.hour,
+                        RecordDate.minute == original_start.minute,
+                    )
+                )
+                if not exists.first():
+                    record = RecordDate(
+                        telegram_id=None,
+                        record_date=original_start.date(),
+                        hour=original_start.hour,
+                        minute=original_start.minute,
+                        duration_minutes=SLOT_DURATION_MINUTES,
+                        event_id=None,
+                    )
+                    session.add(record)
             continue
         seen_event_ids.add(event_id)
 
