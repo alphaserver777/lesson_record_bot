@@ -373,7 +373,7 @@ async def add_regular_slot(
     full_name: str | None = None,
 ) -> None:
     profile = await session.get(StudentProfile, telegram_id) if telegram_id else None
-    lesson_title = _build_event_summary(full_name or (profile.full_name if profile else None), "regular")
+    lesson_title = full_name or (profile.full_name if profile else None) or "Регулярное занятие"
     lesson = RegularLesson(
         telegram_id=telegram_id,
         full_name=lesson_title,
@@ -630,6 +630,10 @@ async def viewing_recordings_day_db(date: datetime) -> list[Any]:
         select(RecordDate.hour, RecordDate.minute).where(
             RecordDate.record_date == target_date,
             RecordDate.telegram_id.is_(None),
+            (
+                (RecordDate.kind == "block")
+                | ((RecordDate.kind.is_(None)) & (RecordDate.event_id.is_(None)))
+            ),
         )
     )
     blocked_times = {(row.hour, row.minute) for row in blocks}

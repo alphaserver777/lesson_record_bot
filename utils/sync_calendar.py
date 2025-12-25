@@ -12,6 +12,7 @@ from utils.google_calendar import (
     get_calendar_tz,
     list_events,
 )
+from database.transactions import _build_event_summary
 from database.models import RecordDate, RegularLesson
 from database.connect import session
 from utils.schedule import SLOT_DURATION_MINUTES
@@ -157,6 +158,24 @@ async def sync_calendar(days_ahead: int = 30) -> Tuple[int, int]:
                 if kind_value:
                     existing_rec.kind = kind_value
             else:
+                # Попробуем сопоставить по слоту запись без event_id, чтобы подтянуть telegram_id
+                match = await session.execute(
+                    select(RecordDate).where(
+                        RecordDate.event_id.is_(None),
+                        RecordDate.record_date == start.date(),
+                        RecordDate.hour == start.hour,
+                        RecordDate.minute == start.minute,
+                        RecordDate.telegram_id.is_not(None),
+                    )
+                )
+                matched_rec = match.scalar_one_or_none()
+                if matched_rec:
+                    matched_rec.event_id = event_id
+                    if tg_id is not None:
+                        matched_rec.telegram_id = tg_id
+                    matched_rec.kind = matched_rec.kind or kind_value
+                    continue
+
                 record = RecordDate(
                     telegram_id=tg_id,
                     record_date=start.date(),
@@ -171,7 +190,7 @@ async def sync_calendar(days_ahead: int = 30) -> Tuple[int, int]:
 
     # Удаляем устаревшие одиночные записи, которых уже нет в календаре
     max_date = (now_tz + datetime.timedelta(days=days_ahead)).date()
-    if seen_event_ids or events == []:
+    if seen_event_ids:
         await session.execute(
             delete(RecordDate).where(
                 RecordDate.event_id.is_not(None),
@@ -280,15 +299,19 @@ async def push_db_events_to_calendar(days_ahead: int = 30) -> int:
             for lesson in regulars:
                 if lesson.day_of_week == weekday:
                     existing = await session.execute(
-                        select(RecordDate).where(
+                        select(RecordDate)
+                        .where(
                             RecordDate.record_date == day_iter,
                             RecordDate.hour == lesson.hour,
                             RecordDate.minute == lesson.minute,
                         )
+                        .order_by(RecordDate.id.asc())
                     )
-                    existing_rec = existing.scalar_one_or_none()
+                    existing_rec = existing.scalars().first()
                     if existing_rec:
-                        existing_rec.kind = "regular"
+                        # Если это блок или уже развёрнутая запись, ничего не создаём.
+                        if existing_rec.kind != "block":
+                            existing_rec.kind = "regular"
                         continue
                     try:
                         if await _is_slot_busy(
@@ -319,7 +342,7 @@ async def push_db_events_to_calendar(days_ahead: int = 30) -> int:
                             lesson.hour or 0,
                             lesson.minute or 0,
                             lesson.duration_minutes or SLOT_DURATION_MINUTES,
-                            summary=lesson.full_name or "Регулярное занятие",
+                            summary=_build_event_summary(lesson.full_name, "regular"),
                             telegram_id=lesson.telegram_id,
                             record_id=None,
                             kind="regular",
