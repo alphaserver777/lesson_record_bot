@@ -8,8 +8,8 @@ from config_data import config
 from database import transactions
 from keyboards.inline.back_admin_menu import back_admin_menu_button
 from keyboards.inline.calendar_v1 import calendar_buttons
-from keyboards.inline.confirm_yes_no import conf_yes_no_button
 from loader import bot
+from states.states import AdminReserve
 
 
 async def reserve_day_1(message: [types.CallbackQuery, types.Message]):
@@ -41,44 +41,56 @@ async def reserve_day_2(message: [types.CallbackQuery, types.Message], state: FS
 
     await state.update_data({"date": date})
 
-    kb = conf_yes_no_button(
-        callback_yes=f"reserve_day={date}", callback_no="admin_menu"
-    )
-
-    message_date = f"{date.day}-{date.month}-{date.year}"
-
+    await state.update_data(reserve_day=date)
     await message.message.answer(
-        f"Выбрана дата {message_date}. Резервирую день?", reply_markup=kb
+        "Введите время начала и конца рабочего дня через пробел (например, 9 18):"
     )
+    await state.set_state(AdminReserve.reserve_times)
 
 
 async def reserve_day_3(message: [types.CallbackQuery, types.Message], state: FSMContext):
     """
-    Функция reserve_day_3. Коллбэк с датой reserve_day= запускает данную функцию.
-    Резервирует день.
+    Ввод времени рабочего дня.
     """
+    data = await state.get_data()
+    date = data.get("reserve_day")
+    if not date:
+        await message.message.answer("Не удалось получить дату, начните заново.")
+        await state.clear()
+        return
+    try:
+        beginning, end = message.text.split()
+        beginning = int(beginning)
+        end = int(end)
+    except Exception:
+        await message.message.answer("Неверный формат. Введите два числа, например: 9 18")
+        return
+    await state.update_data(reserve_begin=beginning, reserve_end=end)
+    await state.set_state(AdminReserve.note)
+    await message.message.answer("Введите причину/комментарий резерва:")
+
+
+async def reserve_day_4(message: types.Message, state: FSMContext):
+    """
+    Финальное бронирование дня с указанием причины.
+    """
+    data = await state.get_data()
+    date = data.get("reserve_day")
+    beginning = data.get("reserve_begin", config.BEGINNING_WORKING_DAY)
+    end = data.get("reserve_end", config.END_WORKING_DAY)
+    note = message.text.strip() if message.text else "Резерв администратора"
+
     telegram_id = message.from_user.id
-    context_data = await state.get_data()
-    date = context_data.get("date")
-
-    res = await transactions.mailing_for_day(date)
-
-    message_date = f"{date.day}-{date.month}-{date.year}"
-
-    await transactions.del_record_all_day(date)
-    sending_text = f"Ваша запись на {message_date} аннулирована"
-
-    for client in res:
-        await bot.send_message(chat_id=client[0], text=sending_text, parse_mode="HTML")
 
     created_count = await transactions.reserve_day(
-        telegram_id, date, config.BEGINNING_WORKING_DAY, config.END_WORKING_DAY
+        telegram_id, date, beginning, end, note=note
     )
 
     kb = back_admin_menu_button()
     if created_count:
         await message.message.answer(
-            "День зарезервирован одной блокировкой на весь день.",
+            f"День зарезервирован блокировкой на весь день. Причина: {note}\n"
+            "Существующие записи не отменены.",
             reply_markup=kb
         )
     else:
@@ -86,3 +98,4 @@ async def reserve_day_3(message: [types.CallbackQuery, types.Message], state: FS
             "Не удалось создать блокировки в календаре. Проверьте настройки и попробуйте снова.",
             reply_markup=kb
         )
+    await state.clear()

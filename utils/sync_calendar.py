@@ -12,12 +12,18 @@ from utils.google_calendar import (
     get_calendar_tz,
     list_events,
 )
-from database.transactions import _build_event_summary
 from database.models import RecordDate, RegularLesson
 from database.connect import session
 from utils.schedule import SLOT_DURATION_MINUTES
 
 logger = logging.getLogger(__name__)
+
+
+def _build_event_summary(full_name: str | None, kind: str) -> str:
+    """Формирует заголовок события для календаря с типом записи."""
+    kind_label = "Регулярное" if kind == "regular" else "Разовое"
+    name = (full_name or "").strip() or "Запись"
+    return f"{name} ({kind_label})"
 
 
 def _parse_dt(event_time: dict) -> datetime.datetime | None:

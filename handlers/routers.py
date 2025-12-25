@@ -36,6 +36,7 @@ from handlers.custom_handlers.actions_with_admin.reserve_day import (
     reserve_day_1,
     reserve_day_2,
     reserve_day_3,
+    reserve_day_4,
 )
 from handlers.custom_handlers.actions_with_admin.approve_rec import (
     approve_record,
@@ -102,6 +103,7 @@ from states.states import (
     AdminAddSingleState,
     AdminAddRegularState,
     AdminCancelState,
+    AdminReserve,
 )
 
 
@@ -145,7 +147,8 @@ def register_routers(router: Router):
 
     router.callback_query.register(reserve_day_1, F.data == "reserve_day")
     router.callback_query.register(reserve_day_2, F.data.startswith("reserve_day_2"))
-    router.callback_query.register(reserve_day_3, F.data.startswith("reserve_day="))
+    router.message.register(reserve_day_3, AdminReserve.reserve_times)
+    router.message.register(reserve_day_4, AdminReserve.note)
     router.callback_query.register(approve_record, F.data.startswith("approve_rec="))
     router.callback_query.register(cancel_record, F.data.startswith("cancel_rec="))
 

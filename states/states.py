@@ -52,3 +52,11 @@ class AdminCancelState(StatesGroup):
     date = State()
     time = State()
     mode = State()
+
+
+class AdminReserve(StatesGroup):
+    """Резервирование дня администратором."""
+
+    reserve_date = State()
+    reserve_times = State()
+    note = State()

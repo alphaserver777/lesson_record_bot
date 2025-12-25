@@ -5,6 +5,7 @@ import logging
 from aiogram import types
 
 from config_data.config import ADMINS_TELEGRAM_ID
+from database import transactions
 from loader import bot
 
 logger = logging.getLogger(__name__)
@@ -34,6 +35,12 @@ async def _handle_presence(callback: types.CallbackQuery, status_text: str):
 
     await callback.message.answer(f"Спасибо! Отметили, что вы {status_text} на {time_text} ({date.day:02d}-{date.month:02d}).")
     await callback.answer()
+
+    try:
+        status_value = "yes" if "подтвердил" in status_text else "no"
+        await transactions.mark_presence_status(callback.from_user.id, date, hour, minute, status_value)
+    except Exception as exc:  # pylint: disable=broad-except
+        logger.warning("Не удалось записать статус присутствия: %s", exc)
 
     admin_msg = (
         f"Ответ по занятию {date.day:02d}-{date.month:02d} в {time_text}:\n"

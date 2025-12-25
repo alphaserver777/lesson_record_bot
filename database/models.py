@@ -16,6 +16,9 @@ class RecordDate(Base):
     minute = Column(Integer, nullable=False, default=0)
     duration_minutes = Column(Integer, nullable=False, default=60)
     kind = Column(String(20), nullable=True, default="single")  # single/regular/block
+    presence_status = Column(String(20), nullable=True)  # yes/no/pending
+    presence_last_reminder = Column(String(50), nullable=True)
+    note = Column(String(255), nullable=True)
     event_id = Column(String(255), nullable=True)
 
 

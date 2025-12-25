@@ -37,6 +37,8 @@ async def init_db() -> None:
     await _ensure_event_id_column()
     await _ensure_minute_column()
     await _ensure_record_kind_column()
+    await _ensure_record_note_column()
+    await _ensure_presence_columns()
     await _ensure_regular_lessons_columns()
     await _ensure_student_profiles_columns()
     await _ensure_payments_columns()
@@ -70,6 +72,25 @@ async def _ensure_record_kind_column() -> None:
         await session.commit()
 
 
+async def _ensure_presence_columns() -> None:
+    columns = await session.execute(text("PRAGMA table_info('record_dates')"))
+    column_names = {row[1] for row in columns}
+    if "presence_status" not in column_names:
+        await session.execute(text("ALTER TABLE record_dates ADD COLUMN presence_status VARCHAR(20)"))
+        await session.commit()
+    if "presence_last_reminder" not in column_names:
+        await session.execute(text("ALTER TABLE record_dates ADD COLUMN presence_last_reminder VARCHAR(50)"))
+        await session.commit()
+
+
+async def _ensure_record_note_column() -> None:
+    columns = await session.execute(text("PRAGMA table_info('record_dates')"))
+    column_names = {row[1] for row in columns}
+    if "note" not in column_names:
+        await session.execute(text("ALTER TABLE record_dates ADD COLUMN note VARCHAR(255)"))
+        await session.commit()
+
+
 async def _normalize_record_kinds() -> None:
     # Блокеры без владельца помечаем как block
     await session.execute(
@@ -97,6 +118,49 @@ async def _normalize_record_kinds() -> None:
         )
     )
     await session.commit()
+
+
+# --- Presence confirmation ---
+async def pending_presence_for_date(date: datetime.date) -> list[Any]:
+    res = await session.execute(
+        select(
+            RecordDate.id,
+            RecordDate.telegram_id,
+            RecordDate.record_date,
+            RecordDate.hour,
+            RecordDate.minute,
+            RecordDate.duration_minutes,
+            RecordDate.presence_status,
+            RecordDate.presence_last_reminder,
+        ).where(
+            RecordDate.record_date == date,
+            RecordDate.telegram_id.is_not(None),
+            RecordDate.kind != "block",
+        )
+    )
+    return res.all()
+
+
+async def mark_presence_status(
+    telegram_id: int,
+    date: datetime.date,
+    hour: int,
+    minute: int,
+    status: str,
+) -> None:
+    rec = await session.execute(
+        select(RecordDate).where(
+            RecordDate.telegram_id == telegram_id,
+            RecordDate.record_date == date,
+            RecordDate.hour == hour,
+            RecordDate.minute == minute,
+        ).order_by(RecordDate.id.asc())
+    )
+    rec_obj = rec.scalar_one_or_none()
+    if rec_obj:
+        rec_obj.presence_status = status
+        rec_obj.presence_last_reminder = datetime.datetime.now().isoformat()
+        await session.commit()
 
 
 async def _ensure_regular_lessons_columns() -> None:
@@ -502,6 +566,7 @@ async def ensure_block_slot(
     hour: int,
     minute: int,
     duration_minutes: int = SLOT_DURATION_MINUTES,
+    note: str | None = None,
 ) -> None:
     """
     Создаёт блокирующую запись (telegram_id=None) для слота,
@@ -530,6 +595,7 @@ async def ensure_block_slot(
         minute=minute,
         duration_minutes=duration_minutes,
         kind="block",
+        note=note,
         event_id=None,
     )
     session.add(block)
@@ -586,10 +652,22 @@ async def search_client(search_text: str) -> list[Any]:
 
 
 async def reserve_day(
-        telegram_id: int, date: datetime, beginning_working_day: int, end_working_day: int
+        telegram_id: int, date: datetime, beginning_working_day: int, end_working_day: int, note: str = "Резерв администратора"
 ) -> int:
+    # Проверяем, не создан ли уже блок на этот день
+    exists = await session.execute(
+        select(RecordDate.id).where(
+            RecordDate.record_date == date,
+            RecordDate.kind == "block",
+            RecordDate.hour == 0,
+            RecordDate.minute == 0,
+        )
+    )
+    if exists.first():
+        return 1
+
     try:
-        event_id = await create_full_day_block_event(date, "Резерв администратора")
+        event_id = await create_full_day_block_event(date, note)
     except GoogleCalendarError:
         return 0
 
@@ -600,6 +678,7 @@ async def reserve_day(
         minute=0,
         duration_minutes=SLOT_DURATION_MINUTES,
         kind="block",
+        note=note,
         event_id=event_id,
     )
     session.add(record)
@@ -619,15 +698,16 @@ async def mailing_for_day(date: datetime) -> list[Any]:
     return res.all()
 
 
-async def viewing_recordings_day_db(date: datetime) -> list[Any]:
+async def viewing_recordings_day_db(date: datetime, show_blocks: bool = False) -> list[Any]:
     """
     Возвращает список записей на день, включая разовые и регулярные.
     Приоритет: если для регулярки уже есть разовая запись на этот слот, дубликат не показываем.
+    show_blocks=True — вернуть информацию о блоках (для админов).
     """
     target_date = date.date() if isinstance(date, datetime.datetime) else date
 
     blocks = await session.execute(
-        select(RecordDate.hour, RecordDate.minute).where(
+        select(RecordDate.hour, RecordDate.minute, RecordDate.note).where(
             RecordDate.record_date == target_date,
             RecordDate.telegram_id.is_(None),
             (
@@ -636,7 +716,7 @@ async def viewing_recordings_day_db(date: datetime) -> list[Any]:
             ),
         )
     )
-    blocked_times = {(row.hour, row.minute) for row in blocks}
+    blocked_times = {(row.hour, row.minute): row.note for row in blocks}
 
     singles = await session.execute(
         select(
@@ -685,6 +765,11 @@ async def viewing_recordings_day_db(date: datetime) -> list[Any]:
             continue
         result.append((row.full_name or "Регулярное занятие", row.telephone, row.hour, row.minute, "Регулярное"))
 
+    # Добавляем информацию о блоке только если это нужно (для админов)
+    if show_blocks and blocked_times:
+        note = next(iter(blocked_times.values()))
+        result.append(("Резерв администратора", "", 0, 0, "Блок", note or "День недоступен"))
+
     return sorted(result, key=lambda r: (r[2], r[3]))
 
 
@@ -721,12 +806,18 @@ async def lessons_for_date(date: datetime.date) -> list[Any]:
             RecordDate.hour,
             RecordDate.minute,
             RecordDate.duration_minutes,
+            RecordDate.kind,
         ).where(
             RecordDate.record_date == date,
             RecordDate.kind != "block",
         )
     )
-    result = [(row.telegram_id, row.hour, row.minute, row.duration_minutes) for row in single]
+    result = []
+    seen_slots: set[tuple[int | None, int, int]] = set()
+    for row in single:
+        key = (row.telegram_id, row.hour, row.minute)
+        seen_slots.add(key)
+        result.append((row.telegram_id, row.hour, row.minute, row.duration_minutes, row.kind or "single"))
 
     weekday = date.weekday()
     regular = await session.execute(
@@ -737,7 +828,12 @@ async def lessons_for_date(date: datetime.date) -> list[Any]:
             RegularLesson.duration_minutes,
         ).where(RegularLesson.day_of_week == weekday)
     )
-    result.extend((row.telegram_id, row.hour, row.minute, row.duration_minutes) for row in regular)
+    for row in regular:
+        key = (row.telegram_id, row.hour, row.minute)
+        if key in seen_slots:
+            continue
+        result.append((row.telegram_id, row.hour, row.minute, row.duration_minutes, "regular"))
+
     return result
 
 
@@ -752,14 +848,18 @@ async def get_lesson_kind(date: datetime.date, hour: int, minute: int, telegram_
         return None
 
     rec = await session.execute(
-        select(RecordDate.id).where(
+        select(RecordDate.kind).where(
             RecordDate.record_date == date,
             RecordDate.hour == hour,
             RecordDate.minute == minute,
             RecordDate.telegram_id == telegram_id,
         )
     )
-    if rec.first():
+    rec_row = rec.first()
+    if rec_row:
+        kind_val = rec_row[0]
+        if kind_val == "regular":
+            return "regular"
         return "single"
 
     weekday = date.weekday()

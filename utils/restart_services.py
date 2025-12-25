@@ -5,7 +5,7 @@ import datetime
 from config_data.config import LOCAL_UTC, REMINDER_TIME
 from database import transactions
 from utils.google_calendar import get_calendar_tz
-from utils.misc.reminder import reminder, reminder_before_start
+from utils.misc.reminder import reminder, reminder_before_delta, send_presence_prompts
 from keyboards.inline.payment_confirm import payment_confirm_kb
 from config_data.config import ADMINS_TELEGRAM_ID
 from loader import bot
@@ -22,14 +22,16 @@ async def restarting_services() -> None:
     await transactions.deleting_records_older_7_days()
     await transactions.deletes_old_users()
 
+    reminder_hour = 10
+    reminder_minute = 0
     try:
-        reminder_time = REMINDER_TIME.split(":")
-        reminder_hour = int(reminder_time[0])
-        reminder_minute = int(reminder_time[1])
-
+        if REMINDER_TIME:
+            reminder_time = REMINDER_TIME.split(":")
+            reminder_hour = int(reminder_time[0])
+            reminder_minute = int(reminder_time[1])
     except (IndexError, ValueError):
-        reminder_hour = 8
-        reminder_minute = 30
+        reminder_hour = 10
+        reminder_minute = 0
 
     while True:
         region_time = datetime.datetime.now(get_calendar_tz())
@@ -40,13 +42,19 @@ async def restarting_services() -> None:
 
             await reminder(region_time.date())
 
-        # Напоминания за 10 минут до начала слота
-        target_time = region_time + datetime.timedelta(minutes=10)
-        await reminder_before_start(target_time)
+        # Ежечасные пинги, если нет ответа по присутствию
+        if region_time.minute == 0:
+            await send_presence_prompts(region_time.date(), force_pending=False)
+
+        # Напоминания за 60 и 10 минут до начала слота
+        target_time_10 = region_time + datetime.timedelta(minutes=10)
+        target_time_60 = region_time + datetime.timedelta(minutes=60)
+        await reminder_before_delta(target_time_60, 60)
+        await reminder_before_delta(target_time_10, 10)
 
         # Уведомление об оплате по окончании слота
         lessons_today = await transactions.lessons_for_date(region_time.date())
-        for user_id, hour, minute, duration in lessons_today:
+        for user_id, hour, minute, duration, kind_flag in lessons_today:
             end_time = datetime.datetime.combine(region_time.date(), datetime.time(hour, minute), tzinfo=get_calendar_tz()) + datetime.timedelta(minutes=duration)
             if end_time.hour == region_time.hour and end_time.minute == region_time.minute:
                 date_str = region_time.date().isoformat()
@@ -54,7 +62,7 @@ async def restarting_services() -> None:
                 profile = await get_student_profile(user_id) if user_id else None
                 student_name = profile.full_name if profile else "Ученик"
 
-                kind = await get_lesson_kind(region_time.date(), hour, minute, user_id)
+                kind = kind_flag or await get_lesson_kind(region_time.date(), hour, minute, user_id)
                 kind_text = "регулярное" if kind == "regular" else "разовое" if kind == "single" else "неизвестно"
                 price_value = profile.price if profile else None
                 price_text = f"{price_value} ₽" if price_value is not None else "не указана"
