@@ -781,6 +781,7 @@ async def get_info_user(date: datetime, hour: int, minute: int) -> Any:
 
 
 async def records_starting_at(date: datetime.date, hour: int, minute: int) -> list[Any]:
+    # Сначала берём записи из record_dates (разовые и развёрнутые регулярки)
     res = await session.execute(
         select(
             StudentProfile.telegram_id,
@@ -788,15 +789,55 @@ async def records_starting_at(date: datetime.date, hour: int, minute: int) -> li
             StudentProfile.telephone,
             RecordDate.hour,
             RecordDate.minute,
+            RecordDate.duration_minutes,
+            RecordDate.kind,
         )
         .join(StudentProfile, StudentProfile.telegram_id == RecordDate.telegram_id)
         .where(
             RecordDate.record_date == date,
             RecordDate.hour == hour,
             RecordDate.minute == minute,
+            RecordDate.kind != "block",
         )
     )
-    return res.all()
+    result = res.all()
+    seen = {(row.telegram_id, row.hour, row.minute) for row in result}
+
+    # Добавляем регулярки, если для слота нет записи
+    weekday = date.weekday()
+    regs = await session.execute(
+        select(
+            RegularLesson.telegram_id,
+            RegularLesson.hour,
+            RegularLesson.minute,
+            RegularLesson.duration_minutes,
+            StudentProfile.full_name,
+            StudentProfile.telephone,
+        )
+        .join(StudentProfile, StudentProfile.telegram_id == RegularLesson.telegram_id, isouter=True)
+        .where(
+            RegularLesson.day_of_week == weekday,
+            RegularLesson.hour == hour,
+            RegularLesson.minute == minute,
+        )
+    )
+    for row in regs:
+        key = (row.telegram_id, row.hour, row.minute)
+        if key in seen:
+            continue
+        result.append(
+            (
+                row.telegram_id,
+                row.full_name,
+                row.telephone,
+                row.hour,
+                row.minute,
+                row.duration_minutes or SLOT_DURATION_MINUTES,
+                "regular",
+            )
+        )
+
+    return result
 
 
 async def lessons_for_date(date: datetime.date) -> list[Any]:
