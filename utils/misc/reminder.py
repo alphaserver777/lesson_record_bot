@@ -29,10 +29,14 @@ async def reminder_before_start(target_datetime: datetime.datetime) -> None:
     time_text = target_datetime.strftime("%H:%M")
     for user in res:
         telegram_id, full_name, telephone, hour, minute = user
-        await bot.send_message(
-            chat_id=telegram_id,
-            text=f"Через 10 минут ваша запись в {time_text}.",
-        )
+        try:
+            await bot.send_message(
+                chat_id=telegram_id,
+                text=f"Через 10 минут ваша запись в {time_text}.",
+            )
+        except Exception:
+            # Пользователь может быть недоступен/заблокировал бота — не останавливаем цикл.
+            pass
 
         admin_text = (
             f"Скоро встреча: {full_name or telegram_id} в {time_text}."
@@ -57,10 +61,13 @@ async def reminder_before_delta(target_datetime: datetime.datetime, delta_minute
     lead_text = f"Через {delta_minutes} минут" if delta_minutes < 60 else f"Через {delta_minutes // 60} час(а)"
     for user in res:
         telegram_id, full_name, telephone, hour, minute = user
-        await bot.send_message(
-            chat_id=telegram_id,
-            text=f"{lead_text} ваша запись в {time_text}.",
-        )
+        try:
+            await bot.send_message(
+                chat_id=telegram_id,
+                text=f"{lead_text} ваша запись в {time_text}.",
+            )
+        except Exception:
+            pass
 
         admin_text = (
             f"{lead_text}: {full_name or telegram_id} в {time_text}."
@@ -94,9 +101,12 @@ async def send_presence_prompts(date: datetime.date, force_pending: bool = False
         seen.add(key)
         time_text = f"{hour:02d}:{minute:02d}"
         kb = presence_confirm_kb(date.isoformat(), f"{hour:02d}_{minute:02d}")
-        await bot.send_message(
-            chat_id=user_id,
-            text=f"Напоминаю: сегодня занятие в {time_text}. Пожалуйста, подтвердите присутствие.",
-            reply_markup=kb,
-        )
+        try:
+            await bot.send_message(
+                chat_id=user_id,
+                text=f"Напоминаю: сегодня занятие в {time_text}. Пожалуйста, подтвердите присутствие.",
+                reply_markup=kb,
+            )
+        except Exception:
+            pass
         await transactions.mark_presence_status(user_id, date, hour, minute, "pending")

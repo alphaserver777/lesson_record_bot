@@ -49,8 +49,12 @@ async def restarting_services() -> None:
         # Напоминания за 60 и 10 минут до начала слота
         target_time_10 = region_time + datetime.timedelta(minutes=10)
         target_time_60 = region_time + datetime.timedelta(minutes=60)
-        await reminder_before_delta(target_time_60, 60)
-        await reminder_before_delta(target_time_10, 10)
+        try:
+            await reminder_before_delta(target_time_60, 60)
+            await reminder_before_delta(target_time_10, 10)
+        except Exception:
+            # Не блокируем цикл, если пользователю нельзя отправить сообщение
+            pass
 
         # Уведомление об оплате по окончании слота
         lessons_today = await transactions.lessons_for_date(region_time.date())
