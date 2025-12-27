@@ -81,8 +81,8 @@ async def reminder_before_delta(target_datetime: datetime.datetime, delta_minute
 async def send_presence_prompts(date: datetime.date, force_pending: bool = False) -> None:
     """
     Рассылает напоминания о подтверждении присутствия за день.
-    Если force_pending=True — всем без ответа ставим статус pending и шлём.
-    Иначе шлём только тем, у кого статус не yes/no.
+    Если force_pending=True — сбрасываем статус на pending и шлём.
+    Иначе шлём только тем, у кого статус не yes/no, или status is NULL (не отправлялось).
     """
     lessons = await transactions.pending_presence_for_date(date)
     seen = set()

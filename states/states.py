@@ -60,3 +60,9 @@ class AdminReserve(StatesGroup):
     reserve_date = State()
     reserve_times = State()
     note = State()
+
+
+class PaymentState(StatesGroup):
+    """Ввод суммы оплаты администратором."""
+
+    amount = State()

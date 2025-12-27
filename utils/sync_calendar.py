@@ -84,12 +84,25 @@ async def sync_calendar(days_ahead: int = 30) -> Tuple[int, int]:
         if status == "cancelled":
             original_start = _parse_dt(event.get("originalStartTime", {}))
             if original_start:
+                # Если админ явно разблокировал слот (kind=allow), не создаём блок.
+                allow = await session.execute(
+                    select(RecordDate.id).where(
+                        RecordDate.record_date == original_start.date(),
+                        RecordDate.hour == original_start.hour,
+                        RecordDate.minute == original_start.minute,
+                        RecordDate.kind == "allow",
+                    )
+                )
+                if allow.first():
+                    continue
+
                 # Помечаем разовую отмену регулярного события, чтобы не восстановить его.
                 await session.execute(
                     delete(RecordDate).where(
                         RecordDate.record_date == original_start.date(),
                         RecordDate.hour == original_start.hour,
                         RecordDate.minute == original_start.minute,
+                        RecordDate.kind.not_in(["allow"]),
                     )
                 )
                 exists = await session.execute(

@@ -37,7 +37,7 @@ async def viewing_recordings_day_2(message: [types.CallbackQuery, types.Message]
     )
     selected_date = selected_date.date()
 
-    res = await transactions.viewing_recordings_day_db(selected_date, show_blocks=True)
+    res = await transactions.viewing_recordings_day_db(selected_date, show_blocks=False)
 
     if res:
         for user in res:

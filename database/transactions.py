@@ -92,11 +92,12 @@ async def _ensure_record_note_column() -> None:
 
 
 async def _normalize_record_kinds() -> None:
-    # Блокеры без владельца помечаем как block
+    # Блокеры без владельца помечаем как block (кроме allow)
     await session.execute(
         text(
             "UPDATE record_dates SET kind='block' "
-            "WHERE telegram_id IS NULL AND (kind IS NULL OR kind != 'block')"
+            "WHERE telegram_id IS NULL "
+            "AND (kind IS NULL OR (kind NOT IN ('block','allow')))"
         )
     )
     # Записи, совпадающие с регулярками по дню недели/времени, помечаем как regular
@@ -536,10 +537,41 @@ async def del_record(date: datetime, hour: int, minute: int) -> None:
             await delete_events_in_range(date, hour, minute, SLOT_DURATION_MINUTES)
         except Exception:
             pass
+        if record.kind == "block":
+            # Удаляем блок и создаём отметку разрешения, чтобы sync отменённых событий не создавал блок снова
+            await session.delete(record)
+            await ensure_allow_slot(date, hour, minute, duration, note="Разблокировано админом")
+            await session.commit()
+        else:
+            await session.delete(record)
+            await session.commit()
+
+            # Блокируем слот только если удаляем не блокирующую запись
+            if record.kind != "block":
+                await ensure_block_slot(date, hour, minute, duration)
+
+
+async def cancel_regular_slot_with_allow(date: datetime.date, hour: int, minute: int, note: str | None = None) -> None:
+    """
+    Удаляет запись (если есть) и ставит allow, чтобы регулярка не восстановилась,
+    но слот не отображался как блок.
+    """
+    record = await session.execute(
+        select(RecordDate).where(RecordDate.record_date == date, RecordDate.hour == hour, RecordDate.minute == minute)
+    )
+    record = record.scalar()
+    if record:
+        duration = record.duration_minutes or SLOT_DURATION_MINUTES
+        await delete_events([record.event_id])
+        try:
+            await delete_events_in_range(date, hour, minute, duration)
+        except Exception:
+            pass
         await session.delete(record)
         await session.commit()
-
-        await ensure_block_slot(date, hour, minute, duration)
+        await ensure_allow_slot(date, hour, minute, duration, note=note)
+    else:
+        await ensure_allow_slot(date, hour, minute, SLOT_DURATION_MINUTES, note=note)
 
 
 async def del_record_all_day(date: datetime) -> None:
@@ -572,12 +604,25 @@ async def ensure_block_slot(
     Создаёт блокирующую запись (telegram_id=None) для слота,
     чтобы регулярка/синхронизация не восстанавливала удалённое занятие.
     """
+    # Не ставим блок, если есть allow на этот слот
+    allow = await session.execute(
+        select(RecordDate.id).where(
+            RecordDate.record_date == date,
+            RecordDate.hour == hour,
+            RecordDate.minute == minute,
+            RecordDate.kind == "allow",
+        )
+    )
+    if allow.first():
+        return
+
     exists_block = await session.execute(
         select(RecordDate.id).where(
             RecordDate.record_date == date,
             RecordDate.hour == hour,
             RecordDate.minute == minute,
             RecordDate.telegram_id.is_(None),
+            RecordDate.kind == "block",
         )
     )
     if exists_block.first():
@@ -599,6 +644,51 @@ async def ensure_block_slot(
         event_id=None,
     )
     session.add(block)
+    await session.commit()
+
+
+async def ensure_allow_slot(
+    date: datetime.date,
+    hour: int,
+    minute: int,
+    duration_minutes: int = SLOT_DURATION_MINUTES,
+    note: str | None = None,
+) -> None:
+    """
+    Создаёт отметку allow (не показывается как блок), чтобы отменённая регулярка не восстанавливалась,
+    но админ не видел её как блок.
+    """
+    exists_allow = await session.execute(
+        select(RecordDate.id).where(
+            RecordDate.record_date == date,
+            RecordDate.hour == hour,
+            RecordDate.minute == minute,
+            RecordDate.kind == "allow",
+        )
+    )
+    if exists_allow.first():
+        return
+
+    # Удаляем возможные блоки для этого слота
+    await session.execute(
+        delete(RecordDate).where(
+            RecordDate.record_date == date,
+            RecordDate.hour == hour,
+            RecordDate.minute == minute,
+            RecordDate.kind == "block",
+        )
+    )
+    allow = RecordDate(
+        telegram_id=None,
+        record_date=date,
+        hour=hour,
+        minute=minute,
+        duration_minutes=duration_minutes,
+        kind="allow",
+        note=note,
+        event_id=None,
+    )
+    session.add(allow)
     await session.commit()
 
 
@@ -765,19 +855,43 @@ async def viewing_recordings_day_db(date: datetime, show_blocks: bool = False) -
             continue
         result.append((row.full_name or "Регулярное занятие", row.telephone, row.hour, row.minute, "Регулярное"))
 
-    # Добавляем информацию о блоке только если это нужно (для админов)
+    # Добавляем информацию о блоках (для админов) с реальным временем
     if show_blocks and blocked_times:
-        note = next(iter(blocked_times.values()))
-        result.append(("Резерв администратора", "", 0, 0, "Блок", note or "День недоступен"))
+        for (bh, bm), note in sorted(blocked_times.items(), key=lambda x: (x[0][0], x[0][1])):
+            result.append(("Резерв администратора", "", bh, bm, "Блок", note or "День недоступен"))
 
     return sorted(result, key=lambda r: (r[2], r[3]))
 
 
 async def get_info_user(date: datetime, hour: int, minute: int) -> Any:
+    """
+    Возвращает (telegram_id, kind) для записи или регулярки на указанный слот.
+    kind: single/regular/block.
+    """
     res = await session.execute(
-        select(RecordDate.telegram_id).where(RecordDate.record_date == date, RecordDate.hour == hour, RecordDate.minute == minute)
+        select(RecordDate.telegram_id, RecordDate.kind).where(
+            RecordDate.record_date == date,
+            RecordDate.hour == hour,
+            RecordDate.minute == minute,
+        )
     )
-    return res.one_or_none()
+    rec = res.one_or_none()
+    if rec:
+        return rec
+
+    # Если нет записи, ищем регулярку на этот день/время
+    weekday = date.weekday() if isinstance(date, datetime.date) else date
+    reg = await session.execute(
+        select(RegularLesson.telegram_id, RegularLesson.day_of_week).where(
+            RegularLesson.day_of_week == weekday,
+            RegularLesson.hour == hour,
+            RegularLesson.minute == minute,
+        )
+    )
+    reg_row = reg.one_or_none()
+    if reg_row:
+        return (reg_row[0], "regular")
+    return None
 
 
 async def records_starting_at(date: datetime.date, hour: int, minute: int) -> list[Any]:
@@ -944,6 +1058,23 @@ async def add_payment(
     session.add(pay)
     await session.commit()
     return pay
+
+
+async def get_payment(payment_id: int) -> Payment | None:
+    return await session.get(Payment, payment_id)
+
+
+async def update_payment(payment_id: int, amount: int | None = None, status: str | None = None, source: str | None = None) -> None:
+    pay = await session.get(Payment, payment_id)
+    if not pay:
+        return
+    if amount is not None:
+        pay.amount = amount
+    if status is not None:
+        pay.status = status
+    if source is not None:
+        pay.source = source
+    await session.commit()
 
 
 async def list_unpaid_payments() -> list[Any]:

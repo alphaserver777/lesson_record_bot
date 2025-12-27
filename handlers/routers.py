@@ -87,6 +87,8 @@ from handlers.custom_handlers.actions_with_admin.payment_callbacks import (
     payment_no,
     payment_cancel,
     payment_yes,
+    payment_amount,
+    payment_amount_entered,
 )
 from handlers.custom_handlers.actions_with_admin.list_debtors import list_debtors
 from handlers.default_heandlers.cancel import cancel_handler
@@ -104,6 +106,7 @@ from states.states import (
     AdminAddRegularState,
     AdminCancelState,
     AdminReserve,
+    PaymentState,
 )
 
 
@@ -169,6 +172,8 @@ def register_routers(router: Router):
     router.callback_query.register(payment_yes, F.data.startswith("pay_yes="))
     router.callback_query.register(payment_no, F.data.startswith("pay_no="))
     router.callback_query.register(payment_cancel, F.data.startswith("pay_cancel="))
+    router.callback_query.register(payment_amount, F.data.startswith("pay_amount="))
+    router.message.register(payment_amount_entered, PaymentState.amount)
     router.callback_query.register(list_debtors, F.data == "list_debtors")
 
     router.callback_query.register(unblocked_user, F.data.startswith("blocked="))

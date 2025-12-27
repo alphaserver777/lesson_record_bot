@@ -29,22 +29,27 @@ async def del_record_day_1(message: [types.CallbackQuery, types.Message]):
 
     info_user = await transactions.get_info_user(date, hour, minute)
     if not info_user:
-        # Возможно, это регулярка без записи в БД — ставим блокер и чистим календарь
-        await transactions.ensure_block_slot(date, hour, minute, SLOT_DURATION_MINUTES)
-        await message.message.answer("Запись не найдена, слот заблокирован и очищен в календаре.")
+        kb = back_admin_menu_button()
+        await message.message.answer("Запись не найдена.", reply_markup=kb)
         await message.answer()
         return
 
+    telegram_id, kind = info_user if len(info_user) > 1 else (info_user[0], "single")
     sending_text = f"Ваша запись на {date.day}-{date.month}-{date.year} в {hour:02d}:{minute:02d} аннулирована"
-    telegram_id = info_user[0]
-    if telegram_id:
+    if telegram_id and kind != "block":
         try:
             await bot.send_message(chat_id=telegram_id, text=sending_text, parse_mode="HTML")
         except Exception as exc:  # pylint: disable=broad-except
             logger.warning("Не удалось отправить уведомление об удалении %s: %s", telegram_id, exc)
 
     try:
-        await transactions.del_record(date, hour, minute)
+        if kind == "regular":
+            # Разовая отмена регулярки: удаляем запись (если есть) и ставим allow, чтобы не показывать блок
+            await transactions.cancel_regular_slot_with_allow(
+                date, hour, minute, note="Отмена регулярного занятия"
+            )
+        else:
+            await transactions.del_record(date, hour, minute)
     except Exception as exc:  # pylint: disable=broad-except
         logger.exception("Ошибка при удалении записи %s %s:%s: %s", date, hour, minute, exc)
         await message.message.answer("Не удалось удалить запись, попробуйте позже.")
@@ -52,5 +57,5 @@ async def del_record_day_1(message: [types.CallbackQuery, types.Message]):
         return
 
     kb = back_admin_menu_button()
-    await message.message.answer("Запись удалена", reply_markup=kb)
+    await message.message.answer("Запись удалена/заблокирована на этот день.", reply_markup=kb)
     await message.answer()
