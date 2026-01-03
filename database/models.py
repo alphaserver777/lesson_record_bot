@@ -61,7 +61,7 @@ class Payment(Base):
     __table_args__ = {'extend_existing': True}
 
     id = Column(Integer, primary_key=True)
-    telegram_id = Column(Integer, nullable=True)
+    telegram_id = Column(Integer, ForeignKey("student_profiles.telegram_id", ondelete="SET NULL"), nullable=True)
     full_name = Column(String(100), nullable=True)
     lesson_date = Column(Date, nullable=False)
     hour = Column(Integer, nullable=False)

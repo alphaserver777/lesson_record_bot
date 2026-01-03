@@ -10,6 +10,7 @@ from keyboards.inline.payment_confirm import payment_confirm_kb
 from config_data.config import ADMINS_TELEGRAM_ID
 from loader import bot
 from database.transactions import add_payment, change_balance, get_student_profile, get_lesson_kind
+from utils.schedule import SLOT_DURATION_MINUTES
 
 
 async def restarting_services() -> None:
@@ -69,6 +70,11 @@ async def restarting_services() -> None:
                 kind = kind_flag or await get_lesson_kind(region_time.date(), hour, minute, user_id)
                 kind_text = "регулярное" if kind == "regular" else "разовое" if kind == "single" else "неизвестно"
                 price_value = profile.price if profile else None
+                # Корректируем стоимость по длительности занятия (множитель от базового слота)
+                factor = 1
+                if price_value is not None and duration:
+                    factor = max(1, (duration + SLOT_DURATION_MINUTES - 1) // SLOT_DURATION_MINUTES)
+                    price_value = price_value * factor
                 price_text = f"{price_value} ₽" if price_value is not None else "не указана"
                 profile_link = f'<a href="tg://user?id={user_id}">профиль</a>' if user_id else ""
                 username_note = f" (@{profile.notes.split('@',1)[1].strip()})" if profile and profile.notes and '@' in profile.notes else ""

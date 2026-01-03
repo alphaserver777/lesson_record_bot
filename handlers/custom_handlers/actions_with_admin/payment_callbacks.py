@@ -6,6 +6,7 @@ from aiogram import types
 
 from database import transactions
 from loader import bot
+from utils.schedule import SLOT_DURATION_MINUTES
 from states.states import PaymentState
 from aiogram.fsm.context import FSMContext
 
@@ -109,8 +110,12 @@ async def payment_amount_entered(message: types.Message, state: FSMContext):
     telegram_id = pay.telegram_id if pay else None
     profile = await transactions.get_student_profile(telegram_id) if telegram_id else None
     base_price = pay.amount if (pay and pay.amount is not None) else (profile.price if profile else None)
+    pay_duration = pay.duration_minutes if pay and pay.duration_minutes else duration or SLOT_DURATION_MINUTES
 
-    price_value = base_price or amount_val
+    factor = 1
+    if base_price is not None and pay_duration:
+        factor = max(1, (pay_duration + SLOT_DURATION_MINUTES - 1) // SLOT_DURATION_MINUTES)
+    price_value = (base_price * factor) if base_price is not None else amount_val
     paid_from_amount = min(amount_val, price_value)
     extra = max(0, amount_val - price_value)
     unpaid = max(0, price_value - amount_val)
