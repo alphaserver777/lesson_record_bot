@@ -36,6 +36,7 @@ class AdminAddSingleState(StatesGroup):
 
     date = State()
     time = State()
+    duration = State()
 
 
 class AdminAddRegularState(StatesGroup):
@@ -65,4 +66,12 @@ class AdminReserve(StatesGroup):
 class PaymentState(StatesGroup):
     """Ввод суммы оплаты администратором."""
 
+    amount = State()
+
+
+class AdminManualPaymentState(StatesGroup):
+    """Ручное добавление оплаты админом."""
+
+    date = State()
+    time = State()
     amount = State()

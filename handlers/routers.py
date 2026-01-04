@@ -67,6 +67,11 @@ from handlers.custom_handlers.actions_with_admin.edit_client import (
     cancel_date_input,
     cancel_day_input,
     cancel_time_input,
+    add_single_duration,
+    add_manual_payment_start,
+    add_manual_payment_date,
+    add_manual_payment_time,
+    add_manual_payment_amount,
 )
 from handlers.custom_handlers.actions_with_admin.sending_messages import (
     sending_message_1,
@@ -107,6 +112,7 @@ from states.states import (
     AdminCancelState,
     AdminReserve,
     PaymentState,
+    AdminManualPaymentState,
 )
 
 
@@ -192,9 +198,14 @@ def register_routers(router: Router):
     router.callback_query.register(cancel_regular_all, F.data == "cancel_regular_all")
     router.message.register(add_single_date, AdminAddSingleState.date)
     router.message.register(add_single_time, AdminAddSingleState.time)
+    router.message.register(add_single_duration, AdminAddSingleState.duration)
     router.message.register(add_regular_day, AdminAddRegularState.day)
     router.message.register(add_regular_time, AdminAddRegularState.time)
     router.message.register(add_regular_duration, AdminAddRegularState.duration)
+    router.callback_query.register(add_manual_payment_start, F.data.startswith("add_manual_pay="))
+    router.message.register(add_manual_payment_date, AdminManualPaymentState.date)
+    router.message.register(add_manual_payment_time, AdminManualPaymentState.time)
+    router.message.register(add_manual_payment_amount, AdminManualPaymentState.amount)
     router.message.register(cancel_date_input, AdminCancelState.date)
     router.message.register(cancel_day_input, AdminCancelState.mode)
     router.message.register(cancel_time_input, AdminCancelState.time)

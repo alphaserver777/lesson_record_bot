@@ -123,6 +123,18 @@ async def _normalize_record_kinds() -> None:
 
 # --- Presence confirmation ---
 async def pending_presence_for_date(date: datetime.date) -> list[Any]:
+    target_date = date
+
+    # Блоки/allow на день — не шлём напоминания для таких слотов
+    block_allow = await session.execute(
+        select(RecordDate.hour, RecordDate.minute).where(
+            RecordDate.record_date == target_date,
+            RecordDate.kind.in_(["block", "allow"]),
+        )
+    )
+    blocked_times = {(row.hour, row.minute) for row in block_allow}
+
+    # Существующие записи
     res = await session.execute(
         select(
             RecordDate.id,
@@ -133,13 +145,66 @@ async def pending_presence_for_date(date: datetime.date) -> list[Any]:
             RecordDate.duration_minutes,
             RecordDate.presence_status,
             RecordDate.presence_last_reminder,
+            RecordDate.kind,
         ).where(
-            RecordDate.record_date == date,
+            RecordDate.record_date == target_date,
             RecordDate.telegram_id.is_not(None),
-            RecordDate.kind != "block",
+            RecordDate.kind.not_in(["block", "allow"]),
         )
     )
-    return res.all()
+    records = res.all()
+    seen_slots = {(row[1], row[3], row[4]) for row in records}
+
+    # Добавляем регулярки на этот день, если слота нет в record_dates, и создаём запись для хранения статуса
+    weekday = target_date.weekday()
+    regulars = await session.execute(
+        select(
+            RegularLesson.telegram_id,
+            RegularLesson.hour,
+            RegularLesson.minute,
+            RegularLesson.duration_minutes,
+        ).where(
+            RegularLesson.day_of_week == weekday,
+            RegularLesson.telegram_id.is_not(None),
+        )
+    )
+    new_records: list[tuple] = []
+    for lesson in regulars:
+        key = (lesson.telegram_id, lesson.hour, lesson.minute)
+        if key in seen_slots:
+            continue
+        if (lesson.hour, lesson.minute) in blocked_times:
+            continue
+        try:
+            rec = RecordDate(
+                telegram_id=lesson.telegram_id,
+                record_date=target_date,
+                hour=lesson.hour or 0,
+                minute=lesson.minute or 0,
+                duration_minutes=lesson.duration_minutes or SLOT_DURATION_MINUTES,
+                kind="regular",
+                presence_status=None,
+                event_id=None,
+            )
+            session.add(rec)
+            await session.commit()
+            new_records.append(
+                (
+                    rec.id,
+                    rec.telegram_id,
+                    rec.record_date,
+                    rec.hour,
+                    rec.minute,
+                    rec.duration_minutes,
+                    rec.presence_status,
+                    rec.presence_last_reminder,
+                    rec.kind,
+                )
+            )
+        except Exception:
+            continue
+
+    return records + new_records
 
 
 async def mark_presence_status(
@@ -537,18 +602,16 @@ async def del_record(date: datetime, hour: int, minute: int) -> None:
             await delete_events_in_range(date, hour, minute, SLOT_DURATION_MINUTES)
         except Exception:
             pass
-        if record.kind == "block":
-            # Удаляем блок и создаём отметку разрешения, чтобы sync отменённых событий не создавал блок снова
+        if record.kind in ("block", "allow"):
+            # Просто убираем служебные отметки без постановки новых блоков
             await session.delete(record)
-            await ensure_allow_slot(date, hour, minute, duration, note="Разблокировано админом")
             await session.commit()
         else:
             await session.delete(record)
             await session.commit()
 
             # Блокируем слот только если удаляем не блокирующую запись
-            if record.kind != "block":
-                await ensure_block_slot(date, hour, minute, duration)
+            await ensure_block_slot(date, hour, minute, duration)
 
 
 async def cancel_regular_slot_with_allow(date: datetime.date, hour: int, minute: int, note: str | None = None) -> None:
@@ -847,10 +910,14 @@ async def viewing_recordings_day_db(date: datetime, show_blocks: bool = False) -
         .where(RegularLesson.day_of_week == weekday)
     )
 
+    seen_reg_slots: set[tuple[int | None, int, int]] = set()
     for row in regulars:
         if (row.hour, row.minute) in blocked_times:
             continue
         key = (row.telegram_id, row.hour, row.minute)
+        if key in seen_reg_slots:
+            continue
+        seen_reg_slots.add(key)
         if key in seen_slots:
             continue
         result.append((row.full_name or "Регулярное занятие", row.telephone, row.hour, row.minute, "Регулярное"))
@@ -1058,6 +1125,23 @@ async def add_payment(
     session.add(pay)
     await session.commit()
     return pay
+
+
+async def find_payment(
+    telegram_id: int | None,
+    lesson_date: datetime.date,
+    hour: int,
+    minute: int,
+) -> Payment | None:
+    res = await session.execute(
+        select(Payment).where(
+            Payment.telegram_id == telegram_id,
+            Payment.lesson_date == lesson_date,
+            Payment.hour == hour,
+            Payment.minute == minute,
+        )
+    )
+    return res.scalars().first()
 
 
 async def get_payment(payment_id: int) -> Payment | None:

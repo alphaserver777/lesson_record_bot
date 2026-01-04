@@ -328,9 +328,7 @@ async def push_db_events_to_calendar(days_ahead: int = 30) -> int:
                     )
                     existing_rec = existing.scalars().first()
                     if existing_rec:
-                        # Если это блок или уже развёрнутая запись, ничего не создаём.
-                        if existing_rec.kind != "block":
-                            existing_rec.kind = "regular"
+                        # Существующая запись/блок — не создаём ничего нового
                         continue
                     try:
                         if await _is_slot_busy(
@@ -366,16 +364,6 @@ async def push_db_events_to_calendar(days_ahead: int = 30) -> int:
                             record_id=None,
                             kind="regular",
                         )
-                        rec = RecordDate(
-                            telegram_id=lesson.telegram_id,
-                            record_date=day_iter,
-                            hour=lesson.hour or 0,
-                            minute=lesson.minute or 0,
-                            duration_minutes=lesson.duration_minutes or SLOT_DURATION_MINUTES,
-                            kind="regular",
-                            event_id=event_id,
-                        )
-                        session.add(rec)
                         created += 1
                     except Exception as exc:  # pylint: disable=broad-except
                         logger.warning("Не удалось создать событие для регулярки %s: %s", lesson.id, exc)

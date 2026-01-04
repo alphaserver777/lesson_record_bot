@@ -7,6 +7,7 @@ from database import transactions
 from config_data.config import ADMINS_TELEGRAM_ID
 from keyboards.inline.presence_confirm import presence_confirm_kb
 from utils.schedule import SLOT_DURATION_MINUTES
+from utils.google_calendar import get_calendar_tz
 
 
 async def reminder(date: datetime) -> None:
@@ -86,9 +87,19 @@ async def send_presence_prompts(date: datetime.date, force_pending: bool = False
     """
     lessons = await transactions.pending_presence_for_date(date)
     seen = set()
+    now_dt = datetime.datetime.now(get_calendar_tz())
     for rec in lessons:
-        _, user_id, _, hour, minute, _, presence_status, _ = rec
+        # rec может содержать 8 или 9 полей (с kind). Берём по позиции.
+        if len(rec) >= 8:
+            _, user_id, _, hour, minute, duration, presence_status, last_reminder = rec[:8]
+            rec_kind = rec[8] if len(rec) > 8 else None
+        else:
+            continue
         if not user_id:
+            continue
+        start_dt = datetime.datetime.combine(date, datetime.time(hour, minute), tzinfo=get_calendar_tz())
+        # Не шлём напоминания для уже начавшихся/прошедших слотов
+        if start_dt <= now_dt:
             continue
         if presence_status in ("yes", "no"):
             continue

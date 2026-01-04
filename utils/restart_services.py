@@ -9,7 +9,7 @@ from utils.misc.reminder import reminder, reminder_before_delta, send_presence_p
 from keyboards.inline.payment_confirm import payment_confirm_kb
 from config_data.config import ADMINS_TELEGRAM_ID
 from loader import bot
-from database.transactions import add_payment, change_balance, get_student_profile, get_lesson_kind
+from database.transactions import add_payment, change_balance, get_student_profile, get_lesson_kind, find_payment
 from utils.schedule import SLOT_DURATION_MINUTES
 
 
@@ -34,8 +34,15 @@ async def restarting_services() -> None:
         reminder_hour = 10
         reminder_minute = 0
 
+    initial_presence_sent = False
+
     while True:
         region_time = datetime.datetime.now(get_calendar_tz())
+
+        # При старте отправляем запросы на подтверждение на сегодня, даже если пропустили утреннее время
+        if not initial_presence_sent:
+            await send_presence_prompts(region_time.date(), force_pending=False)
+            initial_presence_sent = True
 
         if region_time.hour == reminder_hour and region_time.minute == reminder_minute:
             await transactions.deleting_records_older_7_days()
@@ -61,7 +68,13 @@ async def restarting_services() -> None:
         lessons_today = await transactions.lessons_for_date(region_time.date())
         for user_id, hour, minute, duration, kind_flag in lessons_today:
             end_time = datetime.datetime.combine(region_time.date(), datetime.time(hour, minute), tzinfo=get_calendar_tz()) + datetime.timedelta(minutes=duration)
-            if end_time.hour == region_time.hour and end_time.minute == region_time.minute:
+            delta_seconds = (region_time - end_time).total_seconds()
+            if delta_seconds < 0 or delta_seconds >= 300:
+                continue
+            # Не дублируем платеж, если уже есть
+            existing_payment = await find_payment(user_id, region_time.date(), hour, minute)
+            if existing_payment:
+                continue
                 date_str = region_time.date().isoformat()
                 time_str = f"{hour:02d}_{minute:02d}"
                 profile = await get_student_profile(user_id) if user_id else None

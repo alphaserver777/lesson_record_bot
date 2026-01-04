@@ -16,6 +16,7 @@ from states.states import (
     AdminAddSingleState,
     AdminAddRegularState,
     AdminCancelState,
+    AdminManualPaymentState,
 )
 
 logger = logging.getLogger(__name__)
@@ -122,13 +123,36 @@ async def add_single_time(message: types.Message, state: FSMContext):
         await message.answer("Не хватает данных для записи. Начните добавление заново.")
         await state.clear()
         return
+    await state.update_data(single_time=time)
+    await message.answer("Введите длительность занятия в минутах (например, 60):")
+    await state.set_state(AdminAddSingleState.duration)
+
+
+async def add_single_duration(message: types.Message, state: FSMContext):
+    try:
+        duration = int(message.text.strip())
+        if duration <= 0:
+            raise ValueError
+    except Exception:
+        await message.answer("Нужно положительное число минут. Попробуйте снова.")
+        return
+
+    data = await state.get_data()
+    telegram_id = data.get("edit_telegram_id")
+    date = data.get("single_date")
+    time = data.get("single_time")
+    if not date or telegram_id is None or not time:
+        logger.warning("Нет данных состояния для добавления занятия: date=%s, telegram_id=%s, time=%s", date, telegram_id, time)
+        await message.answer("Не хватает данных для записи. Начните добавление заново.")
+        await state.clear()
+        return
     try:
         ok = await transactions.add_single_slot(
             telegram_id=telegram_id,
             date=date,
             hour=time.hour,
             minute=time.minute,
-            duration_minutes=60,
+            duration_minutes=duration,
         )
     except Exception as exc:  # pylint: disable=broad-except
         logger.exception("Ошибка при добавлении разового занятия: %s", exc)
@@ -136,7 +160,7 @@ async def add_single_time(message: types.Message, state: FSMContext):
         await state.clear()
         return
     if ok:
-        await message.answer(f"Запись добавлена: {date} {time.strftime('%H:%M')}")
+        await message.answer(f"Запись добавлена: {date} {time.strftime('%H:%M')} ({duration} мин)")
     else:
         await message.answer("Не удалось добавить запись. Попробуйте позже.")
     await state.clear()
@@ -320,4 +344,81 @@ async def cancel_time_input(message: types.Message, state: FSMContext):
         await message.answer(f"Регулярные занятия (день {cancel_day}, {time.strftime('%H:%M')}) отменены полностью.")
     else:
         await message.answer("Сначала выберите тип отмены.")
+    await state.clear()
+
+
+# --- Ручное добавление оплаты ---
+async def add_manual_payment_start(callback: types.CallbackQuery, state: FSMContext):
+    telegram_id = int(callback.data.split("=")[1])
+    await state.update_data(manual_pay_telegram_id=telegram_id)
+    await callback.message.answer("Введите дату занятия (ГГГГ-ММ-ДД). Оставьте пустым или введите 'х' для сегодняшнего дня.")
+    await state.set_state(AdminManualPaymentState.date)
+    await callback.answer()
+
+
+async def add_manual_payment_date(message: types.Message, state: FSMContext):
+    text = (message.text or "").strip()
+    if text and text.lower() not in ("х", "x"):
+        try:
+            date_val = datetime.datetime.strptime(text, "%Y-%m-%d").date()
+        except Exception:
+            await message.answer("Неверный формат. Введите дату как ГГГГ-ММ-ДД или введите 'х' для сегодня.")
+            return
+    else:
+        date_val = datetime.date.today()
+    await state.update_data(manual_pay_date=date_val)
+    await message.answer("Введите время занятия (ЧЧ:ММ). Оставьте пустым или введите 'х', если неизвестно.")
+    await state.set_state(AdminManualPaymentState.time)
+
+
+async def add_manual_payment_time(message: types.Message, state: FSMContext):
+    text = (message.text or "").strip()
+    hour = 0
+    minute = 0
+    if text and text.lower() not in ("х", "x"):
+        try:
+            time_val = datetime.datetime.strptime(text, "%H:%M").time()
+            hour, minute = time_val.hour, time_val.minute
+        except Exception:
+            await message.answer("Неверный формат. Введите время как ЧЧ:ММ или введите 'х', если неизвестно.")
+            return
+    await state.update_data(manual_pay_hour=hour, manual_pay_minute=minute)
+    await message.answer("Введите сумму оплаты в ₽. Оставьте пустым или введите 'х', чтобы взять цену из профиля.")
+    await state.set_state(AdminManualPaymentState.amount)
+
+
+async def add_manual_payment_amount(message: types.Message, state: FSMContext):
+    text = (message.text or "").strip()
+    data = await state.get_data()
+    telegram_id = data.get("manual_pay_telegram_id")
+    date_val = data.get("manual_pay_date", datetime.date.today())
+    hour = data.get("manual_pay_hour", 0)
+    minute = data.get("manual_pay_minute", 0)
+
+    profile = await transactions.get_student_profile(telegram_id)
+    try:
+        if text and text.lower() not in ("х", "x"):
+            amount = int(text)
+        else:
+            amount = profile.price if profile and profile.price is not None else 0
+        if amount < 0:
+            raise ValueError
+    except Exception:
+        await message.answer("Нужно указать сумму числом или введите 'х', если в профиле задана цена.")
+        return
+
+    pay = await transactions.add_payment(
+        telegram_id=telegram_id,
+        full_name=profile.full_name if profile else None,
+        lesson_date=date_val,
+        hour=hour,
+        minute=minute,
+        duration_minutes=SLOT_DURATION_MINUTES,
+        amount=amount,
+        status="paid",
+        source="manual",
+    )
+    await message.answer(
+        f"Оплата добавлена: {date_val} {hour:02d}:{minute:02d}, сумма {amount} ₽. ID платежа {pay.id}."
+    )
     await state.clear()
