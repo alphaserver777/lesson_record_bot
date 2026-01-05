@@ -12,3 +12,14 @@ def rec_del_button(callback) -> InlineKeyboardMarkup:
     keyboard_builder.button(text="Удалить", callback_data=callback)
     keyboard_builder.adjust(1)
     return keyboard_builder.as_markup()
+
+
+def rec_actions_button(del_callback: str, edit_callback: str) -> InlineKeyboardMarkup:
+    """
+    Клавиатура с действиями над записью: удалить или изменить.
+    """
+    keyboard_builder = InlineKeyboardBuilder()
+    keyboard_builder.button(text="Удалить", callback_data=del_callback)
+    keyboard_builder.button(text="Изменить", callback_data=edit_callback)
+    keyboard_builder.adjust(2)
+    return keyboard_builder.as_markup()

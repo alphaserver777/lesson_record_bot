@@ -31,6 +31,8 @@ async def _handle_presence(callback: types.CallbackQuery, status_text: str):
 
     user = callback.from_user
     username = f"@{user.username}" if user.username else f"tg://user?id={user.id}"
+    profile = await transactions.get_student_profile(user.id)
+    display_name = profile.full_name if profile and profile.full_name else user.full_name or username
     time_text = f"{hour:02d}:{minute:02d}"
 
     await callback.message.answer(f"Спасибо! Отметили, что вы {status_text} на {time_text} ({date.day:02d}-{date.month:02d}).")
@@ -44,7 +46,7 @@ async def _handle_presence(callback: types.CallbackQuery, status_text: str):
 
     admin_msg = (
         f"Ответ по занятию {date.day:02d}-{date.month:02d} в {time_text}:\n"
-        f"{username} {status_text}"
+        f"{display_name} ({username}) {status_text}"
     )
     for admin_id in ADMINS_TELEGRAM_ID:
         try:

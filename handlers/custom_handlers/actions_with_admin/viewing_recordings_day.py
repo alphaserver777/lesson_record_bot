@@ -6,7 +6,7 @@ from aiogram import types
 from database import transactions
 from keyboards.inline.back_admin_menu import back_admin_menu_button
 from keyboards.inline.calendar_v1 import calendar_buttons
-from keyboards.inline.rec_del import rec_del_button
+from keyboards.inline.rec_del import rec_actions_button
 
 
 async def viewing_recordings_day_1(message: [types.CallbackQuery, types.Message]):
@@ -44,7 +44,9 @@ async def viewing_recordings_day_2(message: [types.CallbackQuery, types.Message]
             time_text = f"{user[2]:02d}:{user[3]:02d}"
             kind = user[4] if len(user) > 4 else "Неизвестно"
             callback_rec_del_button = f"confirm_yes_no=rec_del_with_day={selected_date}={user[2]}_{user[3]}"
-            kb_rec_del = rec_del_button(callback_rec_del_button)
+            telegram_id = user[5]
+            callback_rec_edit = f"rec_edit={selected_date}={user[2]}_{user[3]}={telegram_id}"
+            kb_rec_del = rec_actions_button(callback_rec_del_button, callback_rec_edit)
             await message.message.answer(
                 f"""Клиент: {user[0]}
 Телефон: {user[1]}

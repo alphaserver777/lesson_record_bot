@@ -222,10 +222,22 @@ async def mark_presence_status(
             RecordDate.minute == minute,
         ).order_by(RecordDate.id.asc())
     )
-    rec_obj = rec.scalar_one_or_none()
+    rec_obj = rec.scalars().first()
     if rec_obj:
         rec_obj.presence_status = status
         rec_obj.presence_last_reminder = datetime.datetime.now().isoformat()
+        # Чистим дубликаты, если есть
+        dupes = await session.execute(
+            select(RecordDate).where(
+                RecordDate.telegram_id == telegram_id,
+                RecordDate.record_date == date,
+                RecordDate.hour == hour,
+                RecordDate.minute == minute,
+                RecordDate.id != rec_obj.id,
+            )
+        )
+        for dup in dupes.scalars():
+            await session.delete(dup)
         await session.commit()
 
 
@@ -864,7 +876,7 @@ async def viewing_recordings_day_db(date: datetime, show_blocks: bool = False) -
             RecordDate.record_date == target_date,
             RecordDate.telegram_id.is_(None),
             (
-                (RecordDate.kind == "block")
+                (RecordDate.kind.in_(["block", "allow"]))
                 | ((RecordDate.kind.is_(None)) & (RecordDate.event_id.is_(None)))
             ),
         )
@@ -880,6 +892,7 @@ async def viewing_recordings_day_db(date: datetime, show_blocks: bool = False) -
             RecordDate.telegram_id,
             RecordDate.event_id,
             RecordDate.kind,
+            RecordDate.duration_minutes,
         )
         .join(StudentProfile, StudentProfile.telegram_id == RecordDate.telegram_id)
         .where(RecordDate.record_date == target_date)
@@ -891,10 +904,12 @@ async def viewing_recordings_day_db(date: datetime, show_blocks: bool = False) -
         if getattr(row, "kind", None) == "block":
             continue
         key = (row.telegram_id, row.hour, row.minute)
+        if key in seen_slots:
+            continue
         seen_slots.add(key)
         kind_raw = getattr(row, "kind", None)
         kind = "Регулярное" if kind_raw == "regular" else "Разовое"
-        result.append((row.full_name, row.telephone, row.hour, row.minute, kind))
+        result.append((row.full_name, row.telephone, row.hour, row.minute, kind, row.telegram_id, row.duration_minutes or SLOT_DURATION_MINUTES))
 
     weekday = target_date.weekday()
     regulars = await session.execute(
@@ -920,7 +935,7 @@ async def viewing_recordings_day_db(date: datetime, show_blocks: bool = False) -
         seen_reg_slots.add(key)
         if key in seen_slots:
             continue
-        result.append((row.full_name or "Регулярное занятие", row.telephone, row.hour, row.minute, "Регулярное"))
+        result.append((row.full_name or "Регулярное занятие", row.telephone, row.hour, row.minute, "Регулярное", row.telegram_id, row.duration_minutes or SLOT_DURATION_MINUTES))
 
     # Добавляем информацию о блоках (для админов) с реальным временем
     if show_blocks and blocked_times:
@@ -959,6 +974,104 @@ async def get_info_user(date: datetime, hour: int, minute: int) -> Any:
     if reg_row:
         return (reg_row[0], "regular")
     return None
+
+
+async def get_record_slot_info(
+    telegram_id: int,
+    date: datetime.date,
+    hour: int,
+    minute: int,
+) -> tuple[str, int] | None:
+    """
+    Возвращает тип слота (single/regular) и длительность.
+    """
+    res = await session.execute(
+        select(RecordDate).where(
+            RecordDate.telegram_id == telegram_id,
+            RecordDate.record_date == date,
+            RecordDate.hour == hour,
+            RecordDate.minute == minute,
+        )
+    )
+    rec = res.scalar_one_or_none()
+    if rec:
+        kind = rec.kind or "single"
+        duration = rec.duration_minutes or SLOT_DURATION_MINUTES
+        if kind in ("block", "allow"):
+            return None
+        return (kind, duration)
+
+    weekday = date.weekday()
+    reg = await session.execute(
+        select(RegularLesson.duration_minutes).where(
+            RegularLesson.telegram_id == telegram_id,
+            RegularLesson.day_of_week == weekday,
+            RegularLesson.hour == hour,
+            RegularLesson.minute == minute,
+        )
+    )
+    reg_row = reg.scalar_one_or_none()
+    if reg_row is not None:
+        return ("regular", reg_row or SLOT_DURATION_MINUTES)
+    return None
+
+
+async def reschedule_single_slot(
+    telegram_id: int,
+    old_date: datetime.date,
+    old_hour: int,
+    old_minute: int,
+    new_date: datetime.date,
+    new_hour: int,
+    new_minute: int,
+) -> bool:
+    """
+    Перенос разовой записи на новый слот.
+    """
+    res = await session.execute(
+        select(RecordDate).where(
+            RecordDate.telegram_id == telegram_id,
+            RecordDate.record_date == old_date,
+            RecordDate.hour == old_hour,
+            RecordDate.minute == old_minute,
+        )
+    )
+    record = res.scalar_one_or_none()
+    if not record:
+        return False
+
+    duration = record.duration_minutes or SLOT_DURATION_MINUTES
+    profile = await session.get(StudentProfile, telegram_id)
+    summary_text = _build_event_summary(profile.full_name if profile else None, "single")
+
+    await delete_events([record.event_id])
+    try:
+        await delete_events_in_range(old_date, old_hour, old_minute, duration)
+    except Exception:
+        pass
+
+    try:
+        event_id = await create_simple_event(
+            new_date,
+            new_hour,
+            new_minute,
+            duration,
+            summary=summary_text,
+            telegram_id=telegram_id,
+            kind="single",
+        )
+    except GoogleCalendarError:
+        return False
+
+    record.record_date = new_date
+    record.hour = new_hour
+    record.minute = new_minute
+    record.kind = "single"
+    record.event_id = event_id
+    record.presence_status = None
+    record.presence_last_reminder = None
+    await session.commit()
+    return True
 
 
 async def records_starting_at(date: datetime.date, hour: int, minute: int) -> list[Any]:

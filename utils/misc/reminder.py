@@ -103,9 +103,6 @@ async def send_presence_prompts(date: datetime.date, force_pending: bool = False
             continue
         if presence_status in ("yes", "no"):
             continue
-        if not force_pending and presence_status == "pending":
-            # Уже ожидание — напомним повторно
-            pass
         key = (user_id, hour, minute)
         if key in seen:
             continue
@@ -118,6 +115,7 @@ async def send_presence_prompts(date: datetime.date, force_pending: bool = False
                 text=f"Напоминаю: сегодня занятие в {time_text}. Пожалуйста, подтвердите присутствие.",
                 reply_markup=kb,
             )
+            logger.info("Отправлено напоминание о присутствии user=%s date=%s time=%s", user_id, date, time_text)
         except Exception:
             pass
         await transactions.mark_presence_status(user_id, date, hour, minute, "pending")

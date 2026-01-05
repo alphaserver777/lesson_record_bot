@@ -75,3 +75,10 @@ class AdminManualPaymentState(StatesGroup):
     date = State()
     time = State()
     amount = State()
+
+
+class AdminEditOccurrenceState(StatesGroup):
+    """Перенос/изменение одного занятия (без изменения регулярки)."""
+
+    new_date = State()
+    new_time = State()
