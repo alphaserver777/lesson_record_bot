@@ -82,3 +82,4 @@ class AdminEditOccurrenceState(StatesGroup):
 
     new_date = State()
     new_time = State()
+    new_duration = State()

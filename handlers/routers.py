@@ -35,6 +35,7 @@ from handlers.custom_handlers.actions_with_admin.edit_rec_day import (
     edit_record_day_1,
     edit_record_day_2,
     edit_record_day_3,
+    edit_record_day_4,
 )
 from handlers.custom_handlers.actions_with_admin.del_user import delete_user
 from handlers.custom_handlers.actions_with_admin.reserve_day import (
@@ -175,6 +176,7 @@ def register_routers(router: Router):
     router.callback_query.register(edit_record_day_1, F.data.startswith("rec_edit="))
     router.message.register(edit_record_day_2, AdminEditOccurrenceState.new_date)
     router.message.register(edit_record_day_3, AdminEditOccurrenceState.new_time)
+    router.message.register(edit_record_day_4, AdminEditOccurrenceState.new_duration)
 
     router.callback_query.register(search_client_1, F.data == "search_client")
     router.message.register(search_client_2, ServiceDateState.search_client)

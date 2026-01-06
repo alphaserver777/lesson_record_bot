@@ -43,6 +43,10 @@ async def viewing_recordings_day_2(message: [types.CallbackQuery, types.Message]
         for user in res:
             time_text = f"{user[2]:02d}:{user[3]:02d}"
             kind = user[4] if len(user) > 4 else "Неизвестно"
+            duration = user[6] if len(user) > 6 else None
+            username = user[7] if len(user) > 7 else None
+            username_text = f"@{username}" if username else "—"
+            duration_text = f"{duration} мин" if duration else "—"
             callback_rec_del_button = f"confirm_yes_no=rec_del_with_day={selected_date}={user[2]}_{user[3]}"
             telegram_id = user[5]
             callback_rec_edit = f"rec_edit={selected_date}={user[2]}_{user[3]}={telegram_id}"
@@ -50,8 +54,10 @@ async def viewing_recordings_day_2(message: [types.CallbackQuery, types.Message]
             await message.message.answer(
                 f"""Клиент: {user[0]}
 Телефон: {user[1]}
+Username: {username_text}
 Тип: {kind}
 Записан на {time_text}
+Длительность: {duration_text}
 """,
                 reply_markup=kb_rec_del
             )

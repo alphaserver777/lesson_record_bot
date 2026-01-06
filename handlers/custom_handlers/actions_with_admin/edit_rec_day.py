@@ -71,17 +71,16 @@ async def edit_record_day_2(message: types.Message, state: FSMContext) -> None:
 
 
 async def edit_record_day_3(message: types.Message, state: FSMContext) -> None:
-    """Принимает новое время и переносит запись."""
+    """Принимает новое время и спрашивает длительность."""
     text = (message.text or "").strip().lower()
     data = await state.get_data()
 
     old_date = data.get("edit_date")
     old_hour = data.get("edit_hour")
     old_minute = data.get("edit_minute")
-    telegram_id = data.get("edit_telegram_id")
     new_date = data.get("edit_new_date", old_date)
 
-    if old_date is None or old_hour is None or old_minute is None or telegram_id is None:
+    if old_date is None or old_hour is None or old_minute is None:
         await message.answer("Не удалось определить запись.")
         await state.clear()
         return
@@ -95,11 +94,42 @@ async def edit_record_day_3(message: types.Message, state: FSMContext) -> None:
             await message.answer("Неверный формат времени. Используйте ЧЧ:ММ.")
             return
 
+    await state.update_data(edit_new_hour=new_hour, edit_new_minute=new_minute)
+    await state.set_state(AdminEditOccurrenceState.new_duration)
+    await message.answer("Введите длительность занятия в минутах или \"х\", чтобы оставить прежнюю.")
+
+
+async def edit_record_day_4(message: types.Message, state: FSMContext) -> None:
+    """Принимает длительность и переносит запись."""
+    text = (message.text or "").strip().lower()
+    data = await state.get_data()
+
+    old_date = data.get("edit_date")
+    old_hour = data.get("edit_hour")
+    old_minute = data.get("edit_minute")
+    telegram_id = data.get("edit_telegram_id")
+    new_date = data.get("edit_new_date", old_date)
+    new_hour = data.get("edit_new_hour", old_hour)
+    new_minute = data.get("edit_new_minute", old_minute)
+
+    if old_date is None or old_hour is None or old_minute is None or telegram_id is None:
+        await message.answer("Не удалось определить запись.")
+        await state.clear()
+        return
+
     if (new_date, new_hour, new_minute) != (old_date, old_hour, old_minute):
         slot = await transactions.get_info_user(new_date, new_hour, new_minute)
         if slot:
             await message.answer("Этот слот уже занят. Выберите другое время.")
             await state.clear()
+            return
+
+    new_duration = None
+    if text not in ("х", "x", ""):
+        try:
+            new_duration = int(text)
+        except ValueError:
+            await message.answer("Неверная длительность. Введите число минут.")
             return
 
     slot_info = await transactions.get_record_slot_info(
@@ -111,6 +141,8 @@ async def edit_record_day_3(message: types.Message, state: FSMContext) -> None:
         return
 
     kind, duration = slot_info
+    if new_duration:
+        duration = new_duration
     ok = False
     try:
         if kind == "regular":
@@ -133,6 +165,7 @@ async def edit_record_day_3(message: types.Message, state: FSMContext) -> None:
                 new_date,
                 new_hour,
                 new_minute,
+                duration_minutes=duration,
             )
     except Exception as exc:  # pylint: disable=broad-except
         logger.exception("Ошибка переноса записи: %s", exc)

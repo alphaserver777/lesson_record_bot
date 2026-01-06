@@ -887,6 +887,7 @@ async def viewing_recordings_day_db(date: datetime, show_blocks: bool = False) -
         select(
             StudentProfile.full_name,
             StudentProfile.telephone,
+            StudentProfile.telegram_username,
             RecordDate.hour,
             RecordDate.minute,
             RecordDate.telegram_id,
@@ -909,13 +910,23 @@ async def viewing_recordings_day_db(date: datetime, show_blocks: bool = False) -
         seen_slots.add(key)
         kind_raw = getattr(row, "kind", None)
         kind = "Регулярное" if kind_raw == "regular" else "Разовое"
-        result.append((row.full_name, row.telephone, row.hour, row.minute, kind, row.telegram_id, row.duration_minutes or SLOT_DURATION_MINUTES))
+        result.append((
+            row.full_name,
+            row.telephone,
+            row.hour,
+            row.minute,
+            kind,
+            row.telegram_id,
+            row.duration_minutes or SLOT_DURATION_MINUTES,
+            row.telegram_username,
+        ))
 
     weekday = target_date.weekday()
     regulars = await session.execute(
         select(
             StudentProfile.full_name,
             StudentProfile.telephone,
+            StudentProfile.telegram_username,
             RegularLesson.hour,
             RegularLesson.minute,
             RegularLesson.telegram_id,
@@ -935,12 +946,21 @@ async def viewing_recordings_day_db(date: datetime, show_blocks: bool = False) -
         seen_reg_slots.add(key)
         if key in seen_slots:
             continue
-        result.append((row.full_name or "Регулярное занятие", row.telephone, row.hour, row.minute, "Регулярное", row.telegram_id, row.duration_minutes or SLOT_DURATION_MINUTES))
+        result.append((
+            row.full_name or "Регулярное занятие",
+            row.telephone,
+            row.hour,
+            row.minute,
+            "Регулярное",
+            row.telegram_id,
+            row.duration_minutes or SLOT_DURATION_MINUTES,
+            row.telegram_username,
+        ))
 
     # Добавляем информацию о блоках (для админов) с реальным временем
     if show_blocks and blocked_times:
         for (bh, bm), note in sorted(blocked_times.items(), key=lambda x: (x[0][0], x[0][1])):
-            result.append(("Резерв администратора", "", bh, bm, "Блок", note or "День недоступен"))
+            result.append(("Резерв администратора", "", bh, bm, "Блок", note or "День недоступен", None, None))
 
     return sorted(result, key=lambda r: (r[2], r[3]))
 
@@ -1024,6 +1044,7 @@ async def reschedule_single_slot(
     new_date: datetime.date,
     new_hour: int,
     new_minute: int,
+    duration_minutes: int | None = None,
 ) -> bool:
     """
     Перенос разовой записи на новый слот.
@@ -1040,7 +1061,7 @@ async def reschedule_single_slot(
     if not record:
         return False
 
-    duration = record.duration_minutes or SLOT_DURATION_MINUTES
+    duration = duration_minutes or record.duration_minutes or SLOT_DURATION_MINUTES
     profile = await session.get(StudentProfile, telegram_id)
     summary_text = _build_event_summary(profile.full_name if profile else None, "single")
 
@@ -1068,6 +1089,7 @@ async def reschedule_single_slot(
     record.minute = new_minute
     record.kind = "single"
     record.event_id = event_id
+    record.duration_minutes = duration
     record.presence_status = None
     record.presence_last_reminder = None
     await session.commit()
@@ -1152,7 +1174,13 @@ async def lessons_for_date(date: datetime.date) -> list[Any]:
     for row in single:
         key = (row.telegram_id, row.hour, row.minute)
         seen_slots.add(key)
-        result.append((row.telegram_id, row.hour, row.minute, row.duration_minutes, row.kind or "single"))
+        result.append((
+            row.telegram_id,
+            row.hour,
+            row.minute,
+            row.duration_minutes or SLOT_DURATION_MINUTES,
+            row.kind or "single",
+        ))
 
     weekday = date.weekday()
     regular = await session.execute(
@@ -1167,7 +1195,13 @@ async def lessons_for_date(date: datetime.date) -> list[Any]:
         key = (row.telegram_id, row.hour, row.minute)
         if key in seen_slots:
             continue
-        result.append((row.telegram_id, row.hour, row.minute, row.duration_minutes, "regular"))
+        result.append((
+            row.telegram_id,
+            row.hour,
+            row.minute,
+            row.duration_minutes or SLOT_DURATION_MINUTES,
+            "regular",
+        ))
 
     return result
 

@@ -1,6 +1,7 @@
 """Модуль перезапуска сервисов."""
 import asyncio
 import datetime
+import logging
 
 from config_data.config import LOCAL_UTC, REMINDER_TIME
 from database import transactions
@@ -11,6 +12,8 @@ from config_data.config import ADMINS_TELEGRAM_ID
 from loader import bot
 from database.transactions import add_payment, change_balance, get_student_profile, get_lesson_kind, find_payment
 from utils.schedule import SLOT_DURATION_MINUTES
+
+logger = logging.getLogger(__name__)
 
 
 async def restarting_services() -> None:
@@ -67,87 +70,69 @@ async def restarting_services() -> None:
         # Уведомление об оплате по окончании слота
         lessons_today = await transactions.lessons_for_date(region_time.date())
         for user_id, hour, minute, duration, kind_flag in lessons_today:
-            end_time = datetime.datetime.combine(region_time.date(), datetime.time(hour, minute), tzinfo=get_calendar_tz()) + datetime.timedelta(minutes=duration)
+            if not user_id:
+                continue
+            duration = duration or SLOT_DURATION_MINUTES
+            end_time = datetime.datetime.combine(
+                region_time.date(),
+                datetime.time(hour, minute),
+                tzinfo=get_calendar_tz(),
+            ) + datetime.timedelta(minutes=duration)
             delta_seconds = (region_time - end_time).total_seconds()
-            if delta_seconds < 0 or delta_seconds >= 300:
+            if delta_seconds < 0 or delta_seconds >= 6 * 3600:
                 continue
             # Не дублируем платеж, если уже есть
             existing_payment = await find_payment(user_id, region_time.date(), hour, minute)
             if existing_payment:
                 continue
-                date_str = region_time.date().isoformat()
-                time_str = f"{hour:02d}_{minute:02d}"
-                profile = await get_student_profile(user_id) if user_id else None
-                student_name = profile.full_name if profile else "Ученик"
+            date_str = region_time.date().isoformat()
+            time_str = f"{hour:02d}_{minute:02d}"
+            profile = await get_student_profile(user_id) if user_id else None
+            student_name = profile.full_name if profile else "Ученик"
 
-                kind = kind_flag or await get_lesson_kind(region_time.date(), hour, minute, user_id)
-                kind_text = "регулярное" if kind == "regular" else "разовое" if kind == "single" else "неизвестно"
-                price_value = profile.price if profile else None
-                # Корректируем стоимость по длительности занятия (множитель от базового слота)
-                factor = 1
-                if price_value is not None and duration:
-                    factor = max(1, (duration + SLOT_DURATION_MINUTES - 1) // SLOT_DURATION_MINUTES)
-                    price_value = price_value * factor
-                price_text = f"{price_value} ₽" if price_value is not None else "не указана"
-                profile_link = f'<a href="tg://user?id={user_id}">профиль</a>' if user_id else ""
-                username_note = f" (@{profile.notes.split('@',1)[1].strip()})" if profile and profile.notes and '@' in profile.notes else ""
+            kind = kind_flag or await get_lesson_kind(region_time.date(), hour, minute, user_id)
+            kind_text = "регулярное" if kind == "regular" else "разовое" if kind == "single" else "неизвестно"
+            price_value = profile.price if profile else None
+            # Корректируем стоимость по длительности занятия (множитель от базового слота)
+            factor = 1
+            if price_value is not None and duration:
+                factor = max(1, (duration + SLOT_DURATION_MINUTES - 1) // SLOT_DURATION_MINUTES)
+                price_value = price_value * factor
+            price_text = f"{price_value} ₽" if price_value is not None else "не указана"
+            profile_link = f'<a href="tg://user?id={user_id}">профиль</a>' if user_id else ""
+            username_note = f" (@{profile.notes.split('@',1)[1].strip()})" if profile and profile.notes and '@' in profile.notes else ""
+            logger.info("Запрос оплаты: user=%s date=%s time=%s duration=%s", user_id, region_time.date(), time_str, duration)
 
-                balance_amount = profile.balance_lessons if profile else 0
-                if profile and balance_amount > 0 and price_value and price_value > 0:
-                    paid_from_balance = min(balance_amount, price_value)
-                    await change_balance(user_id, -paid_from_balance)
-                    new_balance = balance_amount - paid_from_balance
-                    remaining_amount = price_value - paid_from_balance
+            balance_amount = profile.balance_lessons if profile else 0
+            if profile and balance_amount > 0 and price_value and price_value > 0:
+                paid_from_balance = min(balance_amount, price_value)
+                await change_balance(user_id, -paid_from_balance)
+                new_balance = balance_amount - paid_from_balance
+                remaining_amount = price_value - paid_from_balance
 
-                    if remaining_amount <= 0:
-                        await add_payment(
-                            telegram_id=user_id,
-                            full_name=student_name,
-                            lesson_date=region_time.date(),
-                            hour=hour,
-                            minute=minute,
-                            duration_minutes=duration,
-                            amount=price_value,
-                            status="paid",
-                            source="balance",
+                if remaining_amount <= 0:
+                    await add_payment(
+                        telegram_id=user_id,
+                        full_name=student_name,
+                        lesson_date=region_time.date(),
+                        hour=hour,
+                        minute=minute,
+                        duration_minutes=duration,
+                        amount=price_value,
+                        status="paid",
+                        source="balance",
+                    )
+                    for admin_id in ADMINS_TELEGRAM_ID:
+                        await bot.send_message(
+                            chat_id=admin_id,
+                            text=(
+                                f"{student_name}{username_note} {profile_link}\n"
+                                f"Тип: {kind_text}\n"
+                                f"Дата/время: {region_time.date().isoformat()} {hour:02d}:{minute:02d} ({duration} мин)\n"
+                                f"Оплачено с баланса: {paid_from_balance} ₽. Остаток: {new_balance} ₽."
+                            ),
                         )
-                        for admin_id in ADMINS_TELEGRAM_ID:
-                            await bot.send_message(
-                                chat_id=admin_id,
-                                text=(
-                                    f"{student_name}{username_note} {profile_link}\n"
-                                    f"Тип: {kind_text}\n"
-                                    f"Дата/время: {region_time.date().isoformat()} {hour:02d}:{minute:02d} ({duration} мин)\n"
-                                    f"Оплачено с баланса: {paid_from_balance} ₽. Остаток: {new_balance} ₽."
-                                ),
-                            )
-                    else:
-                        pay = await add_payment(
-                            telegram_id=user_id,
-                            full_name=student_name,
-                            lesson_date=region_time.date(),
-                            hour=hour,
-                            minute=minute,
-                            duration_minutes=duration,
-                            amount=remaining_amount,
-                            status="unpaid",
-                            source="balance+manual",
-                        )
-                        kb = payment_confirm_kb(payment_id=pay.id, date_str=date_str, time_str=time_str, duration=duration)
-                        for admin_id in ADMINS_TELEGRAM_ID:
-                            await bot.send_message(
-                                chat_id=admin_id,
-                                text=(
-                                    f"{student_name}{username_note} {profile_link}\n"
-                                    f"Тип: {kind_text}\n"
-                                    f"Дата/время: {region_time.date().isoformat()} {hour:02d}:{minute:02d} ({duration} мин)\n"
-                                    f"Часть оплачено с баланса: {paid_from_balance} ₽. К доплате: {remaining_amount} ₽.\n"
-                                    f"Баланс после списания: {new_balance} ₽."
-                                ),
-                                reply_markup=kb
-                            )
                 else:
-                    current_balance = balance_amount
                     pay = await add_payment(
                         telegram_id=user_id,
                         full_name=student_name,
@@ -155,9 +140,9 @@ async def restarting_services() -> None:
                         hour=hour,
                         minute=minute,
                         duration_minutes=duration,
-                        amount=price_value if price_value is not None else None,
+                        amount=remaining_amount,
                         status="unpaid",
-                        source="manual",
+                        source="balance+manual",
                     )
                     kb = payment_confirm_kb(payment_id=pay.id, date_str=date_str, time_str=time_str, duration=duration)
                     for admin_id in ADMINS_TELEGRAM_ID:
@@ -167,11 +152,37 @@ async def restarting_services() -> None:
                                 f"{student_name}{username_note} {profile_link}\n"
                                 f"Тип: {kind_text}\n"
                                 f"Дата/время: {region_time.date().isoformat()} {hour:02d}:{minute:02d} ({duration} мин)\n"
-                                f"Сумма к оплате: {price_text}\n"
-                                f"Баланс: {current_balance} ₽\n"
-                                "Оплата получена?"
+                                f"Часть оплачено с баланса: {paid_from_balance} ₽. К доплате: {remaining_amount} ₽.\n"
+                                f"Баланс после списания: {new_balance} ₽."
                             ),
                             reply_markup=kb
                         )
+            else:
+                current_balance = balance_amount
+                pay = await add_payment(
+                    telegram_id=user_id,
+                    full_name=student_name,
+                    lesson_date=region_time.date(),
+                    hour=hour,
+                    minute=minute,
+                    duration_minutes=duration,
+                    amount=price_value if price_value is not None else None,
+                    status="unpaid",
+                    source="manual",
+                )
+                kb = payment_confirm_kb(payment_id=pay.id, date_str=date_str, time_str=time_str, duration=duration)
+                for admin_id in ADMINS_TELEGRAM_ID:
+                    await bot.send_message(
+                        chat_id=admin_id,
+                        text=(
+                            f"{student_name}{username_note} {profile_link}\n"
+                            f"Тип: {kind_text}\n"
+                            f"Дата/время: {region_time.date().isoformat()} {hour:02d}:{minute:02d} ({duration} мин)\n"
+                            f"Сумма к оплате: {price_text}\n"
+                            f"Баланс: {current_balance} ₽\n"
+                            "Оплата получена?"
+                        ),
+                        reply_markup=kb
+                    )
 
         await asyncio.sleep(60)
