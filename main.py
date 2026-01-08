@@ -1,5 +1,7 @@
 """ Модуль запуска телеграмм бота."""
 import asyncio
+import logging
+import os
 
 from aiogram import Bot, Dispatcher
 
@@ -32,4 +34,9 @@ async def main(bot: Bot, dp: Dispatcher) -> None:
 
 
 if __name__ == "__main__":
+    level_name = os.getenv("LOG_LEVEL", "INFO").upper()
+    logging.basicConfig(
+        level=getattr(logging, level_name, logging.INFO),
+        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+    )
     asyncio.run(main(bot, dp))

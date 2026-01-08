@@ -135,15 +135,19 @@ async def restarting_services() -> None:
                         source="balance",
                     )
                     for admin_id in ADMINS_TELEGRAM_ID:
-                        await bot.send_message(
-                            chat_id=admin_id,
-                            text=(
-                                f"{student_name}{username_note} {profile_link}\n"
-                                f"Тип: {kind_text}\n"
-                                f"Дата/время: {region_time.date().isoformat()} {hour:02d}:{minute:02d} ({duration} мин)\n"
-                                f"Оплачено с баланса: {paid_from_balance} ₽. Остаток: {new_balance} ₽."
-                            ),
-                        )
+                        try:
+                            await bot.send_message(
+                                chat_id=admin_id,
+                                text=(
+                                    f"{student_name}{username_note} {profile_link}\n"
+                                    f"Тип: {kind_text}\n"
+                                    f"Дата/время: {region_time.date().isoformat()} {hour:02d}:{minute:02d} ({duration} мин)\n"
+                                    f"Оплачено с баланса: {paid_from_balance} ₽. Остаток: {new_balance} ₽."
+                                ),
+                            )
+                            logger.info("Отправлено уведомление об оплате admin=%s user=%s date=%s time=%s", admin_id, user_id, region_time.date(), time_str)
+                        except Exception as exc:
+                            logger.warning("Не удалось отправить уведомление об оплате админу %s: %s", admin_id, exc)
                 else:
                     pay = await add_payment(
                         telegram_id=user_id,
@@ -158,17 +162,21 @@ async def restarting_services() -> None:
                     )
                     kb = payment_confirm_kb(payment_id=pay.id, date_str=date_str, time_str=time_str, duration=duration)
                     for admin_id in ADMINS_TELEGRAM_ID:
-                        await bot.send_message(
-                            chat_id=admin_id,
-                            text=(
-                                f"{student_name}{username_note} {profile_link}\n"
-                                f"Тип: {kind_text}\n"
-                                f"Дата/время: {region_time.date().isoformat()} {hour:02d}:{minute:02d} ({duration} мин)\n"
-                                f"Часть оплачено с баланса: {paid_from_balance} ₽. К доплате: {remaining_amount} ₽.\n"
-                                f"Баланс после списания: {new_balance} ₽."
-                            ),
-                            reply_markup=kb
-                        )
+                        try:
+                            await bot.send_message(
+                                chat_id=admin_id,
+                                text=(
+                                    f"{student_name}{username_note} {profile_link}\n"
+                                    f"Тип: {kind_text}\n"
+                                    f"Дата/время: {region_time.date().isoformat()} {hour:02d}:{minute:02d} ({duration} мин)\n"
+                                    f"Часть оплачено с баланса: {paid_from_balance} ₽. К доплате: {remaining_amount} ₽.\n"
+                                    f"Баланс после списания: {new_balance} ₽."
+                                ),
+                                reply_markup=kb
+                            )
+                            logger.info("Отправлен запрос доплаты admin=%s user=%s date=%s time=%s", admin_id, user_id, region_time.date(), time_str)
+                        except Exception as exc:
+                            logger.warning("Не удалось отправить запрос доплаты админу %s: %s", admin_id, exc)
             else:
                 current_balance = balance_amount
                 pay = await add_payment(
@@ -184,18 +192,22 @@ async def restarting_services() -> None:
                 )
                 kb = payment_confirm_kb(payment_id=pay.id, date_str=date_str, time_str=time_str, duration=duration)
                 for admin_id in ADMINS_TELEGRAM_ID:
-                    await bot.send_message(
-                        chat_id=admin_id,
-                        text=(
-                            f"{student_name}{username_note} {profile_link}\n"
-                            f"Тип: {kind_text}\n"
-                            f"Дата/время: {region_time.date().isoformat()} {hour:02d}:{minute:02d} ({duration} мин)\n"
-                            f"Сумма к оплате: {price_text}\n"
-                            f"Баланс: {current_balance} ₽\n"
-                            "Оплата получена?"
-                        ),
-                        reply_markup=kb
-                    )
+                    try:
+                        await bot.send_message(
+                            chat_id=admin_id,
+                            text=(
+                                f"{student_name}{username_note} {profile_link}\n"
+                                f"Тип: {kind_text}\n"
+                                f"Дата/время: {region_time.date().isoformat()} {hour:02d}:{minute:02d} ({duration} мин)\n"
+                                f"Сумма к оплате: {price_text}\n"
+                                f"Баланс: {current_balance} ₽\n"
+                                "Оплата получена?"
+                            ),
+                            reply_markup=kb
+                        )
+                        logger.info("Отправлен запрос оплаты admin=%s user=%s date=%s time=%s", admin_id, user_id, region_time.date(), time_str)
+                    except Exception as exc:
+                        logger.warning("Не удалось отправить запрос оплаты админу %s: %s", admin_id, exc)
 
         # Ежедневный и недельный финансовый отчёт в 23:00
         if region_time.hour == 23 and region_time.minute == 0:
@@ -211,7 +223,11 @@ async def restarting_services() -> None:
                     f"К оплате: {unpaid_total} ₽"
                 )
                 for admin_id in ADMINS_TELEGRAM_ID:
-                    await bot.send_message(chat_id=admin_id, text=report_text)
+                    try:
+                        await bot.send_message(chat_id=admin_id, text=report_text)
+                        logger.info("Отправлен дневной отчет admin=%s date=%s", admin_id, today)
+                    except Exception as exc:
+                        logger.warning("Не удалось отправить дневной отчет админу %s: %s", admin_id, exc)
                 daily_report_sent = today
 
             if today.weekday() == 6 and weekly_report_sent != today:
@@ -234,7 +250,11 @@ async def restarting_services() -> None:
                     f"К оплате: {unpaid_total} ₽"
                 )
                 for admin_id in ADMINS_TELEGRAM_ID:
-                    await bot.send_photo(chat_id=admin_id, photo=chart_file, caption=report_text)
+                    try:
+                        await bot.send_photo(chat_id=admin_id, photo=chart_file, caption=report_text)
+                        logger.info("Отправлен недельный отчет admin=%s date=%s", admin_id, today)
+                    except Exception as exc:
+                        logger.warning("Не удалось отправить недельный отчет админу %s: %s", admin_id, exc)
                 weekly_report_sent = today
 
         await asyncio.sleep(60)

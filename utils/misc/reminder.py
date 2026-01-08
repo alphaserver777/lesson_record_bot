@@ -1,5 +1,6 @@
 """Модуль напоминая о записи"""
 import datetime
+import logging
 
 from loader import bot
 
@@ -9,6 +10,7 @@ from keyboards.inline.presence_confirm import presence_confirm_kb
 from utils.schedule import SLOT_DURATION_MINUTES
 from utils.google_calendar import get_calendar_tz
 
+logger = logging.getLogger(__name__)
 
 async def reminder(date: datetime) -> None:
     """
@@ -67,8 +69,9 @@ async def reminder_before_delta(target_datetime: datetime.datetime, delta_minute
                 chat_id=telegram_id,
                 text=f"{lead_text} ваша запись в {time_text}.",
             )
-        except Exception:
-            pass
+            logger.info("Напоминание пользователю отправлено user=%s date=%s time=%s", telegram_id, target_datetime.date(), time_text)
+        except Exception as exc:
+            logger.warning("Не удалось отправить напоминание пользователю %s: %s", telegram_id, exc)
 
         admin_text = (
             f"{lead_text}: {full_name or telegram_id} в {time_text}."
@@ -76,7 +79,11 @@ async def reminder_before_delta(target_datetime: datetime.datetime, delta_minute
             f" <a href=\"tg://user?id={telegram_id}\">Написать клиенту</a>"
         )
         for admin_id in ADMINS_TELEGRAM_ID:
-            await bot.send_message(chat_id=admin_id, text=admin_text, parse_mode="HTML")
+            try:
+                await bot.send_message(chat_id=admin_id, text=admin_text, parse_mode="HTML")
+                logger.info("Напоминание админу отправлено admin=%s user=%s date=%s time=%s", admin_id, telegram_id, target_datetime.date(), time_text)
+            except Exception as exc:
+                logger.warning("Не удалось отправить напоминание админу %s: %s", admin_id, exc)
 
 
 async def send_presence_prompts(date: datetime.date, force_pending: bool = False) -> None:
@@ -115,7 +122,7 @@ async def send_presence_prompts(date: datetime.date, force_pending: bool = False
                 text=f"Напоминаю: сегодня занятие в {time_text}. Пожалуйста, подтвердите присутствие.",
                 reply_markup=kb,
             )
-            logger.info("Отправлено напоминание о присутствии user=%s date=%s time=%s", user_id, date, time_text)
-        except Exception:
-            pass
+            logger.info("Напоминание о присутствии отправлено user=%s date=%s time=%s", user_id, date, time_text)
+        except Exception as exc:
+            logger.warning("Не удалось отправить напоминание о присутствии пользователю %s: %s", user_id, exc)
         await transactions.mark_presence_status(user_id, date, hour, minute, "pending")
