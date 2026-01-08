@@ -3,7 +3,7 @@ import datetime
 import logging
 from typing import Any
 
-from sqlalchemy import delete, func, select, text
+from sqlalchemy import case, delete, func, select, text
 
 from database.connect import Base, engine, session
 from database.models import Payment, RecordDate, RegularLesson, StudentProfile
@@ -1243,6 +1243,90 @@ async def get_lesson_kind(date: datetime.date, hour: int, minute: int, telegram_
     if reg.first():
         return "regular"
     return None
+
+
+async def payments_summary_for_range(
+    start_date: datetime.date,
+    end_date: datetime.date,
+) -> dict[str, int]:
+    """
+    Возвращает сводку по платежам за период.
+    lessons_total — количество занятий (по записям оплат),
+    lessons_paid — количество оплаченных,
+    earned_total — сумма оплаченного,
+    billed_total — сумма начислений (включая неоплаченное).
+    """
+    res = await session.execute(
+        select(
+            func.count(Payment.id),
+            func.sum(
+                case(
+                    (Payment.status == "paid", func.coalesce(Payment.amount, 0)),
+                    else_=0,
+                )
+            ),
+            func.sum(func.coalesce(Payment.amount, 0)),
+            func.sum(case((Payment.status == "paid", 1), else_=0)),
+        ).where(
+            Payment.lesson_date >= start_date,
+            Payment.lesson_date <= end_date,
+            Payment.status != "canceled",
+        )
+    )
+    row = res.one()
+    lessons_total = int(row[0] or 0)
+    earned_total = int(row[1] or 0)
+    billed_total = int(row[2] or 0)
+    lessons_paid = int(row[3] or 0)
+    return {
+        "lessons_total": lessons_total,
+        "lessons_paid": lessons_paid,
+        "earned_total": earned_total,
+        "billed_total": billed_total,
+    }
+
+
+async def payments_daily_breakdown(
+    start_date: datetime.date,
+    end_date: datetime.date,
+) -> list[tuple[datetime.date, int, int, int, int]]:
+    """
+    Возвращает список (дата, всего занятий, заработано, начислено, оплачено).
+    """
+    res = await session.execute(
+        select(
+            Payment.lesson_date,
+            func.count(Payment.id),
+            func.sum(
+                case(
+                    (Payment.status == "paid", func.coalesce(Payment.amount, 0)),
+                    else_=0,
+                )
+            ),
+            func.sum(func.coalesce(Payment.amount, 0)),
+            func.sum(case((Payment.status == "paid", 1), else_=0)),
+        )
+        .where(
+            Payment.lesson_date >= start_date,
+            Payment.lesson_date <= end_date,
+            Payment.status != "canceled",
+        )
+        .group_by(Payment.lesson_date)
+        .order_by(Payment.lesson_date)
+    )
+    rows = res.all()
+    result: list[tuple[datetime.date, int, int, int, int]] = []
+    for row in rows:
+        result.append(
+            (
+                row[0],
+                int(row[1] or 0),
+                int(row[2] or 0),
+                int(row[3] or 0),
+                int(row[4] or 0),
+            )
+        )
+    return result
 
 
 # --- Оплаты ---

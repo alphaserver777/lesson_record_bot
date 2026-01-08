@@ -9,8 +9,18 @@ from utils.google_calendar import get_calendar_tz
 from utils.misc.reminder import reminder, reminder_before_delta, send_presence_prompts
 from keyboards.inline.payment_confirm import payment_confirm_kb
 from config_data.config import ADMINS_TELEGRAM_ID
+from aiogram.types import BufferedInputFile
 from loader import bot
-from database.transactions import add_payment, change_balance, get_student_profile, get_lesson_kind, find_payment
+from database.transactions import (
+    add_payment,
+    change_balance,
+    get_student_profile,
+    get_lesson_kind,
+    find_payment,
+    payments_summary_for_range,
+    payments_daily_breakdown,
+)
+from utils.misc.reporting import build_weekly_report_chart
 from utils.schedule import SLOT_DURATION_MINUTES
 
 logger = logging.getLogger(__name__)
@@ -38,6 +48,8 @@ async def restarting_services() -> None:
         reminder_minute = 0
 
     initial_presence_sent = False
+    daily_report_sent: datetime.date | None = None
+    weekly_report_sent: datetime.date | None = None
 
     while True:
         region_time = datetime.datetime.now(get_calendar_tz())
@@ -184,5 +196,45 @@ async def restarting_services() -> None:
                         ),
                         reply_markup=kb
                     )
+
+        # Ежедневный и недельный финансовый отчёт в 23:00
+        if region_time.hour == 23 and region_time.minute == 0:
+            today = region_time.date()
+            if daily_report_sent != today:
+                summary = await payments_summary_for_range(today, today)
+                unpaid_total = summary["billed_total"] - summary["earned_total"]
+                report_text = (
+                    f"Финансовый отчет за {today.isoformat()}:\n"
+                    f"Занятий проведено: {summary['lessons_total']}\n"
+                    f"Оплачено: {summary['lessons_paid']}\n"
+                    f"Заработано: {summary['earned_total']} ₽\n"
+                    f"К оплате: {unpaid_total} ₽"
+                )
+                for admin_id in ADMINS_TELEGRAM_ID:
+                    await bot.send_message(chat_id=admin_id, text=report_text)
+                daily_report_sent = today
+
+            if today.weekday() == 6 and weekly_report_sent != today:
+                week_start = today - datetime.timedelta(days=today.weekday())
+                week_end = today
+                summary = await payments_summary_for_range(week_start, week_end)
+                daily = await payments_daily_breakdown(week_start, week_end)
+                daily_map = {row[0]: row for row in daily}
+                dates = [week_start + datetime.timedelta(days=i) for i in range(7)]
+                amounts = [daily_map.get(d, (d, 0, 0, 0, 0))[2] for d in dates]
+                unpaid_total = summary["billed_total"] - summary["earned_total"]
+                chart_title = f"Week {week_start.isoformat()}..{week_end.isoformat()}"
+                chart_buf = build_weekly_report_chart(dates, amounts, title=chart_title)
+                chart_file = BufferedInputFile(chart_buf.getvalue(), filename="weekly.png")
+                report_text = (
+                    f"Финансовый отчет за неделю {week_start.isoformat()}–{week_end.isoformat()}:\n"
+                    f"Занятий проведено: {summary['lessons_total']}\n"
+                    f"Оплачено: {summary['lessons_paid']}\n"
+                    f"Заработано: {summary['earned_total']} ₽\n"
+                    f"К оплате: {unpaid_total} ₽"
+                )
+                for admin_id in ADMINS_TELEGRAM_ID:
+                    await bot.send_photo(chat_id=admin_id, photo=chart_file, caption=report_text)
+                weekly_report_sent = today
 
         await asyncio.sleep(60)

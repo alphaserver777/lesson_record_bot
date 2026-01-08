@@ -45,6 +45,7 @@ async def search_client_2(
                 f"""Полное имя: {profile.full_name}
     Телефон: {profile.telephone}
     Статус: {"Заблокирован" if profile.blocked else "Разблокирован"}
+    Баланс: {profile.balance_lessons or 0} ₽
     Количество записей: {count_date_rec[0]}     
     Последний вход: {last_visit_date}        
         """,

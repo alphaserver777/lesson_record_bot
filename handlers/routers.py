@@ -59,6 +59,8 @@ from handlers.custom_handlers.actions_with_admin.edit_client import (
     edit_price_set,
     edit_balance_start,
     edit_balance_set,
+    add_balance_start,
+    add_balance_set,
     add_single_start,
     add_single_date,
     add_single_time,
@@ -102,6 +104,15 @@ from handlers.custom_handlers.actions_with_admin.payment_callbacks import (
     payment_amount_entered,
 )
 from handlers.custom_handlers.actions_with_admin.list_debtors import list_debtors
+from handlers.custom_handlers.actions_with_admin.statistics import (
+    stats_menu,
+    stats_day_start,
+    stats_week_start,
+    stats_month_start,
+    stats_day_selected,
+    stats_week_selected,
+    stats_month_entered,
+)
 from handlers.default_heandlers.cancel import cancel_handler
 from handlers.default_heandlers.start import start_command
 from handlers.default_heandlers.registration import (
@@ -120,6 +131,7 @@ from states.states import (
     PaymentState,
     AdminManualPaymentState,
     AdminEditOccurrenceState,
+    AdminStatsState,
 )
 
 
@@ -192,6 +204,13 @@ def register_routers(router: Router):
     router.callback_query.register(payment_amount, F.data.startswith("pay_amount="))
     router.message.register(payment_amount_entered, PaymentState.amount)
     router.callback_query.register(list_debtors, F.data == "list_debtors")
+    router.callback_query.register(stats_menu, F.data == "stats_menu")
+    router.callback_query.register(stats_day_start, F.data == "stats_day")
+    router.callback_query.register(stats_week_start, F.data == "stats_week")
+    router.callback_query.register(stats_month_start, F.data == "stats_month")
+    router.message.register(stats_day_selected, AdminStatsState.day)
+    router.message.register(stats_week_selected, AdminStatsState.week)
+    router.message.register(stats_month_entered, AdminStatsState.month)
 
     router.callback_query.register(unblocked_user, F.data.startswith("blocked="))
 
@@ -199,8 +218,10 @@ def register_routers(router: Router):
     router.callback_query.register(edit_client_menu, F.data.startswith("edit_client="))
     router.callback_query.register(edit_price_start, F.data.startswith("edit_price="))
     router.callback_query.register(edit_balance_start, F.data.startswith("edit_balance="))
+    router.callback_query.register(add_balance_start, F.data.startswith("add_balance="))
     router.message.register(edit_price_set, AdminEditState.edit_price)
     router.message.register(edit_balance_set, AdminEditState.edit_balance)
+    router.message.register(add_balance_set, AdminEditState.add_balance)
     router.callback_query.register(add_single_start, F.data.startswith("add_single="))
     router.callback_query.register(add_regular_start, F.data.startswith("add_regular="))
     router.callback_query.register(cancel_lesson_start, F.data.startswith("cancel_lesson="))

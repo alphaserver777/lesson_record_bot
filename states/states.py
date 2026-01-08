@@ -29,6 +29,7 @@ class AdminEditState(StatesGroup):
 
     edit_price = State()
     edit_balance = State()
+    add_balance = State()
 
 
 class AdminAddSingleState(StatesGroup):
@@ -83,3 +84,11 @@ class AdminEditOccurrenceState(StatesGroup):
     new_date = State()
     new_time = State()
     new_duration = State()
+
+
+class AdminStatsState(StatesGroup):
+    """Выбор периода для статистики."""
+
+    day = State()
+    week = State()
+    month = State()
