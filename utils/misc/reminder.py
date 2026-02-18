@@ -119,45 +119,14 @@ async def send_presence_prompts(date: datetime.date, force_pending: bool = False
         try:
             if presence_message_id:
                 try:
-                    await bot.edit_message_text(
-                        chat_id=user_id,
-                        message_id=presence_message_id,
-                        text=reminder_text,
-                        reply_markup=kb,
-                    )
-                    await transactions.mark_presence_status(
-                        user_id, date, hour, minute, "pending", presence_message_id=presence_message_id
-                    )
-                    logger.info(
-                        "Напоминание о присутствии обновлено user=%s date=%s time=%s msg=%s",
+                    await bot.delete_message(chat_id=user_id, message_id=presence_message_id)
+                except Exception as del_exc:
+                    logger.warning(
+                        "Не удалось удалить предыдущее presence-сообщение user=%s msg=%s: %s",
                         user_id,
-                        date,
-                        time_text,
                         presence_message_id,
+                        del_exc,
                     )
-                    continue
-                except Exception as exc:
-                    if "message is not modified" in str(exc).lower():
-                        await transactions.mark_presence_status(
-                            user_id, date, hour, minute, "pending", presence_message_id=presence_message_id
-                        )
-                        logger.info(
-                            "Напоминание без изменений user=%s date=%s time=%s msg=%s",
-                            user_id,
-                            date,
-                            time_text,
-                            presence_message_id,
-                        )
-                        continue
-                    try:
-                        await bot.delete_message(chat_id=user_id, message_id=presence_message_id)
-                    except Exception as del_exc:
-                        logger.warning(
-                            "Не удалось удалить предыдущее presence-сообщение user=%s msg=%s: %s",
-                            user_id,
-                            presence_message_id,
-                            del_exc,
-                        )
             sent_message = await bot.send_message(
                 chat_id=user_id,
                 text=reminder_text,
