@@ -20,3 +20,9 @@ engine = create_async_engine(__DATABASE_URL, echo=False)
 Base = declarative_base()
 Session = sessionmaker(bind=engine, expire_on_commit=False, class_=AsyncSession)
 session = Session()
+
+
+async def close_db() -> None:
+    """Закрывает глобальную сессию и engine при остановке приложения."""
+    await session.close()
+    await engine.dispose()
