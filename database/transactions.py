@@ -81,6 +81,9 @@ async def _ensure_presence_columns() -> None:
     if "presence_last_reminder" not in column_names:
         await session.execute(text("ALTER TABLE record_dates ADD COLUMN presence_last_reminder VARCHAR(50)"))
         await session.commit()
+    if "presence_message_id" not in column_names:
+        await session.execute(text("ALTER TABLE record_dates ADD COLUMN presence_message_id INTEGER"))
+        await session.commit()
 
 
 async def _ensure_record_note_column() -> None:
@@ -145,6 +148,7 @@ async def pending_presence_for_date(date: datetime.date) -> list[Any]:
             RecordDate.duration_minutes,
             RecordDate.presence_status,
             RecordDate.presence_last_reminder,
+            RecordDate.presence_message_id,
             RecordDate.kind,
         ).where(
             RecordDate.record_date == target_date,
@@ -198,6 +202,7 @@ async def pending_presence_for_date(date: datetime.date) -> list[Any]:
                     rec.duration_minutes,
                     rec.presence_status,
                     rec.presence_last_reminder,
+                    rec.presence_message_id,
                     rec.kind,
                 )
             )
@@ -213,6 +218,7 @@ async def mark_presence_status(
     hour: int,
     minute: int,
     status: str,
+    presence_message_id: int | None = None,
 ) -> None:
     rec = await session.execute(
         select(RecordDate).where(
@@ -226,6 +232,7 @@ async def mark_presence_status(
     if rec_obj:
         rec_obj.presence_status = status
         rec_obj.presence_last_reminder = datetime.datetime.now().isoformat()
+        rec_obj.presence_message_id = presence_message_id
         # Чистим дубликаты, если есть
         dupes = await session.execute(
             select(RecordDate).where(
@@ -602,28 +609,43 @@ async def delete_regular_slot(
 
 
 async def del_record(date: datetime, hour: int, minute: int) -> None:
-    record = await session.execute(
-        select(RecordDate).where(RecordDate.record_date == date, RecordDate.hour == hour, RecordDate.minute == minute)
+    records_res = await session.execute(
+        select(RecordDate)
+        .where(RecordDate.record_date == date, RecordDate.hour == hour, RecordDate.minute == minute)
+        .order_by(RecordDate.id.asc())
     )
-    record = record.scalar()
+    records = records_res.scalars().all()
+    if not records:
+        return
 
-    if record:
-        duration = record.duration_minutes or SLOT_DURATION_MINUTES
-        await delete_events([record.event_id])
-        try:
-            await delete_events_in_range(date, hour, minute, SLOT_DURATION_MINUTES)
-        except Exception:
-            pass
-        if record.kind in ("block", "allow"):
-            # Просто убираем служебные отметки без постановки новых блоков
-            await session.delete(record)
-            await session.commit()
-        else:
-            await session.delete(record)
-            await session.commit()
+    if len(records) > 1:
+        logger.warning(
+            "del_record: найдено несколько записей на слот date=%s time=%02d:%02d count=%s",
+            date,
+            hour,
+            minute,
+            len(records),
+        )
 
-            # Блокируем слот только если удаляем не блокирующую запись
-            await ensure_block_slot(date, hour, minute, duration)
+    has_non_block = any((rec.kind or "single") not in ("block", "allow") for rec in records)
+    duration = next(
+        (rec.duration_minutes for rec in records if rec.duration_minutes),
+        SLOT_DURATION_MINUTES,
+    )
+
+    for rec in records:
+        await delete_events([rec.event_id])
+        await session.delete(rec)
+    await session.commit()
+
+    try:
+        await delete_events_in_range(date, hour, minute, duration)
+    except Exception:
+        pass
+
+    # Блокируем слот только если удалили пользовательскую запись
+    if has_non_block:
+        await ensure_block_slot(date, hour, minute, duration)
 
 
 async def cancel_regular_slot_with_allow(date: datetime.date, hour: int, minute: int, note: str | None = None) -> None:
@@ -631,19 +653,33 @@ async def cancel_regular_slot_with_allow(date: datetime.date, hour: int, minute:
     Удаляет запись (если есть) и ставит allow, чтобы регулярка не восстановилась,
     но слот не отображался как блок.
     """
-    record = await session.execute(
-        select(RecordDate).where(RecordDate.record_date == date, RecordDate.hour == hour, RecordDate.minute == minute)
+    records_res = await session.execute(
+        select(RecordDate)
+        .where(RecordDate.record_date == date, RecordDate.hour == hour, RecordDate.minute == minute)
+        .order_by(RecordDate.id.asc())
     )
-    record = record.scalar()
-    if record:
-        duration = record.duration_minutes or SLOT_DURATION_MINUTES
-        await delete_events([record.event_id])
+    records = records_res.scalars().all()
+    if records:
+        if len(records) > 1:
+            logger.warning(
+                "cancel_regular_slot_with_allow: найдено несколько записей на слот date=%s time=%02d:%02d count=%s",
+                date,
+                hour,
+                minute,
+                len(records),
+            )
+        duration = next(
+            (rec.duration_minutes for rec in records if rec.duration_minutes),
+            SLOT_DURATION_MINUTES,
+        )
+        for rec in records:
+            await delete_events([rec.event_id])
+            await session.delete(rec)
+        await session.commit()
         try:
             await delete_events_in_range(date, hour, minute, duration)
         except Exception:
             pass
-        await session.delete(record)
-        await session.commit()
         await ensure_allow_slot(date, hour, minute, duration, note=note)
     else:
         await ensure_allow_slot(date, hour, minute, SLOT_DURATION_MINUTES, note=note)
@@ -971,15 +1007,26 @@ async def get_info_user(date: datetime, hour: int, minute: int) -> Any:
     kind: single/regular/block.
     """
     res = await session.execute(
-        select(RecordDate.telegram_id, RecordDate.kind).where(
+        select(RecordDate.id, RecordDate.telegram_id, RecordDate.kind).where(
             RecordDate.record_date == date,
             RecordDate.hour == hour,
             RecordDate.minute == minute,
-        )
+        ).order_by(RecordDate.id.asc())
     )
-    rec = res.one_or_none()
-    if rec:
-        return rec
+    rows = res.all()
+    if rows:
+        if len(rows) > 1:
+            logger.warning(
+                "get_info_user: найдено несколько записей на слот date=%s time=%02d:%02d count=%s",
+                date,
+                hour,
+                minute,
+                len(rows),
+            )
+        # Предпочитаем пользовательскую запись, затем block/allow.
+        rows_sorted = sorted(rows, key=lambda row: 1 if (row[2] or "single") in ("block", "allow") else 0)
+        picked = rows_sorted[0]
+        return (picked[1], picked[2] or "single")
 
     # Если нет записи, ищем регулярку на этот день/время
     weekday = date.weekday() if isinstance(date, datetime.date) else date
@@ -1092,6 +1139,7 @@ async def reschedule_single_slot(
     record.duration_minutes = duration
     record.presence_status = None
     record.presence_last_reminder = None
+    record.presence_message_id = None
     await session.commit()
     return True
 

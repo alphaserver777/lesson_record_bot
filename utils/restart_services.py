@@ -13,7 +13,6 @@ from aiogram.types import BufferedInputFile
 from loader import bot
 from database.transactions import (
     add_payment,
-    change_balance,
     get_student_profile,
     get_lesson_kind,
     find_payment,
@@ -47,27 +46,26 @@ async def restarting_services() -> None:
         reminder_hour = 10
         reminder_minute = 0
 
-    initial_presence_sent = False
+    reminder_total_minutes = reminder_hour * 60 + reminder_minute
+    last_daily_presence_date: datetime.date | None = None
     daily_report_sent: datetime.date | None = None
     weekly_report_sent: datetime.date | None = None
 
     while True:
         region_time = datetime.datetime.now(get_calendar_tz())
+        current_date = region_time.date()
+        current_total_minutes = region_time.hour * 60 + region_time.minute
 
-        # При старте отправляем запросы на подтверждение на сегодня, даже если пропустили утреннее время
-        if not initial_presence_sent:
-            await send_presence_prompts(region_time.date(), force_pending=False)
-            initial_presence_sent = True
-
-        if region_time.hour == reminder_hour and region_time.minute == reminder_minute:
+        # Ежедневный запуск запросов подтверждения в REMINDER_TIME (или позже, если бот стартовал поздно).
+        if last_daily_presence_date != current_date and current_total_minutes >= reminder_total_minutes:
             await transactions.deleting_records_older_7_days()
             await transactions.deletes_old_users()
+            await reminder(current_date)
+            last_daily_presence_date = current_date
 
-            await reminder(region_time.date())
-
-        # Ежечасные пинги, если нет ответа по присутствию
-        if region_time.minute == 0:
-            await send_presence_prompts(region_time.date(), force_pending=False)
+        # Ежечасные пинги после REMINDER_TIME, если нет ответа по присутствию.
+        if region_time.minute == 0 and current_total_minutes > reminder_total_minutes:
+            await send_presence_prompts(current_date, force_pending=False)
 
         # Напоминания за 60 и 10 минут до начала слота
         target_time_10 = region_time + datetime.timedelta(minutes=10)
@@ -115,99 +113,36 @@ async def restarting_services() -> None:
             username_note = f" (@{profile.notes.split('@',1)[1].strip()})" if profile and profile.notes and '@' in profile.notes else ""
             logger.info("Запрос оплаты: user=%s date=%s time=%s duration=%s", user_id, region_time.date(), time_str, duration)
 
-            balance_amount = profile.balance_lessons if profile else 0
-            if profile and balance_amount > 0 and price_value and price_value > 0:
-                paid_from_balance = min(balance_amount, price_value)
-                await change_balance(user_id, -paid_from_balance)
-                new_balance = balance_amount - paid_from_balance
-                remaining_amount = price_value - paid_from_balance
-
-                if remaining_amount <= 0:
-                    await add_payment(
-                        telegram_id=user_id,
-                        full_name=student_name,
-                        lesson_date=region_time.date(),
-                        hour=hour,
-                        minute=minute,
-                        duration_minutes=duration,
-                        amount=price_value,
-                        status="paid",
-                        source="balance",
+            current_balance = profile.balance_lessons if profile else 0
+            pay = await add_payment(
+                telegram_id=user_id,
+                full_name=student_name,
+                lesson_date=region_time.date(),
+                hour=hour,
+                minute=minute,
+                duration_minutes=duration,
+                amount=price_value if price_value is not None else None,
+                status="unpaid",
+                source="pending",
+            )
+            kb = payment_confirm_kb(payment_id=pay.id, date_str=date_str, time_str=time_str, duration=duration)
+            for admin_id in ADMINS_TELEGRAM_ID:
+                try:
+                    await bot.send_message(
+                        chat_id=admin_id,
+                        text=(
+                            f"{student_name}{username_note} {profile_link}\n"
+                            f"Тип: {kind_text}\n"
+                            f"Дата/время: {region_time.date().isoformat()} {hour:02d}:{minute:02d} ({duration} мин)\n"
+                            f"Сумма к оплате: {price_text}\n"
+                            f"Баланс: {current_balance} ₽\n"
+                            "После нажатия «Оплата получена» сумма будет списана с баланса (если хватает) и/или отмечена как оплаченная вручную."
+                        ),
+                        reply_markup=kb
                     )
-                    for admin_id in ADMINS_TELEGRAM_ID:
-                        try:
-                            await bot.send_message(
-                                chat_id=admin_id,
-                                text=(
-                                    f"{student_name}{username_note} {profile_link}\n"
-                                    f"Тип: {kind_text}\n"
-                                    f"Дата/время: {region_time.date().isoformat()} {hour:02d}:{minute:02d} ({duration} мин)\n"
-                                    f"Оплачено с баланса: {paid_from_balance} ₽. Остаток: {new_balance} ₽."
-                                ),
-                            )
-                            logger.info("Отправлено уведомление об оплате admin=%s user=%s date=%s time=%s", admin_id, user_id, region_time.date(), time_str)
-                        except Exception as exc:
-                            logger.warning("Не удалось отправить уведомление об оплате админу %s: %s", admin_id, exc)
-                else:
-                    pay = await add_payment(
-                        telegram_id=user_id,
-                        full_name=student_name,
-                        lesson_date=region_time.date(),
-                        hour=hour,
-                        minute=minute,
-                        duration_minutes=duration,
-                        amount=remaining_amount,
-                        status="unpaid",
-                        source="balance+manual",
-                    )
-                    kb = payment_confirm_kb(payment_id=pay.id, date_str=date_str, time_str=time_str, duration=duration)
-                    for admin_id in ADMINS_TELEGRAM_ID:
-                        try:
-                            await bot.send_message(
-                                chat_id=admin_id,
-                                text=(
-                                    f"{student_name}{username_note} {profile_link}\n"
-                                    f"Тип: {kind_text}\n"
-                                    f"Дата/время: {region_time.date().isoformat()} {hour:02d}:{minute:02d} ({duration} мин)\n"
-                                    f"Часть оплачено с баланса: {paid_from_balance} ₽. К доплате: {remaining_amount} ₽.\n"
-                                    f"Баланс после списания: {new_balance} ₽."
-                                ),
-                                reply_markup=kb
-                            )
-                            logger.info("Отправлен запрос доплаты admin=%s user=%s date=%s time=%s", admin_id, user_id, region_time.date(), time_str)
-                        except Exception as exc:
-                            logger.warning("Не удалось отправить запрос доплаты админу %s: %s", admin_id, exc)
-            else:
-                current_balance = balance_amount
-                pay = await add_payment(
-                    telegram_id=user_id,
-                    full_name=student_name,
-                    lesson_date=region_time.date(),
-                    hour=hour,
-                    minute=minute,
-                    duration_minutes=duration,
-                    amount=price_value if price_value is not None else None,
-                    status="unpaid",
-                    source="manual",
-                )
-                kb = payment_confirm_kb(payment_id=pay.id, date_str=date_str, time_str=time_str, duration=duration)
-                for admin_id in ADMINS_TELEGRAM_ID:
-                    try:
-                        await bot.send_message(
-                            chat_id=admin_id,
-                            text=(
-                                f"{student_name}{username_note} {profile_link}\n"
-                                f"Тип: {kind_text}\n"
-                                f"Дата/время: {region_time.date().isoformat()} {hour:02d}:{minute:02d} ({duration} мин)\n"
-                                f"Сумма к оплате: {price_text}\n"
-                                f"Баланс: {current_balance} ₽\n"
-                                "Оплата получена?"
-                            ),
-                            reply_markup=kb
-                        )
-                        logger.info("Отправлен запрос оплаты admin=%s user=%s date=%s time=%s", admin_id, user_id, region_time.date(), time_str)
-                    except Exception as exc:
-                        logger.warning("Не удалось отправить запрос оплаты админу %s: %s", admin_id, exc)
+                    logger.info("Отправлен запрос оплаты admin=%s user=%s date=%s time=%s", admin_id, user_id, region_time.date(), time_str)
+                except Exception as exc:
+                    logger.warning("Не удалось отправить запрос оплаты админу %s: %s", admin_id, exc)
 
         # Ежедневный и недельный финансовый отчёт в 23:00
         if region_time.hour == 23 and region_time.minute == 0:

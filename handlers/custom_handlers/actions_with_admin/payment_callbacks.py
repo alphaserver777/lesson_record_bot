@@ -37,7 +37,33 @@ async def _handle_payment(callback: types.CallbackQuery, status: str):
         await callback.answer("Ошибка данных", show_alert=True)
         return
 
+    paid_from_balance = 0
     if pay_id:
+        pay = await transactions.get_payment(pay_id)
+        if not pay:
+            await callback.answer("Платеж не найден", show_alert=True)
+            return
+
+        if status == "paid" and pay.status == "paid":
+            await callback.answer("Оплата уже подтверждена")
+            return
+
+        if status == "paid":
+            source = "manual"
+            if pay.telegram_id and (pay.amount or 0) > 0:
+                profile = await transactions.get_student_profile(pay.telegram_id)
+                balance_amount = (profile.balance_lessons or 0) if profile else 0
+                paid_from_balance = min(balance_amount, pay.amount or 0)
+                if paid_from_balance > 0:
+                    await transactions.change_balance(pay.telegram_id, -paid_from_balance)
+
+                if paid_from_balance >= (pay.amount or 0):
+                    source = "balance"
+                elif paid_from_balance > 0:
+                    source = "balance+manual"
+
+            await transactions.update_payment(pay_id=pay_id, source=source)
+
         await transactions.mark_payment_status(pay_id, status)
     else:
         # Создаём запись
@@ -56,7 +82,10 @@ async def _handle_payment(callback: types.CallbackQuery, status: str):
         )
 
     if status == "paid":
-        text = "Отметка оплаты: получена ✅"
+        if paid_from_balance > 0:
+            text = f"Отметка оплаты: получена ✅\nСписано с баланса: {paid_from_balance} ₽."
+        else:
+            text = "Отметка оплаты: получена ✅"
     elif status == "unpaid":
         text = "Отметка оплаты: не получена ❌"
     else:
@@ -92,7 +121,10 @@ async def payment_amount_entered(message: types.Message, state: FSMContext):
     Обработка введённой суммы: отмечаем платеж, при переплате зачисляем на баланс.
     """
     try:
-        amount_val = int(message.text.strip())
+        if not message.text:
+            raise ValueError
+        amount_raw = message.text.strip().replace(" ", "").replace("₽", "").replace("р", "").replace("Р", "")
+        amount_val = int(amount_raw)
         if amount_val < 0:
             raise ValueError
     except Exception:
@@ -107,13 +139,24 @@ async def payment_amount_entered(message: types.Message, state: FSMContext):
     duration = data.get("pay_duration")
 
     pay = await transactions.get_payment(pay_id) if pay_id else None
+    if pay:
+        # Надёжно берём привязку из платежа (на случай потери части FSM-данных).
+        date = pay.lesson_date
+        hour = pay.hour
+        minute = pay.minute
+        duration = pay.duration_minutes or duration or SLOT_DURATION_MINUTES
+    if date is None or hour is None or minute is None:
+        await message.answer("Сессия ввода устарела. Нажмите кнопку «Ввести сумму» ещё раз.")
+        await state.clear()
+        return
+
     telegram_id = pay.telegram_id if pay else None
     profile = await transactions.get_student_profile(telegram_id) if telegram_id else None
     base_price = pay.amount if (pay and pay.amount is not None) else (profile.price if profile else None)
-    pay_duration = pay.duration_minutes if pay and pay.duration_minutes else duration or SLOT_DURATION_MINUTES
+    pay_duration = duration or SLOT_DURATION_MINUTES
 
     factor = 1
-    if base_price is not None and pay_duration:
+    if pay is None and base_price is not None and pay_duration:
         factor = max(1, (pay_duration + SLOT_DURATION_MINUTES - 1) // SLOT_DURATION_MINUTES)
     price_value = (base_price * factor) if base_price is not None else amount_val
     paid_from_amount = min(amount_val, price_value)

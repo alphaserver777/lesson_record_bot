@@ -96,10 +96,9 @@ async def send_presence_prompts(date: datetime.date, force_pending: bool = False
     seen = set()
     now_dt = datetime.datetime.now(get_calendar_tz())
     for rec in lessons:
-        # rec может содержать 8 или 9 полей (с kind). Берём по позиции.
-        if len(rec) >= 8:
-            _, user_id, _, hour, minute, duration, presence_status, last_reminder = rec[:8]
-            rec_kind = rec[8] if len(rec) > 8 else None
+        # rec содержит поля из pending_presence_for_date().
+        if len(rec) >= 9:
+            _, user_id, _, hour, minute, _, presence_status, _, presence_message_id = rec[:9]
         else:
             continue
         if not user_id:
@@ -116,13 +115,58 @@ async def send_presence_prompts(date: datetime.date, force_pending: bool = False
         seen.add(key)
         time_text = f"{hour:02d}:{minute:02d}"
         kb = presence_confirm_kb(date.isoformat(), f"{hour:02d}_{minute:02d}")
+        reminder_text = f"Напоминаю: сегодня занятие в {time_text}. Пожалуйста, подтвердите присутствие."
         try:
-            await bot.send_message(
+            if presence_message_id:
+                try:
+                    await bot.edit_message_text(
+                        chat_id=user_id,
+                        message_id=presence_message_id,
+                        text=reminder_text,
+                        reply_markup=kb,
+                    )
+                    await transactions.mark_presence_status(
+                        user_id, date, hour, minute, "pending", presence_message_id=presence_message_id
+                    )
+                    logger.info(
+                        "Напоминание о присутствии обновлено user=%s date=%s time=%s msg=%s",
+                        user_id,
+                        date,
+                        time_text,
+                        presence_message_id,
+                    )
+                    continue
+                except Exception as exc:
+                    if "message is not modified" in str(exc).lower():
+                        await transactions.mark_presence_status(
+                            user_id, date, hour, minute, "pending", presence_message_id=presence_message_id
+                        )
+                        logger.info(
+                            "Напоминание без изменений user=%s date=%s time=%s msg=%s",
+                            user_id,
+                            date,
+                            time_text,
+                            presence_message_id,
+                        )
+                        continue
+                    try:
+                        await bot.delete_message(chat_id=user_id, message_id=presence_message_id)
+                    except Exception as del_exc:
+                        logger.warning(
+                            "Не удалось удалить предыдущее presence-сообщение user=%s msg=%s: %s",
+                            user_id,
+                            presence_message_id,
+                            del_exc,
+                        )
+            sent_message = await bot.send_message(
                 chat_id=user_id,
-                text=f"Напоминаю: сегодня занятие в {time_text}. Пожалуйста, подтвердите присутствие.",
+                text=reminder_text,
                 reply_markup=kb,
             )
             logger.info("Напоминание о присутствии отправлено user=%s date=%s time=%s", user_id, date, time_text)
         except Exception as exc:
             logger.warning("Не удалось отправить напоминание о присутствии пользователю %s: %s", user_id, exc)
-        await transactions.mark_presence_status(user_id, date, hour, minute, "pending")
+            continue
+        await transactions.mark_presence_status(
+            user_id, date, hour, minute, "pending", presence_message_id=sent_message.message_id
+        )
