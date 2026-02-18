@@ -178,7 +178,7 @@ async def payment_amount_entered(message: types.Message, state: FSMContext):
         )
     else:
         await transactions.update_payment(
-            pay_id=pay_id,
+            payment_id=pay_id,
             amount=paid_from_amount,
             status="paid" if unpaid == 0 else "partial",
             source="manual",

@@ -1427,8 +1427,20 @@ async def get_payment(payment_id: int) -> Payment | None:
     return await session.get(Payment, payment_id)
 
 
-async def update_payment(payment_id: int, amount: int | None = None, status: str | None = None, source: str | None = None) -> None:
-    pay = await session.get(Payment, payment_id)
+async def update_payment(
+    payment_id: int | None = None,
+    *,
+    pay_id: int | None = None,
+    amount: int | None = None,
+    status: str | None = None,
+    source: str | None = None,
+) -> None:
+    # Backward compatibility: some callers still pass pay_id.
+    resolved_payment_id = payment_id if payment_id is not None else pay_id
+    if resolved_payment_id is None:
+        return
+
+    pay = await session.get(Payment, resolved_payment_id)
     if not pay:
         return
     if amount is not None:
