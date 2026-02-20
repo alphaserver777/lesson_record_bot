@@ -5,7 +5,7 @@ import logging
 
 from config_data.config import LOCAL_UTC, REMINDER_TIME
 from database import transactions
-from utils.google_calendar import get_calendar_tz
+from utils.calendar_backend import get_calendar_tz
 from utils.misc.reminder import reminder, reminder_before_delta, send_presence_prompts
 from keyboards.inline.payment_confirm import payment_confirm_kb
 from config_data.config import ADMINS_TELEGRAM_ID

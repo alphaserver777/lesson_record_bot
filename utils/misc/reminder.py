@@ -8,7 +8,7 @@ from database import transactions
 from config_data.config import ADMINS_TELEGRAM_ID
 from keyboards.inline.presence_confirm import presence_confirm_kb
 from utils.schedule import SLOT_DURATION_MINUTES
-from utils.google_calendar import get_calendar_tz
+from utils.calendar_backend import get_calendar_tz
 
 logger = logging.getLogger(__name__)
 

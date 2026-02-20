@@ -7,13 +7,11 @@ services:
     restart: unless-stopped
     env_file: .env.prod
     environment:
-      - GOOGLE_CREDENTIALS_FILE=/app/creds/nixos-ai-001-051cfeb5722e.json
       - DB_PATH=/app/data/database.db
       - TZ=Europe/Moscow
     volumes:
       - ./database_prod:/app/data/
       - ./logs_prod:/app/logs/
-      - ./nixos-ai-001-051cfeb5722e.json:/app/creds/nixos-ai-001-051cfeb5722e.json:ro
     command: ["python", "main.py"]
     healthcheck:
       test: ["CMD-SHELL", "pgrep -f main.py >/dev/null || exit 1"]

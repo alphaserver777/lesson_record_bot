@@ -13,7 +13,7 @@ from keyboards.reply.list_button import list_button
 from keyboards.inline.approve_decline import approve_decline_kb
 from loader import bot
 from states.states import ServiceDateState
-from utils.google_calendar import GoogleCalendarError, get_busy_intervals, get_calendar_tz
+from utils.calendar_backend import CalendarBackendError, get_busy_intervals, get_calendar_tz
 from utils.schedule import SLOT_DURATION_MINUTES, format_slot, slots_for_date
 from aiogram.exceptions import TelegramBadRequest
 import logging
@@ -39,7 +39,7 @@ async def service_appointment_1(message: types.Message, state: FSMContext):
 
     try:
         busy_intervals = await get_busy_intervals(selected_date)
-    except GoogleCalendarError as err:
+    except CalendarBackendError as err:
         await message.message.answer(
             "Не удалось загрузить занятые слоты из календаря, попробуйте позже."
         )
@@ -132,7 +132,7 @@ async def _finalize_booking(message: types.Message, state: FSMContext, contact_i
 
     try:
         slot_busy = await transactions.is_slot_busy(selected_date, selected_hour, selected_minute)
-    except GoogleCalendarError:
+    except CalendarBackendError:
         await message.answer(
             "Не удалось проверить свободное время в календаре, попробуйте позже.",
             reply_markup=ReplyKeyboardRemove(),

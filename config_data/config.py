@@ -22,6 +22,4 @@ ADMINS_TELEGRAM_ID = [int(i) for i in os.getenv("ADMINS_TELEGRAM_ID").split()] i
 WEEKENDS = [i.capitalize() for i in os.getenv("WEEKENDS").split()] if os.getenv("WEEKENDS") else []
 LOCAL_UTC = os.getenv("LOCAL_UTC")
 REMINDER_TIME = os.getenv("REMINDER_TIME")
-GOOGLE_CREDENTIALS_FILE = os.getenv("GOOGLE_CREDENTIALS_FILE")
-GOOGLE_CALENDAR_ID = os.getenv("GOOGLE_CALENDAR_ID")
-GOOGLE_TIMEZONE = os.getenv("GOOGLE_TIMEZONE", "UTC")
+CALENDAR_TIMEZONE = os.getenv("CALENDAR_TIMEZONE", "UTC")

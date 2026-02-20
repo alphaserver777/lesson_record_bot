@@ -5,7 +5,7 @@ import datetime
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 
-from utils.google_calendar import GoogleCalendarError, get_busy_intervals, get_calendar_tz
+from utils.calendar_backend import CalendarBackendError, get_busy_intervals, get_calendar_tz
 from utils.misc.weekend_reservations import ListWeekends
 from utils.schedule import SLOT_DURATION_MINUTES, slots_for_date
 
@@ -53,7 +53,7 @@ async def _day_marker(date_obj: datetime.date) -> tuple[str, str]:
 
     try:
         busy_intervals = await get_busy_intervals(date_obj)
-    except GoogleCalendarError:
+    except CalendarBackendError:
         return _strike(str(date_obj.day)), "ignore"
 
     free_slots = 0

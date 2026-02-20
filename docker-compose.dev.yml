@@ -9,7 +9,6 @@ services:
     volumes:
       - ./database_dev:/app/data/database_dev/
       - ./logs_dev:/app/logs/
-      - ./nixos-ai-001-051cfeb5722e.json:/app/creds/nixos-ai-001-051cfeb5722e.json:ro
     command: ["python", "main.py"]
     healthcheck:
       test: ["CMD-SHELL", "pgrep -f main.py >/dev/null || exit 1"]

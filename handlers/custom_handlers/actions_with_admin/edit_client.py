@@ -9,7 +9,7 @@ from database import transactions
 from database.models import RecordDate
 from database.connect import session
 from keyboards.inline.back_admin_menu import back_admin_menu_button
-from utils.google_calendar import create_block_event
+from utils.calendar_backend import create_block_event
 from utils.schedule import SLOT_DURATION_MINUTES
 from states.states import (
     AdminEditState,

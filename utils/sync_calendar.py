@@ -1,12 +1,12 @@
-"""Синхронизация событий Google Calendar и БД."""
+"""Синхронизация календарных событий и БД."""
 import datetime
 import logging
 from typing import Dict, Tuple
 
 from sqlalchemy import delete, select
 
-from utils.google_calendar import (
-    GoogleCalendarError,
+from utils.calendar_backend import (
+    CalendarBackendError,
     create_simple_event,
     get_busy_intervals,
     get_calendar_tz,
@@ -262,7 +262,7 @@ async def _is_slot_busy(
 
 async def push_db_events_to_calendar(days_ahead: int = 30) -> int:
     """
-    Создаёт в Google Calendar отсутствующие события на ближайшие days_ahead дней
+    Создаёт отсутствующие события на ближайшие days_ahead дней
     для записей без event_id (разовые и развёрнутые регулярные).
     Возвращает количество созданных событий.
     """
@@ -288,7 +288,7 @@ async def push_db_events_to_calendar(days_ahead: int = 30) -> int:
                     rec.id,
                 )
                 continue
-        except GoogleCalendarError as exc:
+        except CalendarBackendError as exc:
             logger.warning("Не удалось проверить занятость для записи %s: %s", rec.id, exc)
             break
 
@@ -344,7 +344,7 @@ async def push_db_events_to_calendar(days_ahead: int = 30) -> int:
                                 day_iter,
                             )
                             continue
-                    except GoogleCalendarError as exc:
+                    except CalendarBackendError as exc:
                         logger.warning(
                             "Не удалось проверить занятость для регулярки %s (%s): %s",
                             lesson.id,

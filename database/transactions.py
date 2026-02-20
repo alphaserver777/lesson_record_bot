@@ -7,8 +7,8 @@ from sqlalchemy import case, delete, func, select, text
 
 from database.connect import Base, engine, session
 from database.models import Payment, RecordDate, RegularLesson, StudentProfile
-from utils.google_calendar import (
-    GoogleCalendarError,
+from utils.calendar_backend import (
+    CalendarBackendError,
     create_block_event,
     create_booking,
     create_simple_event,
@@ -455,7 +455,7 @@ async def set_date_time_appointment(contact, date: datetime, hour: int, minute: 
 
     try:
         event_id = await create_booking(contact, date, hour, minute, SLOT_DURATION_MINUTES)
-    except GoogleCalendarError:
+    except CalendarBackendError:
         return False
 
     record = RecordDate(
@@ -496,7 +496,7 @@ async def add_single_slot(
             telegram_id=telegram_id,
             kind="single",
         )
-    except GoogleCalendarError:
+    except CalendarBackendError:
         return False
 
     record = RecordDate(
@@ -869,7 +869,7 @@ async def reserve_day(
 
     try:
         event_id = await create_full_day_block_event(date, note)
-    except GoogleCalendarError:
+    except CalendarBackendError:
         return 0
 
     record = RecordDate(
@@ -1128,7 +1128,7 @@ async def reschedule_single_slot(
             telegram_id=telegram_id,
             kind="single",
         )
-    except GoogleCalendarError:
+    except CalendarBackendError:
         return False
 
     record.record_date = new_date
