@@ -92,7 +92,7 @@ function UserView({ token, appUser, tgUser }) {
   const [calendar, setCalendar] = useState([])
   const [date, setDate] = useState('')
   const [slots, setSlots] = useState([])
-  const [customTime, setCustomTime] = useState('')
+  const [selectedTime, setSelectedTime] = useState('')
   const [bookings, setBookings] = useState({ single: [], regular: [] })
   const [profile, setProfile] = useState(null)
   const [activeTab, setActiveTab] = useState('home')
@@ -110,7 +110,8 @@ function UserView({ token, appUser, tgUser }) {
 
   async function loadSlots(d) {
     setDate(d)
-    const data = await api(`/api/user/slots?date=${d}`, { token })
+    setSelectedTime('')
+    const data = await api(`/api/user/slots?date=${d}&duration=${duration}`, { token })
     setSlots(data.slots)
     setError('')
   }
@@ -130,18 +131,19 @@ function UserView({ token, appUser, tgUser }) {
     setError('')
   }
 
-  async function book(time, mode = 'preset') {
+  async function book(time) {
     setError('')
     setSuccess('')
     try {
       await api('/api/user/book', {
         token,
         method: 'POST',
-        body: { date, time, duration, mode: lessonType === 'single' ? mode : lessonType }
+        body: { date, time, duration, mode: lessonType }
       })
       await loadSlots(date)
       await loadBookings()
-      setSuccess(`Запись создана: ${date} ${time}`)
+      setSelectedTime('')
+      setSuccess(`Заявка отправлена на согласование: ${date} ${time}`)
     } catch (e) {
       setError(normalizeErrorMessage(e.message || e))
     }
@@ -163,6 +165,11 @@ function UserView({ token, appUser, tgUser }) {
     return () => clearInterval(timer)
   }, [])
 
+  useEffect(() => {
+    if (!date) return
+    loadSlots(date).catch(e => setError(normalizeErrorMessage(e.message || e)))
+  }, [duration])
+
   const singleBookings = Array.isArray(bookings?.single) ? bookings.single : []
   const regularBookings = Array.isArray(bookings?.regular) ? bookings.regular : []
   const nextLesson = nearestBooking(singleBookings)
@@ -177,7 +184,10 @@ function UserView({ token, appUser, tgUser }) {
     .join('')
   const availableSlots = slots.filter(s => s.available)
   const upcoming = [
-    ...singleBookings.slice(0, 5).map(s => ({ label: `${formatDateRu(s.date)} • ${s.time}`, type: 'Разовое' })),
+    ...singleBookings.slice(0, 5).map(s => ({
+      label: `${formatDateRu(s.date)} • ${s.time}`,
+      type: s.status === 'pending' ? 'На согласовании' : (s.kind === 'regular' ? 'Регулярное' : 'Разовое'),
+    })),
     ...regularBookings.slice(0, 5).map(r => ({ label: `${dayName(r.day_of_week)} • ${r.time || '--:--'}`, type: 'Регулярное' })),
   ].slice(0, 5)
   const nowDate = now.toLocaleDateString('ru-RU', { day: '2-digit', month: 'long', year: 'numeric' })
@@ -287,18 +297,22 @@ function UserView({ token, appUser, tgUser }) {
               </div>
             </Card>
 
-            <Card title={date ? `Время на ${formatDateRu(date)}` : 'Выберите дату'} subtitle="Слоты + нестандартное время">
+            <Card title={date ? `Время на ${formatDateRu(date)}` : 'Выберите дату'} subtitle="Только свободные слоты">
               <div className="segmented">
-                <button className={duration === 45 ? 'seg active' : 'seg'} onClick={() => setDuration(45)}>45 мин</button>
                 <button className={duration === 60 ? 'seg active' : 'seg'} onClick={() => setDuration(60)}>60 мин</button>
                 <button className={duration === 90 ? 'seg active' : 'seg'} onClick={() => setDuration(90)}>90 мин</button>
+                <button className={duration === 120 ? 'seg active' : 'seg'} onClick={() => setDuration(120)}>120 мин</button>
               </div>
               {!date ? (
                 <div className="empty">Сначала выберите день.</div>
               ) : availableSlots.length ? (
                 <div className="slots-grid">
                   {availableSlots.map(s => (
-                    <button key={s.time} className="chip ok" onClick={() => book(s.time)}>
+                    <button
+                      key={s.time}
+                      className={`chip ok ${selectedTime === s.time ? 'active' : ''}`}
+                      onClick={() => setSelectedTime(s.time)}
+                    >
                       {s.time}
                     </button>
                   ))}
@@ -306,10 +320,9 @@ function UserView({ token, appUser, tgUser }) {
               ) : (
                 <div className="empty">На выбранную дату свободного времени нет.</div>
               )}
-              <div className="custom-row">
-                <input value={customTime} onChange={e => setCustomTime(e.target.value)} placeholder="Нестандартное время HH:MM" className="input" />
-                <button className="btn" disabled={!date || !customTime} onClick={() => book(customTime, 'custom')}>Записаться</button>
-              </div>
+              <button className="btn" disabled={!date || !selectedTime} onClick={() => book(selectedTime)}>
+                Подтвердить запись
+              </button>
             </Card>
           </div>
         ) : null}

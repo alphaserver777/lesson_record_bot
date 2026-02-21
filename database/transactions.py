@@ -42,6 +42,7 @@ async def init_db() -> None:
     await _ensure_regular_lessons_columns()
     await _ensure_student_profiles_columns()
     await _ensure_payments_columns()
+    await _ensure_booking_status_columns()
     await _normalize_record_kinds()
 
 
@@ -91,6 +92,20 @@ async def _ensure_record_note_column() -> None:
     column_names = {row[1] for row in columns}
     if "note" not in column_names:
         await session.execute(text("ALTER TABLE record_dates ADD COLUMN note VARCHAR(255)"))
+        await session.commit()
+
+
+async def _ensure_booking_status_columns() -> None:
+    columns = await session.execute(text("PRAGMA table_info('record_dates')"))
+    column_names = {row[1] for row in columns}
+    if "booking_status" not in column_names:
+        await session.execute(text("ALTER TABLE record_dates ADD COLUMN booking_status VARCHAR(20) DEFAULT 'approved' NOT NULL"))
+        await session.commit()
+    if "approval_admin_id" not in column_names:
+        await session.execute(text("ALTER TABLE record_dates ADD COLUMN approval_admin_id INTEGER"))
+        await session.commit()
+    if "approval_updated_at" not in column_names:
+        await session.execute(text("ALTER TABLE record_dates ADD COLUMN approval_updated_at VARCHAR(50)"))
         await session.commit()
 
 
@@ -154,6 +169,7 @@ async def pending_presence_for_date(date: datetime.date) -> list[Any]:
             RecordDate.record_date == target_date,
             RecordDate.telegram_id.is_not(None),
             RecordDate.kind.not_in(["block", "allow"]),
+            ((RecordDate.booking_status.is_(None)) | (RecordDate.booking_status == "approved")),
         )
     )
     records = res.all()
@@ -424,13 +440,63 @@ async def check_date_time_appointment(date: datetime, hour: int, minute: int) ->
     return []
 
 
-async def is_slot_busy(date: datetime.date, hour: int, minute: int) -> bool:
+async def is_slot_busy(date: datetime.date, hour: int, minute: int, duration_minutes: int = SLOT_DURATION_MINUTES) -> bool:
     busy_intervals = await get_busy_intervals(date)
     slot_start = datetime.datetime.combine(date, datetime.time(hour, minute), tzinfo=get_calendar_tz())
-    slot_end = slot_start + datetime.timedelta(minutes=SLOT_DURATION_MINUTES)
+    slot_end = slot_start + datetime.timedelta(minutes=duration_minutes)
     for start, end in busy_intervals:
         if slot_start < end and slot_end > start:
             return True
+    return False
+
+
+def _overlaps(
+    start_a: datetime.datetime,
+    end_a: datetime.datetime,
+    start_b: datetime.datetime,
+    end_b: datetime.datetime,
+) -> bool:
+    return start_a < end_b and end_a > start_b
+
+
+async def is_slot_overlapping_local(
+    date: datetime.date,
+    hour: int,
+    minute: int,
+    duration_minutes: int,
+    exclude_record_id: int | None = None,
+) -> bool:
+    start = datetime.datetime.combine(date, datetime.time(hour, minute))
+    end = start + datetime.timedelta(minutes=duration_minutes)
+
+    recs = await session.execute(
+        select(RecordDate.id, RecordDate.hour, RecordDate.minute, RecordDate.duration_minutes).where(
+            RecordDate.record_date == date,
+            RecordDate.kind.not_in(["block", "allow"]),
+            ((RecordDate.booking_status.is_(None)) | (RecordDate.booking_status.in_(["pending", "approved"]))),
+        )
+    )
+    for rec in recs:
+        if exclude_record_id is not None and rec.id == exclude_record_id:
+            continue
+        rec_start = datetime.datetime.combine(date, datetime.time(rec.hour, rec.minute))
+        rec_end = rec_start + datetime.timedelta(minutes=rec.duration_minutes or SLOT_DURATION_MINUTES)
+        if _overlaps(start, end, rec_start, rec_end):
+            return True
+
+    weekday = date.weekday()
+    regs = await session.execute(
+        select(RegularLesson.hour, RegularLesson.minute, RegularLesson.duration_minutes).where(
+            RegularLesson.day_of_week == weekday,
+            RegularLesson.telegram_id.is_not(None),
+        )
+    )
+    for reg in regs:
+        reg_start = datetime.datetime.combine(date, datetime.time(reg.hour or 0, reg.minute or 0))
+        reg_end = reg_start + datetime.timedelta(minutes=reg.duration_minutes or SLOT_DURATION_MINUTES)
+        if _overlaps(start, end, reg_start, reg_end):
+            return True
+
     return False
 
 
@@ -507,10 +573,107 @@ async def add_single_slot(
         duration_minutes=duration_minutes,
         kind="single",
         event_id=event_id,
+        booking_status="approved",
     )
     session.add(record)
     await session.commit()
     return True
+
+
+async def add_pending_single_slot(
+    telegram_id: int,
+    date: datetime.date,
+    hour: int,
+    minute: int,
+    duration_minutes: int = SLOT_DURATION_MINUTES,
+    kind: str = "single",
+) -> int:
+    record = RecordDate(
+        telegram_id=telegram_id,
+        record_date=date,
+        hour=hour,
+        minute=minute,
+        duration_minutes=duration_minutes,
+        kind=kind,
+        event_id=None,
+        booking_status="pending",
+        approval_updated_at=datetime.datetime.now().isoformat(),
+    )
+    session.add(record)
+    await session.commit()
+    return int(record.id)
+
+
+async def get_record_by_id(record_id: int) -> RecordDate | None:
+    return await session.get(RecordDate, record_id)
+
+
+async def approve_pending_booking(record_id: int, admin_id: int) -> tuple[str, RecordDate | None]:
+    rec = await session.get(RecordDate, record_id)
+    if not rec:
+        return ("not_found", None)
+    if rec.booking_status == "approved":
+        return ("already_approved", rec)
+    if rec.booking_status == "rejected":
+        return ("already_rejected", rec)
+    if rec.booking_status not in (None, "pending"):
+        return ("invalid_status", rec)
+
+    is_busy_calendar = await is_slot_busy(
+        rec.record_date,
+        rec.hour,
+        rec.minute,
+        rec.duration_minutes or SLOT_DURATION_MINUTES,
+    )
+    is_busy_local = await is_slot_overlapping_local(
+        rec.record_date,
+        rec.hour,
+        rec.minute,
+        rec.duration_minutes or SLOT_DURATION_MINUTES,
+        exclude_record_id=rec.id,
+    )
+    if is_busy_calendar or is_busy_local:
+        return ("slot_busy", rec)
+
+    profile = await session.get(StudentProfile, rec.telegram_id) if rec.telegram_id else None
+    summary_text = _build_event_summary(
+        profile.full_name if profile else None,
+        "regular" if rec.kind == "regular" else "single",
+    )
+    try:
+        rec.event_id = await create_simple_event(
+            rec.record_date,
+            rec.hour,
+            rec.minute,
+            rec.duration_minutes or SLOT_DURATION_MINUTES,
+            summary=summary_text,
+            telegram_id=rec.telegram_id,
+            kind=rec.kind or "single",
+        )
+    except CalendarBackendError:
+        return ("calendar_error", rec)
+
+    rec.booking_status = "approved"
+    rec.approval_admin_id = admin_id
+    rec.approval_updated_at = datetime.datetime.now().isoformat()
+    await session.commit()
+    return ("approved", rec)
+
+
+async def reject_pending_booking(record_id: int, admin_id: int) -> tuple[str, RecordDate | None]:
+    rec = await session.get(RecordDate, record_id)
+    if not rec:
+        return ("not_found", None)
+    if rec.booking_status == "approved":
+        return ("already_approved", rec)
+    if rec.booking_status == "rejected":
+        return ("already_rejected", rec)
+
+    rec.booking_status = "rejected"
+    rec.approval_admin_id = admin_id
+    rec.approval_updated_at = datetime.datetime.now().isoformat()
+    await session.commit()
+    return ("rejected", rec)
 
 
 async def add_regular_slot(
@@ -813,6 +976,26 @@ async def view_record(telegram_id: int) -> list[Any]:
         select(RecordDate.record_date, RecordDate.hour, RecordDate.minute).where(
             RecordDate.telegram_id == telegram_id,
             (RecordDate.kind.is_(None) | (RecordDate.kind == "single")),
+            ((RecordDate.booking_status.is_(None)) | (RecordDate.booking_status != "rejected")),
+        ).order_by(
+            RecordDate.record_date, RecordDate.hour, RecordDate.minute)
+    )
+    return res.all()
+
+
+async def view_record_with_status(telegram_id: int) -> list[Any]:
+    res = await session.execute(
+        select(
+            RecordDate.record_date,
+            RecordDate.hour,
+            RecordDate.minute,
+            RecordDate.duration_minutes,
+            RecordDate.booking_status,
+            RecordDate.kind,
+        ).where(
+            RecordDate.telegram_id == telegram_id,
+            RecordDate.kind.not_in(["block", "allow"]),
+            ((RecordDate.booking_status.is_(None)) | (RecordDate.booking_status != "rejected")),
         ).order_by(
             RecordDate.record_date, RecordDate.hour, RecordDate.minute)
     )
@@ -893,6 +1076,7 @@ async def mailing_for_day(date: datetime) -> list[Any]:
             RecordDate.record_date == date,
             RecordDate.telegram_id.is_not(None),
             RecordDate.kind != "block",
+            ((RecordDate.booking_status.is_(None)) | (RecordDate.booking_status == "approved")),
         ).group_by(
             RecordDate.telegram_id, RecordDate.hour, RecordDate.minute)
     )

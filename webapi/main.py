@@ -7,6 +7,7 @@ import logging
 from typing import Any
 
 from aiogram.exceptions import TelegramBadRequest
+from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 from fastapi import Depends, FastAPI, Header, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import text
@@ -59,6 +60,17 @@ def _date_for_weekday(day_of_week: int) -> datetime.date:
     today = datetime.date.today()
     delta = (day_of_week - today.weekday()) % 7
     return today + datetime.timedelta(days=delta)
+
+
+def _approval_keyboard(record_id: int) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(text="✅ Согласовать", callback_data=f"booking_approve:{record_id}"),
+                InlineKeyboardButton(text="❌ Отклонить", callback_data=f"booking_reject:{record_id}"),
+            ]
+        ]
+    )
 
 
 async def _audit(admin_id: int, action: str, entity: str, payload: dict[str, Any]) -> None:
@@ -183,26 +195,36 @@ async def user_calendar(month: str = Query(..., pattern=r"^\d{4}-\d{2}$"), user:
     return {"month": month, "days": days}
 
 
-async def _available_slots_for_date(date_obj: datetime.date) -> list[dict[str, Any]]:
+async def _available_slots_for_date(date_obj: datetime.date, duration_minutes: int = 60) -> list[dict[str, Any]]:
     now_local = datetime.datetime.now(get_calendar_tz()).replace(tzinfo=None)
     busy = await get_busy_intervals(date_obj)
     slots = []
     for hour, minute in slots_for_date(date_obj, now_local):
         start = datetime.datetime.combine(date_obj, datetime.time(hour, minute), tzinfo=get_calendar_tz())
-        end = start + datetime.timedelta(minutes=60)
+        end = start + datetime.timedelta(minutes=duration_minutes)
         busy_hit = any(start < b_end and end > b_start for b_start, b_end in busy)
+        local_overlap = await transactions.is_slot_overlapping_local(
+            date_obj,
+            hour,
+            minute,
+            duration_minutes,
+        )
         slots.append({
             "time": f"{hour:02d}:{minute:02d}",
-            "available": not busy_hit,
-            "reason_if_blocked": "busy" if busy_hit else None,
+            "available": not busy_hit and not local_overlap,
+            "reason_if_blocked": "busy" if busy_hit or local_overlap else None,
         })
     return slots
 
 
 @app.get("/api/user/slots")
-async def user_slots(date: datetime.date, user: dict[str, Any] = Depends(get_current_user)) -> dict[str, Any]:
+async def user_slots(
+    date: datetime.date,
+    duration: int = Query(default=60, ge=30, le=180),
+    user: dict[str, Any] = Depends(get_current_user),
+) -> dict[str, Any]:
     _ = user
-    return {"date": date.isoformat(), "slots": await _available_slots_for_date(date)}
+    return {"date": date.isoformat(), "slots": await _available_slots_for_date(date, duration)}
 
 
 @app.post("/api/user/book")
@@ -217,36 +239,68 @@ async def user_book(payload: BookIn, user: dict[str, Any] = Depends(get_current_
     if payload.date < datetime.date.today():
         raise HTTPException(status_code=422, detail="PAST_DATE")
 
-    if await transactions.is_slot_busy(payload.date, hh, mm):
+    if await transactions.is_slot_busy(payload.date, hh, mm, payload.duration):
         alternatives = []
-        for s in await _available_slots_for_date(payload.date):
+        for s in await _available_slots_for_date(payload.date, payload.duration):
             if s["available"]:
                 alternatives.append(s["time"])
             if len(alternatives) == 3:
                 break
         raise HTTPException(status_code=409, detail={"code": "SLOT_BUSY", "alternatives": alternatives})
 
-    ok = await transactions.add_single_slot(
+    if await transactions.is_slot_overlapping_local(payload.date, hh, mm, payload.duration):
+        raise HTTPException(status_code=409, detail={"code": "SLOT_BUSY", "alternatives": []})
+
+    booking_kind = "regular" if payload.mode == "regular" else "single"
+    booking_id = await transactions.add_pending_single_slot(
         telegram_id=telegram_id,
         date=payload.date,
         hour=hh,
         minute=mm,
         duration_minutes=payload.duration,
+        kind=booking_kind,
     )
-    if not ok:
-        raise HTTPException(status_code=500, detail="BOOKING_FAILED")
 
-    return {"status": "ok"}
+    profile = await transactions.get_student_profile(telegram_id)
+    user_name = profile.full_name if profile and profile.full_name else f"id={telegram_id}"
+    request_text = (
+        "🆕 Новая запись на согласование\n"
+        f"Пользователь: {user_name}\n"
+        f"ID: {telegram_id}\n"
+        f"Дата: {payload.date.isoformat()}\n"
+        f"Время: {hh:02d}:{mm:02d}\n"
+        f"Длительность: {payload.duration} мин\n"
+        f"Тип: {'Регулярное' if booking_kind == 'regular' else 'Разовое'}"
+    )
+    for admin_id in ADMINS_TELEGRAM_ID:
+        try:
+            await bot.send_message(
+                chat_id=admin_id,
+                text=request_text,
+                reply_markup=_approval_keyboard(booking_id),
+            )
+        except TelegramBadRequest:
+            logger.warning("failed to send approval request to admin=%s booking=%s", admin_id, booking_id)
+        except Exception as exc:  # pylint: disable=broad-except
+            logger.warning("unexpected error sending approval request admin=%s booking=%s: %s", admin_id, booking_id, exc)
+
+    return {"status": "pending", "booking_id": booking_id}
 
 
 @app.get("/api/user/bookings")
 async def user_bookings(user: dict[str, Any] = Depends(get_current_user)) -> dict[str, Any]:
     telegram_id = int(user["sub"])
-    recs = await transactions.view_record(telegram_id)
+    recs = await transactions.view_record_with_status(telegram_id)
     regular = await transactions.view_regular_lessons(telegram_id)
     return {
         "single": [
-            {"date": r[0].isoformat() if hasattr(r[0], "isoformat") else str(r[0]), "time": f"{int(r[1]):02d}:{int(r[2]):02d}"}
+            {
+                "date": r[0].isoformat() if hasattr(r[0], "isoformat") else str(r[0]),
+                "time": f"{int(r[1]):02d}:{int(r[2]):02d}",
+                "duration": int(r[3] or 60),
+                "status": r[4] or "approved",
+                "kind": r[5] or "single",
+            }
             for r in recs
         ],
         "regular": [
@@ -324,7 +378,9 @@ async def admin_add_single(payload: SingleLessonIn, admin: dict[str, Any] = Depe
         raise HTTPException(status_code=422, detail="INVALID_TIME_STEP")
     if not _check_working_hours(payload.date, hh, mm, payload.duration):
         raise HTTPException(status_code=422, detail="OUTSIDE_WORKING_HOURS")
-    if await transactions.is_slot_busy(payload.date, hh, mm):
+    if await transactions.is_slot_busy(payload.date, hh, mm, payload.duration):
+        raise HTTPException(status_code=409, detail="SLOT_BUSY")
+    if await transactions.is_slot_overlapping_local(payload.date, hh, mm, payload.duration):
         raise HTTPException(status_code=409, detail="SLOT_BUSY")
     ok = await transactions.add_single_slot(payload.telegram_id, payload.date, hh, mm, payload.duration)
     if not ok:

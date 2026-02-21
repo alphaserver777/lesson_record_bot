@@ -21,6 +21,9 @@ class RecordDate(Base):
     presence_message_id = Column(Integer, nullable=True)
     note = Column(String(255), nullable=True)
     event_id = Column(String(255), nullable=True)
+    booking_status = Column(String(20), nullable=False, default="approved")  # pending/approved/rejected
+    approval_admin_id = Column(Integer, nullable=True)
+    approval_updated_at = Column(String(50), nullable=True)
 
 
 class RegularLesson(Base):
