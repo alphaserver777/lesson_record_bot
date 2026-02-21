@@ -23,7 +23,28 @@ from handlers.custom_handlers.actioins_users.presence_response import (
 )
 from handlers.custom_handlers.actioins_users.service_cancel import service_cancel
 from handlers.custom_handlers.actioins_users.view_recordings import view_recordings
-from handlers.custom_handlers.actions_with_admin.admin_menu import admin_menu
+from handlers.custom_handlers.actions_with_admin.dashboard_v1 import (
+    admin_add_regular_day,
+    admin_add_regular_save,
+    admin_add_regular_start,
+    admin_add_regular_time,
+    admin_add_single_start,
+    admin_dashboard,
+    admin_lessons_menu,
+    admin_schedule_day,
+    admin_schedule_menu,
+    admin_schedule_pick_day,
+    admin_user_card,
+    admin_users_list,
+    admin_users_search_prompt,
+    admin_users_search_run,
+    calendar_day_nav,
+    calendar_month_nav,
+    legacy_redirect_add_single,
+    legacy_redirect_search_client,
+    legacy_redirect_view_clients,
+    slot_pick,
+)
 from handlers.custom_handlers.actions_with_admin.confirm_yes_no import confirm_yes_no
 from handlers.custom_handlers.actions_with_admin.del_all_rec_day import (
     del_all_record_day_1,
@@ -132,6 +153,7 @@ from states.states import (
     AdminManualPaymentState,
     AdminEditOccurrenceState,
     AdminStatsState,
+    AdminUsersState,
 )
 
 
@@ -166,8 +188,26 @@ def register_routers(router: Router):
 
     router.callback_query.register(view_recordings, F.data.startswith("view_recordings="))
 
-    router.callback_query.register(admin_menu, F.data == "admin_menu")
-    router.message.register(admin_menu, F.text == "Админ меню")
+    router.callback_query.register(admin_dashboard, F.data == "admin:menu")
+    router.callback_query.register(admin_dashboard, F.data == "admin_menu")
+    router.message.register(admin_dashboard, F.text == "Админ меню")
+
+    router.callback_query.register(admin_users_list, F.data.startswith("admin:users:list:"))
+    router.callback_query.register(admin_users_search_prompt, F.data == "admin:users:search")
+    router.message.register(admin_users_search_run, AdminUsersState.search_query)
+    router.callback_query.register(admin_user_card, F.data.startswith("admin:user:"))
+    router.callback_query.register(admin_lessons_menu, F.data == "admin:lessons:menu")
+    router.callback_query.register(admin_add_single_start, F.data.startswith("admin:lesson:add_single:"))
+    router.callback_query.register(admin_add_regular_start, F.data.startswith("admin:lesson:add_regular:"))
+    router.callback_query.register(admin_add_regular_day, F.data.startswith("admin:lesson:add_regular_day:"))
+    router.callback_query.register(admin_add_regular_time, F.data.startswith("admin:lesson:add_regular_time:"))
+    router.callback_query.register(admin_add_regular_save, F.data.startswith("admin:lesson:add_regular_save:"))
+    router.callback_query.register(admin_schedule_menu, F.data == "admin:schedule:menu")
+    router.callback_query.register(admin_schedule_pick_day, F.data == "admin:schedule:pick_day")
+    router.callback_query.register(admin_schedule_day, F.data.startswith("admin:schedule:day:"))
+    router.callback_query.register(calendar_month_nav, F.data.startswith("calendar:month:"))
+    router.callback_query.register(calendar_day_nav, F.data.startswith("calendar:day:"))
+    router.callback_query.register(slot_pick, F.data.startswith("slot:pick:"))
 
     router.callback_query.register(confirm_yes_no, F.data.startswith("confirm_yes_no"))
 
@@ -190,8 +230,8 @@ def register_routers(router: Router):
     router.message.register(edit_record_day_3, AdminEditOccurrenceState.new_time)
     router.message.register(edit_record_day_4, AdminEditOccurrenceState.new_duration)
 
-    router.callback_query.register(search_client_1, F.data == "search_client")
-    router.message.register(search_client_2, ServiceDateState.search_client)
+    # Legacy callback -> redirect to V1 dashboard flow.
+    router.callback_query.register(legacy_redirect_search_client, F.data == "search_client")
 
     router.callback_query.register(sending_message_1, F.data == "sending_message")
     router.callback_query.register(sending_message_2, F.data.startswith("sending_message_2"))
@@ -214,7 +254,8 @@ def register_routers(router: Router):
 
     router.callback_query.register(unblocked_user, F.data.startswith("blocked="))
 
-    router.callback_query.register(view_clients, F.data == "view_clients")
+    # Legacy callback -> redirect to V1 dashboard flow.
+    router.callback_query.register(legacy_redirect_view_clients, F.data == "view_clients")
     router.callback_query.register(edit_client_menu, F.data.startswith("edit_client="))
     router.callback_query.register(edit_price_start, F.data.startswith("edit_price="))
     router.callback_query.register(edit_balance_start, F.data.startswith("edit_balance="))
@@ -222,7 +263,8 @@ def register_routers(router: Router):
     router.message.register(edit_price_set, AdminEditState.edit_price)
     router.message.register(edit_balance_set, AdminEditState.edit_balance)
     router.message.register(add_balance_set, AdminEditState.add_balance)
-    router.callback_query.register(add_single_start, F.data.startswith("add_single="))
+    # Legacy callback -> redirect to V1 dashboard flow.
+    router.callback_query.register(legacy_redirect_add_single, F.data.startswith("add_single="))
     router.callback_query.register(add_regular_start, F.data.startswith("add_regular="))
     router.callback_query.register(cancel_lesson_start, F.data.startswith("cancel_lesson="))
     router.callback_query.register(cancel_single_date, F.data == "cancel_single_date")

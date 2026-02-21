@@ -92,3 +92,21 @@ class AdminStatsState(StatesGroup):
     day = State()
     week = State()
     month = State()
+
+
+class AdminUsersState(StatesGroup):
+    """Состояния нового раздела пользователей в dashboard."""
+
+    search_query = State()
+
+
+class AdminLessonsState(StatesGroup):
+    """Состояния нового раздела уроков в dashboard."""
+
+    flow = State()
+
+
+class AdminScheduleState(StatesGroup):
+    """Состояния нового раздела расписания в dashboard."""
+
+    selected_date = State()

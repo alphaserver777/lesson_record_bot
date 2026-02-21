@@ -18,8 +18,8 @@ def details_client_buttons(telegram_id: int, user_blocked: int) -> InlineKeyboar
     keyboard_builder.button(text="Удалить клиента",
                     callback_data=f"confirm_yes_no=del_user={telegram_id}=null")
     keyboard_builder.button(text="Редактировать данные", callback_data=f"edit_client={telegram_id}")
-    keyboard_builder.button(text="Добавить разовое занятие", callback_data=f"add_single={telegram_id}")
-    keyboard_builder.button(text="Добавить регулярное занятие", callback_data=f"add_regular={telegram_id}")
+    keyboard_builder.button(text="Добавить разовое занятие", callback_data=f"admin:lesson:add_single:{telegram_id}")
+    keyboard_builder.button(text="Добавить регулярное занятие", callback_data=f"admin:lesson:add_regular:{telegram_id}")
     keyboard_builder.button(text="Отменить занятие", callback_data=f"cancel_lesson={telegram_id}")
     keyboard_builder.button(text="Добавить оплату (ручную)", callback_data=f"add_manual_pay={telegram_id}")
     keyboard_builder.adjust(1)

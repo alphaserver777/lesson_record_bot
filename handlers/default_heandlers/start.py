@@ -47,7 +47,7 @@ async def start_command(message: [types.CallbackQuery, types.Message], state: FS
     kb.button(text="Мои записи", callback_data=f"view_recordings={telegram_id}")
 
     if telegram_id in ADMINS_TELEGRAM_ID:
-        kb.button(text="Админ меню", callback_data="admin_menu")
+        kb.button(text="Админ меню", callback_data="admin:menu")
 
     kb.adjust(3, 7)
     kb = kb.as_markup()

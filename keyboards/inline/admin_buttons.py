@@ -9,15 +9,9 @@ def admin_buttons() -> InlineKeyboardMarkup:
     :return: InlineKeyboardMarkup
     """
     keyboard_builder = InlineKeyboardBuilder()
-    keyboard_builder.button(text="Список клиентов", callback_data="view_clients")
-    keyboard_builder.button(text="Поиск клиента", callback_data="search_client")
-    keyboard_builder.button(text="Просмотр записей на день", callback_data="viewing_recordings_day")
-    keyboard_builder.button(text="Зарезервировать день", callback_data="reserve_day")
-    keyboard_builder.button(text="Общая рассылка на день", callback_data="sending_message")
-    keyboard_builder.button(text="Удалить все записи на день", callback_data="del_all_record_day")
-    keyboard_builder.button(text="Синхронизировать календарь", callback_data="sync_calendar")
-    keyboard_builder.button(text="Статистика", callback_data="stats_menu")
-    keyboard_builder.button(text="Список должников", callback_data="list_debtors")
+    keyboard_builder.button(text="👥 Пользователи", callback_data="admin:users:list:1")
+    keyboard_builder.button(text="📚 Занятия", callback_data="admin:lessons:menu")
+    keyboard_builder.button(text="🗓️ Расписание", callback_data="admin:schedule:menu")
     keyboard_builder.button(text="Вернуться к календарю", callback_data="start_command=calendar_day")
     keyboard_builder.adjust(1)
     return keyboard_builder.as_markup()

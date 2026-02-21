@@ -3,12 +3,12 @@ import datetime
 import logging
 
 from aiogram import types
+from aiogram.exceptions import TelegramBadRequest
 from aiogram.fsm.context import FSMContext
 
 from database import transactions
 from database.models import RecordDate
 from database.connect import session
-from keyboards.inline.back_admin_menu import back_admin_menu_button
 from utils.calendar_backend import create_block_event
 from utils.schedule import SLOT_DURATION_MINUTES
 from states.states import (
@@ -22,28 +22,44 @@ from states.states import (
 logger = logging.getLogger(__name__)
 
 
+async def _replace_callback_screen(
+    callback: types.CallbackQuery,
+    text: str,
+    reply_markup: types.InlineKeyboardMarkup | None = None,
+) -> None:
+    try:
+        await callback.message.edit_text(text, reply_markup=reply_markup)
+    except TelegramBadRequest as exc:
+        msg = (exc.message or "").lower()
+        if "message is not modified" in msg:
+            return
+        logger.warning("edit_text failed in edit_client: %s", exc)
+        try:
+            await callback.message.delete()
+        except TelegramBadRequest as del_exc:
+            logger.warning("delete_message failed in edit_client: %s", del_exc)
+        await callback.message.answer(text, reply_markup=reply_markup)
+
+
 async def edit_client_menu(callback: types.CallbackQuery, state: FSMContext):
     telegram_id = int(callback.data.split("=")[1])
     await state.update_data(edit_telegram_id=telegram_id)
-    kb = back_admin_menu_button()
     text = (
-        "Что изменить?\n"
-        "1) Цена за занятие — отправьте число.\n"
-        "2) Баланс занятий — отправьте целое число (установить).\n"
-        "3) Баланс занятий — пополнение (аванс).\n\n"
+        "✏️ Редактирование профиля\n\n"
         "Выберите действие:"
     )
-    await callback.message.answer(
+    kb = types.InlineKeyboardMarkup(inline_keyboard=[
+        [types.InlineKeyboardButton(text="Изменить цену", callback_data=f"edit_price={telegram_id}")],
+        [types.InlineKeyboardButton(text="Изменить баланс", callback_data=f"edit_balance={telegram_id}")],
+        [types.InlineKeyboardButton(text="Пополнить баланс", callback_data=f"add_balance={telegram_id}")],
+        [types.InlineKeyboardButton(text="Добавить разовое занятие", callback_data=f"add_single={telegram_id}")],
+        [types.InlineKeyboardButton(text="⬅️ Назад к карточке", callback_data=f"admin:user:{telegram_id}:1")],
+        [types.InlineKeyboardButton(text="🏠 Dashboard", callback_data="admin:menu")],
+    ])
+    await _replace_callback_screen(
+        callback,
         text,
         reply_markup=kb
-    )
-    await callback.message.answer(
-        "Изменить цену?", reply_markup=types.InlineKeyboardMarkup(inline_keyboard=[
-            [types.InlineKeyboardButton(text="Изменить цену", callback_data=f"edit_price={telegram_id}")],
-            [types.InlineKeyboardButton(text="Изменить баланс", callback_data=f"edit_balance={telegram_id}")],
-            [types.InlineKeyboardButton(text="Пополнить баланс", callback_data=f"add_balance={telegram_id}")],
-            [types.InlineKeyboardButton(text="Добавить разовое занятие", callback_data=f"add_single={telegram_id}")],
-        ])
     )
     await callback.answer()
 
@@ -51,7 +67,7 @@ async def edit_client_menu(callback: types.CallbackQuery, state: FSMContext):
 async def edit_price_start(callback: types.CallbackQuery, state: FSMContext):
     telegram_id = int(callback.data.split("=")[1])
     await state.update_data(edit_telegram_id=telegram_id)
-    await callback.message.answer("Введите новую цену за занятие (число):")
+    await _replace_callback_screen(callback, "Введите новую цену за занятие (число):")
     await state.set_state(AdminEditState.edit_price)
     await callback.answer()
 
@@ -74,7 +90,7 @@ async def edit_price_set(message: types.Message, state: FSMContext):
 async def edit_balance_start(callback: types.CallbackQuery, state: FSMContext):
     telegram_id = int(callback.data.split("=")[1])
     await state.update_data(edit_telegram_id=telegram_id)
-    await callback.message.answer("Введите новый баланс уроков (целое число):")
+    await _replace_callback_screen(callback, "Введите новый баланс уроков (целое число):")
     await state.set_state(AdminEditState.edit_balance)
     await callback.answer()
 
@@ -95,7 +111,7 @@ async def edit_balance_set(message: types.Message, state: FSMContext):
 async def add_balance_start(callback: types.CallbackQuery, state: FSMContext):
     telegram_id = int(callback.data.split("=")[1])
     await state.update_data(edit_telegram_id=telegram_id)
-    await callback.message.answer("Введите сумму пополнения (целое число):")
+    await _replace_callback_screen(callback, "Введите сумму пополнения (целое число):")
     await state.set_state(AdminEditState.add_balance)
     await callback.answer()
 
@@ -118,7 +134,7 @@ async def add_balance_set(message: types.Message, state: FSMContext):
 async def add_single_start(callback: types.CallbackQuery, state: FSMContext):
     telegram_id = int(callback.data.split("=")[1])
     await state.update_data(edit_telegram_id=telegram_id)
-    await callback.message.answer("Введите дату занятия в формате ГГГГ-ММ-ДД:")
+    await _replace_callback_screen(callback, "Введите дату занятия в формате ГГГГ-ММ-ДД:")
     await state.set_state(AdminAddSingleState.date)
     await callback.answer()
 
@@ -215,7 +231,7 @@ def _parse_day_of_week(text: str) -> int | None:
 async def add_regular_start(callback: types.CallbackQuery, state: FSMContext):
     telegram_id = int(callback.data.split("=")[1])
     await state.update_data(edit_telegram_id=telegram_id)
-    await callback.message.answer("Введите день недели (0-6 или Пн/Вт/...):")
+    await _replace_callback_screen(callback, "Введите день недели (0-6 или Пн/Вт/...):")
     await state.set_state(AdminAddRegularState.day)
     await callback.answer()
 
@@ -273,27 +289,27 @@ async def cancel_lesson_start(callback: types.CallbackQuery, state: FSMContext):
         [types.InlineKeyboardButton(text="Отменить одно занятие из регулярных", callback_data="cancel_regular_once")],
         [types.InlineKeyboardButton(text="Отменить регулярное полностью", callback_data="cancel_regular_all")],
     ])
-    await callback.message.answer("Что отменить?", reply_markup=kb)
+    await _replace_callback_screen(callback, "Что отменить?", kb)
     await callback.answer()
 
 
 async def cancel_single_date(callback: types.CallbackQuery, state: FSMContext):
     await state.update_data(cancel_mode="single")
-    await callback.message.answer("Введите дату отменяемого занятия (ГГГГ-ММ-ДД):")
+    await _replace_callback_screen(callback, "Введите дату отменяемого занятия (ГГГГ-ММ-ДД):")
     await state.set_state(AdminCancelState.date)
     await callback.answer()
 
 
 async def cancel_regular_once(callback: types.CallbackQuery, state: FSMContext):
     await state.update_data(cancel_mode="once")
-    await callback.message.answer("Введите дату отмены одного занятия (ГГГГ-ММ-ДД):")
+    await _replace_callback_screen(callback, "Введите дату отмены одного занятия (ГГГГ-ММ-ДД):")
     await state.set_state(AdminCancelState.date)
     await callback.answer()
 
 
 async def cancel_regular_all(callback: types.CallbackQuery, state: FSMContext):
     await state.update_data(cancel_mode="all")
-    await callback.message.answer("Введите день регулярного занятия (0-6 или Пн/Вт/...):")
+    await _replace_callback_screen(callback, "Введите день регулярного занятия (0-6 или Пн/Вт/...):")
     await state.set_state(AdminCancelState.mode)
     await callback.answer()
 
@@ -376,7 +392,10 @@ async def cancel_time_input(message: types.Message, state: FSMContext):
 async def add_manual_payment_start(callback: types.CallbackQuery, state: FSMContext):
     telegram_id = int(callback.data.split("=")[1])
     await state.update_data(manual_pay_telegram_id=telegram_id)
-    await callback.message.answer("Введите дату занятия (ГГГГ-ММ-ДД). Оставьте пустым или введите 'х' для сегодняшнего дня.")
+    await _replace_callback_screen(
+        callback,
+        "Введите дату занятия (ГГГГ-ММ-ДД). Оставьте пустым или введите 'х' для сегодняшнего дня.",
+    )
     await state.set_state(AdminManualPaymentState.date)
     await callback.answer()
 
