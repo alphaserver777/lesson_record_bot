@@ -1,0 +1,27 @@
+services:
+  miniapp-api:
+    build: .
+    container_name: lesson_record_bot_miniapi
+    restart: unless-stopped
+    env_file: .env.testbot.docker
+    environment:
+      - DB_PATH=/app/data/test_bot.db
+      - WEBAPI_PORT=8000
+    volumes:
+      - ./database:/app/data
+      - ./logs:/app/logs
+    command: ["python", "main_webapi.py"]
+    ports:
+      - "8000:8000"
+
+  miniapp-frontend:
+    image: node:20-alpine
+    container_name: lesson_record_bot_miniapp_front
+    working_dir: /frontend
+    volumes:
+      - ./miniapp:/frontend
+    command: sh -c "npm install && npm run dev -- --host 0.0.0.0 --port 5173"
+    environment:
+      - VITE_API_BASE=http://localhost:8000
+    ports:
+      - "5173:5173"

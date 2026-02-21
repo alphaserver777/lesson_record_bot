@@ -23,3 +23,4 @@ WEEKENDS = [i.capitalize() for i in os.getenv("WEEKENDS").split()] if os.getenv(
 LOCAL_UTC = os.getenv("LOCAL_UTC")
 REMINDER_TIME = os.getenv("REMINDER_TIME")
 CALENDAR_TIMEZONE = os.getenv("CALENDAR_TIMEZONE", "UTC")
+MINI_APP_URL = os.getenv("MINI_APP_URL", "http://localhost:5173")

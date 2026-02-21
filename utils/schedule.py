@@ -49,3 +49,25 @@ def slots_for_date(target_date: datetime.date, now_dt: datetime.datetime | None 
 
 def format_slot(hour: int, minute: int) -> str:
     return f"{hour:02d}:{minute:02d}"
+
+
+def is_time_in_schedule(
+    target_date: datetime.date,
+    hour: int,
+    minute: int,
+    duration_minutes: int = SLOT_DURATION_MINUTES,
+) -> bool:
+    """Проверяет, попадает ли слот в доступные интервалы дня."""
+    day_schedule = WEEK_SCHEDULE.get(target_date.weekday(), [])
+    if not day_schedule:
+        return False
+
+    start_candidate = datetime.datetime.combine(target_date, datetime.time(hour, minute))
+    end_candidate = start_candidate + datetime.timedelta(minutes=duration_minutes)
+
+    for start_str, end_str in day_schedule:
+        interval_start = datetime.datetime.combine(target_date, _parse_time(start_str))
+        interval_end = datetime.datetime.combine(target_date, _parse_time(end_str))
+        if interval_start <= start_candidate and end_candidate <= interval_end:
+            return True
+    return False

@@ -1,67 +1,42 @@
-""" Модуль команды /start."""
-import datetime
+"""Start handler in minimal bot mode (Mini App entrypoint)."""
 import logging
 
 from aiogram import types
 from aiogram.fsm.context import FSMContext
-from aiogram.types import ReplyKeyboardRemove
 
-from config_data.config import ADMINS_TELEGRAM_ID, START_MESSAGE
+from config_data.config import MINI_APP_URL
 from database import transactions
-from keyboards.inline.calendar_v1 import calendar_buttons
-from keyboards.reply.admin_menu import admin_reply_kb
-from states.states import RegistrationState
-from utils.calendar import InternalCalendar
+from keyboards.inline.miniapp import open_miniapp_kb
 
 start_logger = logging.getLogger(__name__)
 
 
 async def start_command(message: [types.CallbackQuery, types.Message], state: FSMContext = None) -> None:
-    """
-    Вывод тест START_MESSAGE и календарь.
-    Если пользователя админ, то добавляет кнопки админ меню
-    """
-    try:
-        callback_data = message.data.split("=")[1]
-    except AttributeError:
-        callback_data = "calendar_day"
-
+    """Send Mini App entrypoint and keep bot focused on presence notifications only."""
     telegram_id = message.from_user.id
     full_name = message.from_user.full_name
-    res = await transactions.user_check(telegram_id)
 
-    if not res:
-        # Новый пользователь: запускаем регистрацию
-        await state.update_data(reg_telegram_id=telegram_id)
-        await message.answer("Добро пожаловать! Укажите, пожалуйста, фамилию и имя.")
-        await state.set_state(RegistrationState.full_name)
-        return
-
+    await transactions.upsert_student_profile(
+        telegram_id=telegram_id,
+        full_name=full_name,
+        username=message.from_user.username,
+    )
     await transactions.update_visit_date(telegram_id)
 
-    user_calen = InternalCalendar(telegram_id)
-    await state.update_data({"user_calen": user_calen})
-    current_date = await user_calen.current_date()
+    text = (
+        "<b>Бот работает в режиме уведомлений.</b>\n"
+        "Запись, расписание и админ-управление теперь в Mini App."
+    )
 
-    kb = await calendar_buttons(current_date, callback_data)
-    kb.button(text="Мои записи", callback_data=f"view_recordings={telegram_id}")
-
-    if telegram_id in ADMINS_TELEGRAM_ID:
-        kb.button(text="Админ меню", callback_data="admin:menu")
-
-    kb.adjust(3, 7)
-    kb = kb.as_markup()
+    kb = open_miniapp_kb(MINI_APP_URL)
 
     if isinstance(message, types.Message):
-        if message.text and message.text.startswith("/start"):
-            reply_kb = admin_reply_kb() if telegram_id in ADMINS_TELEGRAM_ID else ReplyKeyboardRemove()
-            await message.answer(
-                START_MESSAGE, parse_mode="HTML", reply_markup=reply_kb
-            )
-        await message.answer(text="Выберите дату:", reply_markup=kb)
+        await message.answer(text, parse_mode="HTML", reply_markup=kb)
+    else:
+        await message.message.answer(text, parse_mode="HTML", reply_markup=kb)
+        await message.answer()
 
-    elif isinstance(message, types.CallbackQuery):
-        await message.message.answer(text="Выберите дату:", reply_markup=kb)
-        await message.message.delete()
+    if state:
+        await state.clear()
 
-    start_logger.info(f"start_logger-UserID={telegram_id} {full_name}")
+    start_logger.info("start_logger-UserID=%s %s", telegram_id, full_name)
