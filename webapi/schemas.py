@@ -55,3 +55,37 @@ class AdminUserPatchIn(BaseModel):
     balance_lessons_set: int | None = None
     balance_lessons_add: int | None = None
     blocked: bool | None = None
+
+
+class WorkIntervalIn(BaseModel):
+    start: str = Field(pattern=r"^\d{2}:\d{2}$")
+    end: str = Field(pattern=r"^\d{2}:\d{2}$")
+
+
+class WorkDayIn(BaseModel):
+    weekday: int = Field(ge=0, le=6)
+    enabled: bool = True
+    intervals: list[WorkIntervalIn] = Field(default_factory=list)
+
+
+class WorkScheduleApplyPolicyIn(BaseModel):
+    cancel_affected: bool = False
+    date_from: date | None = None
+    date_to: date | None = None
+
+
+class WorkScheduleIn(BaseModel):
+    days: list[WorkDayIn]
+    apply_policy: WorkScheduleApplyPolicyIn | None = None
+
+
+class WorkSchedulePreviewIn(BaseModel):
+    days: list[WorkDayIn]
+    date_from: date | None = None
+    date_to: date | None = None
+
+
+class WorkScheduleApplyIn(BaseModel):
+    affected_ids: list[int]
+    notify_users: bool = True
+    reason: str | None = None

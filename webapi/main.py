@@ -20,7 +20,7 @@ from database.connect import session
 from database.models import RecordDate, StudentProfile
 from loader import bot
 from utils.calendar_backend import get_busy_intervals, get_calendar_tz
-from utils.schedule import is_time_in_schedule, slots_for_date
+from utils.schedule import WEEK_SCHEDULE, is_time_in_schedule, slots_for_date
 from webapi.auth import issue_session_token, verify_init_data, verify_session_token
 from webapi.schemas import (
     AdminUserPatchIn,
@@ -30,6 +30,9 @@ from webapi.schemas import (
     ManualPaymentIn,
     RegularLessonIn,
     SingleLessonIn,
+    WorkScheduleApplyIn,
+    WorkScheduleIn,
+    WorkSchedulePreviewIn,
 )
 
 logger = logging.getLogger(__name__)
@@ -96,6 +99,76 @@ def _booking_status_filter(status: str) -> Any:
 
 def _booking_kind_label(kind: str | None) -> str:
     return "regular" if (kind or "").lower() == "regular" else "single"
+
+
+def _minutes_to_hhmm(total_minutes: int) -> str:
+    return f"{total_minutes // 60:02d}:{total_minutes % 60:02d}"
+
+
+def _parse_time_to_minutes(hhmm: str) -> int:
+    hh, mm = _parse_hhmm(hhmm)
+    return hh * 60 + mm
+
+
+def _normalized_days_payload(days: list[Any]) -> list[dict[str, Any]]:
+    by_weekday: dict[int, dict[str, Any]] = {}
+    for day in days:
+        weekday = int(day.weekday)
+        enabled = bool(day.enabled)
+        intervals = []
+        for it in day.intervals:
+            start_min = _parse_time_to_minutes(it.start)
+            end_min = _parse_time_to_minutes(it.end)
+            if start_min % 5 or end_min % 5:
+                raise HTTPException(status_code=422, detail="INVALID_TIME_STEP")
+            if end_min <= start_min:
+                raise HTTPException(status_code=422, detail="INVALID_INTERVAL_RANGE")
+            if (end_min - start_min) < 30:
+                raise HTTPException(status_code=422, detail="INTERVAL_TOO_SHORT")
+            intervals.append((start_min, end_min))
+
+        intervals.sort(key=lambda x: (x[0], x[1]))
+        for idx in range(1, len(intervals)):
+            prev = intervals[idx - 1]
+            cur = intervals[idx]
+            if cur[0] < prev[1]:
+                raise HTTPException(status_code=422, detail="INTERVALS_OVERLAP")
+
+        by_weekday[weekday] = {"weekday": weekday, "enabled": enabled, "intervals": intervals}
+
+    # Заполняем все дни недели, если не переданы.
+    normalized: list[dict[str, Any]] = []
+    for weekday in range(7):
+        normalized.append(by_weekday.get(weekday, {"weekday": weekday, "enabled": False, "intervals": []}))
+    return normalized
+
+
+def _is_slot_allowed(intervals_map: dict[int, list[tuple[int, int]]], date_value: datetime.date, hour: int, minute: int, duration: int) -> bool:
+    day_intervals = intervals_map.get(date_value.weekday(), [])
+    if not day_intervals:
+        return False
+    start_min = hour * 60 + minute
+    end_min = start_min + duration
+    for int_start, int_end in day_intervals:
+        if int_start <= start_min and end_min <= int_end:
+            return True
+    return False
+
+
+async def _current_intervals_map() -> dict[int, list[tuple[int, int]]]:
+    rows = await session.execute(
+        text(
+            "SELECT weekday, start_minute, end_minute "
+            "FROM working_intervals "
+            "WHERE is_active = 1 "
+            "ORDER BY weekday, start_minute, end_minute"
+        )
+    )
+    intervals_map: dict[int, list[tuple[int, int]]] = {}
+    for row in rows:
+        weekday = int(row.weekday)
+        intervals_map.setdefault(weekday, []).append((int(row.start_minute), int(row.end_minute)))
+    return intervals_map
 
 
 def _serialize_day_item(item: Any) -> dict[str, Any]:
@@ -178,6 +251,37 @@ async def startup() -> None:
     await session.execute(text("CREATE INDEX IF NOT EXISTS idx_record_dates_date_time ON record_dates(record_date, hour, minute)"))
     await session.execute(text("CREATE INDEX IF NOT EXISTS idx_record_dates_telegram_id ON record_dates(telegram_id)"))
     await session.execute(text("CREATE INDEX IF NOT EXISTS idx_profiles_name ON student_profiles(full_name)"))
+    await session.execute(
+        text(
+            "CREATE TABLE IF NOT EXISTS working_intervals ("
+            "id INTEGER PRIMARY KEY AUTOINCREMENT,"
+            "weekday INTEGER NOT NULL,"
+            "start_minute INTEGER NOT NULL,"
+            "end_minute INTEGER NOT NULL,"
+            "is_active INTEGER NOT NULL DEFAULT 1,"
+            "created_at TEXT NOT NULL DEFAULT (datetime('now')),"
+            "updated_at TEXT NOT NULL DEFAULT (datetime('now'))"
+            ")"
+        )
+    )
+    await session.execute(text("CREATE INDEX IF NOT EXISTS idx_working_intervals_weekday_active ON working_intervals(weekday, is_active)"))
+    await session.execute(text("CREATE INDEX IF NOT EXISTS idx_working_intervals_weekday_start_end ON working_intervals(weekday, start_minute, end_minute)"))
+
+    # Seed one-time from static fallback if table is empty.
+    count_row = await session.execute(text("SELECT COUNT(*) AS c FROM working_intervals"))
+    count_value = int((count_row.one_or_none() or [0])[0])
+    if count_value == 0:
+        for weekday, intervals in WEEK_SCHEDULE.items():
+            for start_hhmm, end_hhmm in intervals:
+                start_min = _parse_time_to_minutes(start_hhmm)
+                end_min = _parse_time_to_minutes(end_hhmm)
+                await session.execute(
+                    text(
+                        "INSERT INTO working_intervals (weekday, start_minute, end_minute, is_active, created_at, updated_at) "
+                        "VALUES (:weekday, :start_minute, :end_minute, 1, datetime('now'), datetime('now'))"
+                    ),
+                    {"weekday": int(weekday), "start_minute": int(start_min), "end_minute": int(end_min)},
+                )
     await session.commit()
 
 
@@ -703,17 +807,178 @@ async def admin_patch_lesson(lesson_id: int, payload: SingleLessonIn, admin: dic
 
 
 @app.delete("/api/admin/lessons/{lesson_id}")
-async def admin_del_lesson(lesson_id: int, date: datetime.date, time: str, telegram_id: int, admin: dict[str, Any] = Depends(require_admin)) -> dict[str, Any]:
+async def admin_del_lesson(
+    lesson_id: int,
+    date: datetime.date,
+    time: str,
+    telegram_id: int,
+    scope: str = Query(default="single", pattern=r"^(single|all_regular)$"),
+    admin: dict[str, Any] = Depends(require_admin),
+) -> dict[str, Any]:
     _ = lesson_id
     hh, mm = _parse_hhmm(time)
+
+    if scope == "all_regular":
+        await transactions.delete_regular_slot(telegram_id, date.weekday(), hh, mm, delete_future_single=True)
+        await _audit(
+            int(admin["sub"]),
+            "delete",
+            "regular_series",
+            {"lesson_id": lesson_id, "date": date.isoformat(), "time": time, "telegram_id": telegram_id, "scope": scope},
+        )
+        return {"status": "ok", "scope": scope}
+
+    # Для регулярки удаляем только конкретный день и оставляем серию.
+    slot_kind = await transactions.detect_slot_kind(telegram_id, date, hh, mm)
+    if slot_kind == "regular":
+        await transactions.cancel_regular_slot_with_allow(date, hh, mm, note="Отменено администратором")
+        await _audit(
+            int(admin["sub"]),
+            "delete",
+            "regular_occurrence",
+            {"lesson_id": lesson_id, "date": date.isoformat(), "time": time, "telegram_id": telegram_id, "scope": scope},
+        )
+        return {"status": "ok", "scope": scope}
+
     await transactions.delete_single_slot(telegram_id, date, hh, mm)
-    await _audit(int(admin["sub"]), "delete", "lesson", {"lesson_id": lesson_id, "date": date.isoformat(), "time": time, "telegram_id": telegram_id})
-    return {"status": "ok"}
+    await _audit(
+        int(admin["sub"]),
+        "delete",
+        "lesson",
+        {"lesson_id": lesson_id, "date": date.isoformat(), "time": time, "telegram_id": telegram_id, "scope": scope},
+    )
+    return {"status": "ok", "scope": scope}
+
+
+@app.get("/api/admin/work-schedule")
+async def admin_get_work_schedule(_: dict[str, Any] = Depends(require_admin)) -> dict[str, Any]:
+    intervals_map = await _current_intervals_map()
+    days: list[dict[str, Any]] = []
+    for weekday in range(7):
+        intervals = intervals_map.get(weekday, [])
+        days.append(
+            {
+                "weekday": weekday,
+                "enabled": len(intervals) > 0,
+                "intervals": [{"start": _minutes_to_hhmm(s), "end": _minutes_to_hhmm(e)} for s, e in intervals],
+            }
+        )
+    return {"days": days}
+
+
+@app.put("/api/admin/work-schedule")
+async def admin_put_work_schedule(payload: WorkScheduleIn, admin: dict[str, Any] = Depends(require_admin)) -> dict[str, Any]:
+    days = _normalized_days_payload(payload.days)
+    await session.execute(text("DELETE FROM working_intervals"))
+    for day in days:
+        if not day["enabled"]:
+            continue
+        for start_min, end_min in day["intervals"]:
+            await session.execute(
+                text(
+                    "INSERT INTO working_intervals (weekday, start_minute, end_minute, is_active, created_at, updated_at) "
+                    "VALUES (:weekday, :start_minute, :end_minute, 1, datetime('now'), datetime('now'))"
+                ),
+                {"weekday": day["weekday"], "start_minute": start_min, "end_minute": end_min},
+            )
+    await session.commit()
+    await _audit(int(admin["sub"]), "update", "work_schedule", {"days": len(days)})
+    return await admin_get_work_schedule(admin)
+
+
+@app.post("/api/admin/work-schedule/preview-impact")
+async def admin_preview_work_schedule_impact(
+    payload: WorkSchedulePreviewIn,
+    _: dict[str, Any] = Depends(require_admin),
+) -> dict[str, Any]:
+    days = _normalized_days_payload(payload.days)
+    intervals_map = {d["weekday"]: d["intervals"] for d in days if d["enabled"]}
+    date_from = payload.date_from or datetime.date.today()
+    date_to = payload.date_to or (date_from + datetime.timedelta(days=30))
+
+    rows = await session.execute(
+        select(RecordDate, StudentProfile)
+        .join(StudentProfile, StudentProfile.telegram_id == RecordDate.telegram_id, isouter=True)
+        .where(
+            RecordDate.record_date >= date_from,
+            RecordDate.record_date <= date_to,
+            RecordDate.telegram_id.is_not(None),
+            RecordDate.kind.not_in(["block", "allow"]),
+            (RecordDate.booking_status.is_(None)) | (RecordDate.booking_status != "rejected"),
+        )
+        .order_by(RecordDate.record_date.asc(), RecordDate.hour.asc(), RecordDate.minute.asc(), RecordDate.id.asc())
+    )
+
+    affected: list[dict[str, Any]] = []
+    for rec, profile in rows.all():
+        duration = int(rec.duration_minutes or 60)
+        if _is_slot_allowed(intervals_map, rec.record_date, int(rec.hour), int(rec.minute), duration):
+            continue
+        affected.append(
+            {
+                "record_id": int(rec.id),
+                "telegram_id": int(rec.telegram_id),
+                "full_name": profile.full_name if profile else None,
+                "date": rec.record_date.isoformat(),
+                "time": f"{int(rec.hour):02d}:{int(rec.minute):02d}",
+                "duration": duration,
+                "status": rec.booking_status or "approved",
+                "kind": _booking_kind_label(rec.kind),
+            }
+        )
+    return {"date_from": date_from.isoformat(), "date_to": date_to.isoformat(), "affected": affected, "total": len(affected)}
+
+
+@app.post("/api/admin/work-schedule/apply-impact")
+async def admin_apply_work_schedule_impact(
+    payload: WorkScheduleApplyIn,
+    admin: dict[str, Any] = Depends(require_admin),
+) -> dict[str, Any]:
+    deleted = 0
+    notified = 0
+    reason = payload.reason or "изменение рабочего расписания"
+    for record_id in payload.affected_ids:
+        rec = await transactions.get_record_by_id(int(record_id))
+        if not rec or rec.telegram_id is None:
+            continue
+        await transactions.delete_single_slot(int(rec.telegram_id), rec.record_date, int(rec.hour), int(rec.minute))
+        deleted += 1
+
+        if payload.notify_users:
+            try:
+                await bot.send_message(
+                    chat_id=int(rec.telegram_id),
+                    text=(
+                        "❗Занятие отменено администратором\n"
+                        f"Дата: {rec.record_date.isoformat()}\n"
+                        f"Время: {int(rec.hour):02d}:{int(rec.minute):02d}\n"
+                        f"Причина: {reason}\n"
+                        "Пожалуйста, выберите новый слот в Mini App."
+                    ),
+                )
+                notified += 1
+            except Exception as exc:  # pylint: disable=broad-except
+                logger.warning("failed to notify canceled lesson record_id=%s: %s", record_id, exc)
+
+    await _audit(
+        int(admin["sub"]),
+        "apply_impact",
+        "work_schedule",
+        {"affected_ids": payload.affected_ids, "deleted": deleted, "notified": notified},
+    )
+    return {"status": "ok", "deleted": deleted, "notified": notified}
 
 
 @app.get("/api/admin/schedule/day")
 async def admin_schedule_day(date: datetime.date, _: dict[str, Any] = Depends(require_admin)) -> dict[str, Any]:
     items = await transactions.viewing_recordings_day_db(date, show_blocks=True)
+    def _kind_code(kind_label: str) -> str:
+        if kind_label == "Регулярное":
+            return "regular"
+        if kind_label == "Блок":
+            return "block"
+        return "single"
+
     return {
         "date": date.isoformat(),
         "items": [
@@ -723,6 +988,7 @@ async def admin_schedule_day(date: datetime.date, _: dict[str, Any] = Depends(re
                 "hour": int(i[2]),
                 "minute": int(i[3]),
                 "kind": i[4],
+                "kind_code": _kind_code(i[4]),
                 "telegram_id": i[5],
                 "duration": i[6],
                 "username": i[7] if len(i) > 7 else None,

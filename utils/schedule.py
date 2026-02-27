@@ -1,5 +1,10 @@
-"""Генерация слотов по недельному расписанию."""
+"""Генерация слотов по недельному расписанию (динамически из БД + fallback)."""
 import datetime
+import logging
+import os
+import sqlite3
+import threading
+import time
 from typing import List, Tuple
 
 # День недели: 0 - Пн ... 6 - Вс
@@ -15,7 +20,13 @@ WEEK_SCHEDULE = {
 
 # Длительность встречи и шаг выбора времени
 SLOT_DURATION_MINUTES = 60
-SLOT_STEP_MINUTES = 10
+SLOT_STEP_MINUTES = 5
+
+_CACHE_TTL_SEC = 45
+_CACHE_LOCK = threading.Lock()
+_CACHE_TS = 0.0
+_CACHE_MAP: dict[int, list[tuple[str, str]]] | None = None
+logger = logging.getLogger(__name__)
 
 
 def _parse_time(value: str) -> datetime.time:
@@ -23,9 +34,76 @@ def _parse_time(value: str) -> datetime.time:
     return datetime.time(int(hour), int(minute))
 
 
+def _minutes_to_hhmm(total_minutes: int) -> str:
+    return f"{total_minutes // 60:02d}:{total_minutes % 60:02d}"
+
+
+def _resolve_db_path() -> str:
+    db_path = os.getenv("DB_PATH", "database/database.db")
+    if os.path.isabs(db_path):
+        return db_path
+    return os.path.abspath(db_path)
+
+
+def _load_schedule_from_db() -> dict[int, list[tuple[str, str]]]:
+    path = _resolve_db_path()
+    if not os.path.exists(path):
+        return {}
+    conn = sqlite3.connect(path)
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='working_intervals'"
+        )
+        if not cur.fetchone():
+            return {}
+
+        cur.execute(
+            "SELECT weekday, start_minute, end_minute "
+            "FROM working_intervals "
+            "WHERE is_active = 1 "
+            "ORDER BY weekday, start_minute, end_minute"
+        )
+        rows = cur.fetchall()
+    finally:
+        conn.close()
+
+    schedule_map: dict[int, list[tuple[str, str]]] = {}
+    for weekday, start_minute, end_minute in rows:
+        day = int(weekday)
+        start = _minutes_to_hhmm(int(start_minute))
+        end = _minutes_to_hhmm(int(end_minute))
+        schedule_map.setdefault(day, []).append((start, end))
+    return schedule_map
+
+
+def _working_schedule_map() -> dict[int, list[tuple[str, str]]]:
+    global _CACHE_TS, _CACHE_MAP
+    now = time.time()
+    with _CACHE_LOCK:
+        if _CACHE_MAP is not None and (now - _CACHE_TS) < _CACHE_TTL_SEC:
+            return _CACHE_MAP
+        try:
+            loaded = _load_schedule_from_db()
+            _CACHE_MAP = loaded if loaded else {}
+            _CACHE_TS = now
+        except Exception as exc:  # pylint: disable=broad-except
+            logger.warning("failed to load working schedule from db, fallback to static: %s", exc)
+            _CACHE_MAP = {}
+            _CACHE_TS = now
+        return _CACHE_MAP
+
+
+def get_working_intervals_for_weekday(weekday: int) -> list[tuple[str, str]]:
+    dynamic = _working_schedule_map().get(weekday)
+    if dynamic is not None:
+        return dynamic
+    return WEEK_SCHEDULE.get(weekday, [])
+
+
 def slots_for_date(target_date: datetime.date, now_dt: datetime.datetime | None = None) -> List[Tuple[int, int]]:
     """Возвращает список доступных стартов слотов (hour, minute) на дату по расписанию."""
-    day_schedule = WEEK_SCHEDULE.get(target_date.weekday(), [])
+    day_schedule = get_working_intervals_for_weekday(target_date.weekday())
     if not day_schedule:
         return []
 
@@ -58,7 +136,7 @@ def is_time_in_schedule(
     duration_minutes: int = SLOT_DURATION_MINUTES,
 ) -> bool:
     """Проверяет, попадает ли слот в доступные интервалы дня."""
-    day_schedule = WEEK_SCHEDULE.get(target_date.weekday(), [])
+    day_schedule = get_working_intervals_for_weekday(target_date.weekday())
     if not day_schedule:
         return False
 

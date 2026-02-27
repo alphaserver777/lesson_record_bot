@@ -575,7 +575,6 @@ function RoutedUserView({ token, user }) {
 
 function AdminView({ token }) {
   const [activeTab, setActiveTab] = useState('records')
-  const [recordsRange, setRecordsRange] = useState('day')
   const [manageSection, setManageSection] = useState('clients')
   const [error, setError] = useState('')
   const [dashboardToday, setDashboardToday] = useState([])
@@ -625,10 +624,16 @@ function AdminView({ token }) {
 
   const [systemHealth, setSystemHealth] = useState(null)
   const [backupStatus, setBackupStatus] = useState(null)
+  const [workScheduleDays, setWorkScheduleDays] = useState([])
+  const [workImpact, setWorkImpact] = useState(null)
+  const [workImpactRange, setWorkImpactRange] = useState({
+    date_from: new Date().toISOString().slice(0, 10),
+    date_to: new Date(Date.now() + 1000 * 60 * 60 * 24 * 30).toISOString().slice(0, 10),
+  })
 
   const adminTabs = [
-    ['records', 'Записи', '▦'],
-    ['schedule', 'График', '▥'],
+    ['records', 'Записи', '▥'],
+    ['work_schedule', 'Расписание', '▦'],
     ['manage', 'Управление', '◫'],
     ['analytics', 'Аналитика', '◷'],
     ['settings', 'Настройки', '⚙'],
@@ -725,10 +730,13 @@ function AdminView({ token }) {
     setSelectedApproval(null)
   }
 
-  async function deleteScheduleItem(item) {
+  async function deleteScheduleItem(item, scope = 'single') {
     if (!item?.telegram_id) return
     const time = `${String(item.hour).padStart(2, '0')}:${String(item.minute).padStart(2, '0')}`
-    await api(`/api/admin/lessons/0?date=${day}&time=${time}&telegram_id=${item.telegram_id}`, { token, method: 'DELETE' })
+    await api(
+      `/api/admin/lessons/0?date=${day}&time=${time}&telegram_id=${item.telegram_id}&scope=${scope}`,
+      { token, method: 'DELETE' },
+    )
     await loadSchedule()
   }
 
@@ -780,6 +788,97 @@ function AdminView({ token }) {
     setBackupStatus(await api('/api/admin/system/backup', { token }))
   }
 
+  function ensureWeekDays(days) {
+    const byDay = new Map((days || []).map(d => [Number(d.weekday), d]))
+    const result = []
+    for (let i = 0; i < 7; i += 1) {
+      const item = byDay.get(i)
+      if (item) {
+        result.push({
+          weekday: i,
+          enabled: !!item.enabled,
+          intervals: Array.isArray(item.intervals) ? item.intervals : [],
+        })
+      } else {
+        result.push({ weekday: i, enabled: false, intervals: [] })
+      }
+    }
+    return result
+  }
+
+  async function loadWorkSchedule() {
+    const data = await api('/api/admin/work-schedule', { token })
+    setWorkScheduleDays(ensureWeekDays(data.days))
+  }
+
+  function patchWorkDay(weekday, patch) {
+    setWorkScheduleDays(prev => prev.map(dayItem => {
+      if (dayItem.weekday !== weekday) return dayItem
+      return { ...dayItem, ...patch }
+    }))
+  }
+
+  function addWorkInterval(weekday) {
+    setWorkScheduleDays(prev => prev.map(dayItem => {
+      if (dayItem.weekday !== weekday) return dayItem
+      const next = [...dayItem.intervals, { start: '10:00', end: '11:00' }]
+      return { ...dayItem, enabled: true, intervals: next }
+    }))
+  }
+
+  function removeWorkInterval(weekday, idx) {
+    setWorkScheduleDays(prev => prev.map(dayItem => {
+      if (dayItem.weekday !== weekday) return dayItem
+      const next = dayItem.intervals.filter((_, i) => i !== idx)
+      return { ...dayItem, intervals: next }
+    }))
+  }
+
+  function updateWorkInterval(weekday, idx, key, value) {
+    setWorkScheduleDays(prev => prev.map(dayItem => {
+      if (dayItem.weekday !== weekday) return dayItem
+      const next = dayItem.intervals.map((it, i) => (i === idx ? { ...it, [key]: value } : it))
+      return { ...dayItem, intervals: next }
+    }))
+  }
+
+  async function saveWorkSchedule() {
+    const payload = { days: workScheduleDays }
+    await api('/api/admin/work-schedule', { token, method: 'PUT', body: payload })
+    await loadWorkSchedule()
+    setWorkImpact(null)
+  }
+
+  async function previewWorkImpact() {
+    const data = await api('/api/admin/work-schedule/preview-impact', {
+      token,
+      method: 'POST',
+      body: {
+        days: workScheduleDays,
+        date_from: workImpactRange.date_from,
+        date_to: workImpactRange.date_to,
+      },
+    })
+    setWorkImpact(data)
+  }
+
+  async function applyWorkImpact() {
+    const ids = (workImpact?.affected || []).map(i => Number(i.record_id))
+    if (!ids.length) return
+    await api('/api/admin/work-schedule/apply-impact', {
+      token,
+      method: 'POST',
+      body: {
+        affected_ids: ids,
+        notify_users: true,
+        reason: 'изменение рабочего расписания',
+      },
+    })
+    await loadSchedule().catch(() => {})
+    await loadScheduleMonth().catch(() => {})
+    await previewWorkImpact().catch(() => {})
+  }
+
   useEffect(() => {
     ;(async () => {
       await loadDashboard().catch(() => {})
@@ -791,6 +890,7 @@ function AdminView({ token }) {
       await loadApprovals().catch(() => {})
       await loadDebtors().catch(() => {})
       await loadSystem().catch(() => {})
+      await loadWorkSchedule().catch(() => {})
     })()
   }, [])
 
@@ -803,18 +903,15 @@ function AdminView({ token }) {
   }, [adminMonth, scheduleDuration])
 
   useEffect(() => {
-    if (activeTab !== 'schedule') return
+    if (activeTab !== 'records') return
     if (scheduleMode === 'booked') {
       loadSchedule().catch(() => {})
-    } else {
+    } else if (scheduleMode === 'free') {
       loadFreeSlots().catch(() => {})
+    } else {
+      loadApprovals().catch(() => {})
     }
   }, [activeTab, scheduleMode, day, scheduleDuration])
-
-  useEffect(() => {
-    if (activeTab !== 'records' || recordsRange !== 'booking_requests') return
-    loadApprovals().catch(() => {})
-  }, [activeTab, recordsRange])
 
   const filteredClients = (clientOptions || [])
     .filter(c => {
@@ -895,16 +992,61 @@ function AdminView({ token }) {
       <div className="mini-body">
         {activeTab === 'records' ? (
           <div className="stack">
-            <Card title="Записи" subtitle="Журнал и заявки">
-              <div className="segmented records-switch">
-                <button className={recordsRange === 'day' ? 'seg active' : 'seg'} onClick={() => setRecordsRange('day')}>Сегодня</button>
-                <button className={recordsRange === 'week' ? 'seg active' : 'seg'} onClick={() => setRecordsRange('week')}>Неделя</button>
-                <button className={recordsRange === 'month' ? 'seg active' : 'seg'} onClick={() => setRecordsRange('month')}>Месяц</button>
-                <button className={recordsRange === 'booking_requests' ? 'seg active' : 'seg'} onClick={() => setRecordsRange('booking_requests')}>Заявки</button>
+            <Card title="Календарь расписания" subtitle={scheduleMode === 'booked' ? 'Просмотр записанных клиентов' : scheduleMode === 'free' ? 'Свободные слоты для назначения' : 'Заявки на согласование'}>
+              <div className="segmented">
+                <button
+                  className={scheduleMode === 'booked' ? 'seg active' : 'seg'}
+                  onClick={() => { setScheduleMode('booked'); loadSchedule().catch(() => {}) }}
+                >
+                  Записанные
+                </button>
+                <button
+                  className={scheduleMode === 'free' ? 'seg active' : 'seg'}
+                  onClick={() => { setScheduleMode('free'); loadFreeSlots().catch(() => {}) }}
+                >
+                  Свободные слоты
+                </button>
+                <button
+                  className={scheduleMode === 'requests' ? 'seg active' : 'seg'}
+                  onClick={() => { setScheduleMode('requests'); loadApprovals().catch(() => {}) }}
+                >
+                  Заявки
+                </button>
+              </div>
+              <div className="month-switch">
+                <button className="chip ok" onClick={() => setAdminMonth(prev => shiftMonth(prev, -1))}>{'<'}</button>
+                <strong>{formatMonthRu(adminMonth)}</strong>
+                <button className="chip ok" onClick={() => setAdminMonth(prev => shiftMonth(prev, 1))}>{'>'}</button>
+              </div>
+              <div className="weekdays">
+                {weekDays.map(w => <div key={`adm-${w}`}>{w}</div>)}
+              </div>
+              <div className="calendar-grid">
+                {adminCalendarCells.map((cell, idx) => (
+                  cell ? (
+                    <button
+                      key={cell.date}
+                      className={`calendar-day ${day === cell.date ? 'selected' : ''} ${cell.past ? 'off' : 'on'}`}
+                      onClick={async () => {
+                        setDay(cell.date)
+                        if (scheduleMode === 'booked') {
+                          await loadSchedule().catch(() => {})
+                        } else if (scheduleMode === 'free') {
+                          await loadFreeSlots().catch(() => {})
+                        }
+                      }}
+                      title={scheduleMode === 'booked' ? `Записей: ${cell.booked_count}` : `Свободно: ${cell.free_count}`}
+                    >
+                      <span>{Number(cell.date.slice(8))}</span>
+                    </button>
+                  ) : (
+                    <div key={`adm-empty-${idx}`} className="calendar-day empty" />
+                  )
+                ))}
               </div>
             </Card>
 
-            {recordsRange === 'booking_requests' ? (
+            {scheduleMode === 'requests' ? (
               <>
                 <Card title="Заявки на занятие" subtitle="Ожидают согласования">
                   <button className="btn secondary" onClick={() => loadApprovals().catch(e => setError(String(e.message || e)))}>Обновить заявки</button>
@@ -935,112 +1077,11 @@ function AdminView({ token }) {
                         <button className="btn" onClick={() => decideApproval(selectedApproval.record_id, 'approve').catch(e => setError(String(e.message || e)))}>Approve</button>
                         <button className="btn secondary" onClick={() => decideApproval(selectedApproval.record_id, 'reject').catch(e => setError(String(e.message || e)))}>Reject</button>
                       </div>
-                      <button className="btn secondary" onClick={() => { setDay(selectedApproval.date); setActiveTab('schedule') }}>Open in schedule day</button>
                     </div>
                   </Card>
                 ) : null}
               </>
-            ) : (
-              <>
-                <Card title={recordsRange === 'day' ? 'Сегодня' : recordsRange === 'week' ? 'Записи за неделю' : 'Записи за месяц'} subtitle="Занятия и статус">
-                  <div className="pill-row">
-                    <Pill label="Занятий" value={dashboardKpi?.today_lessons ?? 0} tone="mint" />
-                    <Pill label="Ожидает" value={dashboardKpi?.pending_approvals ?? 0} tone="blue" />
-                    <Pill label="Доход дня" value={`${dashboardKpi?.today_income ?? 0} ₽`} tone="violet" />
-                  </div>
-                  <ul className="list list-compact">
-                    {(dashboardToday || []).slice(0, recordsRange === 'day' ? 12 : 20).map((i, idx) => (
-                      <li key={`td-${idx}`}>
-                        <strong>{i.time}</strong>
-                        <span>{i.full_name || '—'}</span>
-                        <small>{i.kind} • {i.duration}м • {i.status === 'completed' ? 'проведено' : 'запланировано'}</small>
-                      </li>
-                    ))}
-                  </ul>
-                </Card>
-
-                {recordsRange === 'month' ? (
-                  <Card title="Динамика месяца" subtitle="Доход и проведённые занятия">
-                    <div className="bar-chart">
-                      {(monthActivity || []).map(dayItem => {
-                        const maxRevenue = Math.max(1, ...monthActivity.map(d => d.revenue || 0))
-                        const maxLessons = Math.max(1, ...monthActivity.map(d => d.lessons_done || 0))
-                        const hRevenue = Math.max(4, Math.round(((dayItem.revenue || 0) / maxRevenue) * 48))
-                        const hLessons = Math.max(4, Math.round(((dayItem.lessons_done || 0) / maxLessons) * 48))
-                        return (
-                          <div className="bar-col" key={`records-month-${dayItem.date}`} title={`${dayItem.date}: ${dayItem.revenue} ₽ / ${dayItem.lessons_done} занятий`}>
-                            <div className="bar-wrap">
-                              <span className="bar bar-revenue" style={{ height: `${hRevenue}px` }} />
-                              <span className="bar bar-lessons" style={{ height: `${hLessons}px` }} />
-                            </div>
-                            <small>{dayItem.day}</small>
-                          </div>
-                        )
-                      })}
-                    </div>
-                  </Card>
-                ) : null}
-              </>
-            )}
-
-            <Card title="Быстрые действия" subtitle="Ежедневные операции">
-              <div className="mini-actions-row">
-                <button className="btn" onClick={() => setActiveTab('schedule')}>Открыть график</button>
-                <button className="btn secondary" onClick={() => setActiveTab('manage')}>Открыть управление</button>
-              </div>
-            </Card>
-          </div>
-        ) : null}
-
-        {activeTab === 'schedule' ? (
-          <div className="stack">
-            <Card title="Календарь расписания" subtitle={scheduleMode === 'booked' ? 'Просмотр записанных клиентов' : 'Свободные слоты для назначения'}>
-              <div className="segmented">
-                <button
-                  className={scheduleMode === 'booked' ? 'seg active' : 'seg'}
-                  onClick={() => { setScheduleMode('booked'); loadSchedule().catch(() => {}) }}
-                >
-                  Записанные
-                </button>
-                <button
-                  className={scheduleMode === 'free' ? 'seg active' : 'seg'}
-                  onClick={() => { setScheduleMode('free'); loadFreeSlots().catch(() => {}) }}
-                >
-                  Свободные слоты
-                </button>
-              </div>
-              <div className="month-switch">
-                <button className="chip ok" onClick={() => setAdminMonth(prev => shiftMonth(prev, -1))}>{'<'}</button>
-                <strong>{formatMonthRu(adminMonth)}</strong>
-                <button className="chip ok" onClick={() => setAdminMonth(prev => shiftMonth(prev, 1))}>{'>'}</button>
-              </div>
-              <div className="weekdays">
-                {weekDays.map(w => <div key={`adm-${w}`}>{w}</div>)}
-              </div>
-              <div className="calendar-grid">
-                {adminCalendarCells.map((cell, idx) => (
-                  cell ? (
-                    <button
-                      key={cell.date}
-                      className={`calendar-day ${day === cell.date ? 'selected' : ''} ${cell.past ? 'off' : 'on'}`}
-                      onClick={async () => {
-                        setDay(cell.date)
-                        if (scheduleMode === 'booked') {
-                          await loadSchedule().catch(() => {})
-                        } else {
-                          await loadFreeSlots().catch(() => {})
-                        }
-                      }}
-                      title={scheduleMode === 'booked' ? `Записей: ${cell.booked_count}` : `Свободно: ${cell.free_count}`}
-                    >
-                      <span>{Number(cell.date.slice(8))}</span>
-                    </button>
-                  ) : (
-                    <div key={`adm-empty-${idx}`} className="calendar-day empty" />
-                  )
-                ))}
-              </div>
-            </Card>
+            ) : null}
 
             {scheduleMode === 'booked' ? (
               <Card title={`Записи на ${day}`} subtitle="Клиенты и время">
@@ -1051,14 +1092,29 @@ function AdminView({ token }) {
                       <strong>{String(s.hour).padStart(2, '0')}:{String(s.minute).padStart(2, '0')}</strong>
                       <span>{s.full_name}</span>
                       <small>{s.kind}</small>
-                      {s.telegram_id ? (
-                        <button className="btn secondary" onClick={() => deleteScheduleItem(s).catch(e => setError(String(e.message || e)))}>Удалить</button>
+                      {s.telegram_id && s.kind_code !== 'block' ? (
+                        s.kind_code === 'regular' ? (
+                          <div className="mini-actions-row">
+                            <button className="btn secondary" onClick={() => deleteScheduleItem(s, 'single').catch(e => setError(String(e.message || e)))}>
+                              Удалить только это
+                            </button>
+                            <button className="btn secondary" onClick={() => deleteScheduleItem(s, 'all_regular').catch(e => setError(String(e.message || e)))}>
+                              Удалить все регулярные
+                            </button>
+                          </div>
+                        ) : (
+                          <button className="btn secondary" onClick={() => deleteScheduleItem(s, 'single').catch(e => setError(String(e.message || e)))}>
+                            Удалить
+                          </button>
+                        )
                       ) : null}
                     </li>
                   ))}
                 </ul>
               </Card>
-            ) : (
+            ) : null}
+
+            {scheduleMode === 'free' ? (
               <Card title={`Свободные слоты на ${day}`} subtitle="Выберите слот и назначьте клиента">
                 <input className="input" value={clientSearch} onChange={e => setClientSearch(e.target.value)} placeholder="Поиск клиента: имя / телефон / id" />
                 <select
@@ -1112,7 +1168,70 @@ function AdminView({ token }) {
                   ))}
                 </div>
               </Card>
-            )}
+            ) : null}
+          </div>
+        ) : null}
+
+        {activeTab === 'work_schedule' ? (
+          <div className="stack">
+            <Card title="Моё рабочее расписание" subtitle="Выберите дни и интервалы работы">
+              <div className="stack">
+                {workScheduleDays.map(dayItem => (
+                  <div key={`work-day-${dayItem.weekday}`} className="work-day-card">
+                    <div className="work-day-head">
+                      <strong>{weekDays[dayItem.weekday]}</strong>
+                      <label className="work-toggle">
+                        <input type="checkbox" checked={!!dayItem.enabled} onChange={e => patchWorkDay(dayItem.weekday, { enabled: e.target.checked })} />
+                        <span>{dayItem.enabled ? 'Рабочий' : 'Выходной'}</span>
+                      </label>
+                    </div>
+                    {dayItem.enabled ? (
+                      <div className="work-intervals">
+                        {dayItem.intervals.map((interval, idx) => (
+                          <div key={`interval-${dayItem.weekday}-${idx}`} className="work-interval-row">
+                            <input className="input" value={interval.start} onChange={e => updateWorkInterval(dayItem.weekday, idx, 'start', e.target.value)} />
+                            <span>—</span>
+                            <input className="input" value={interval.end} onChange={e => updateWorkInterval(dayItem.weekday, idx, 'end', e.target.value)} />
+                            <button className="btn secondary" onClick={() => removeWorkInterval(dayItem.weekday, idx)}>✕</button>
+                          </div>
+                        ))}
+                        <div className="mini-actions-row">
+                          <button className="btn secondary" onClick={() => addWorkInterval(dayItem.weekday)}>Добавить интервал</button>
+                          <button className="btn secondary" onClick={() => patchWorkDay(dayItem.weekday, { intervals: [{ start: '10:00', end: '18:00' }] })}>Сбросить</button>
+                        </div>
+                      </div>
+                    ) : null}
+                  </div>
+                ))}
+              </div>
+            </Card>
+
+            <Card title="Последствия изменений" subtitle="Проверьте какие занятия выйдут за пределы графика">
+              <div className="custom-row">
+                <input type="date" className="input" value={workImpactRange.date_from} onChange={e => setWorkImpactRange(prev => ({ ...prev, date_from: e.target.value }))} />
+                <input type="date" className="input" value={workImpactRange.date_to} onChange={e => setWorkImpactRange(prev => ({ ...prev, date_to: e.target.value }))} />
+              </div>
+              <div className="mini-actions-row">
+                <button className="btn secondary" onClick={() => previewWorkImpact().catch(e => setError(String(e.message || e)))}>Проверить влияние</button>
+                <button className="btn" onClick={() => saveWorkSchedule().catch(e => setError(String(e.message || e)))}>Сохранить расписание</button>
+              </div>
+              {workImpact ? (
+                <div className="stack">
+                  <small>Затронуто записей: {workImpact.total || 0}</small>
+                  <ul className="list list-compact">
+                    {(workImpact.affected || []).slice(0, 25).map(item => (
+                      <li key={`impact-${item.record_id}`}>
+                        <span>{item.date} {item.time}</span>
+                        <small>{item.full_name || item.telegram_id}</small>
+                      </li>
+                    ))}
+                  </ul>
+                  {(workImpact.total || 0) > 0 ? (
+                    <button className="btn secondary" onClick={() => applyWorkImpact().catch(e => setError(String(e.message || e)))}>Отменить затронутые и уведомить</button>
+                  ) : null}
+                </div>
+              ) : null}
+            </Card>
           </div>
         ) : null}
 
