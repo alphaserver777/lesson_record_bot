@@ -513,6 +513,10 @@ body {
   grid-template-columns: repeat(2, minmax(0, 1fr));
 }
 
+.bottom-nav-five {
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+}
+
 .bottom-item {
   border: 0;
   background: transparent;
@@ -561,6 +565,12 @@ body {
 .seg.active {
   background: linear-gradient(140deg, #474851, #393a42);
   color: #fff;
+}
+
+.records-switch .seg {
+  min-height: 36px;
+  font-size: 12px;
+  padding: 0 4px;
 }
 
 .input {

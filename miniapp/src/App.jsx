@@ -574,7 +574,9 @@ function RoutedUserView({ token, user }) {
 }
 
 function AdminView({ token }) {
-  const [activeTab, setActiveTab] = useState('main')
+  const [activeTab, setActiveTab] = useState('records')
+  const [recordsRange, setRecordsRange] = useState('day')
+  const [manageSection, setManageSection] = useState('clients')
   const [error, setError] = useState('')
   const [dashboardToday, setDashboardToday] = useState([])
   const [dashboardKpi, setDashboardKpi] = useState(null)
@@ -601,9 +603,7 @@ function AdminView({ token }) {
   const [freeSlots, setFreeSlots] = useState([])
   const [selectedFreeTime, setSelectedFreeTime] = useState('')
 
-  const [lessonForm, setLessonForm] = useState({
-    telegram_id: '',
-  })
+  const [lessonForm, setLessonForm] = useState({ telegram_id: '' })
 
   const [approvals, setApprovals] = useState([])
   const [selectedApproval, setSelectedApproval] = useState(null)
@@ -627,12 +627,11 @@ function AdminView({ token }) {
   const [backupStatus, setBackupStatus] = useState(null)
 
   const adminTabs = [
-    ['main', 'Главная'],
-    ['requests', 'Заявки'],
-    ['schedule', 'Расписание'],
-    ['clients', 'Клиенты'],
-    ['finance', 'Финансы'],
-    ['more', 'Ещё'],
+    ['records', 'Записи', '▦'],
+    ['schedule', 'График', '▥'],
+    ['manage', 'Управление', '◫'],
+    ['analytics', 'Аналитика', '◷'],
+    ['settings', 'Настройки', '⚙'],
   ]
 
   async function loadUsers() {
@@ -812,6 +811,11 @@ function AdminView({ token }) {
     }
   }, [activeTab, scheduleMode, day, scheduleDuration])
 
+  useEffect(() => {
+    if (activeTab !== 'records' || recordsRange !== 'booking_requests') return
+    loadApprovals().catch(() => {})
+  }, [activeTab, recordsRange])
+
   const filteredClients = (clientOptions || [])
     .filter(c => {
       const q = clientSearch.trim().toLowerCase()
@@ -824,6 +828,7 @@ function AdminView({ token }) {
       )
     })
     .slice(0, 200)
+
   const groupedFreeSlots = (freeSlots || []).reduce((acc, t) => {
     const hour = String(t).slice(0, 2)
     if (!acc[hour]) acc[hour] = []
@@ -888,129 +893,102 @@ function AdminView({ token }) {
       </section>
 
       <div className="mini-body">
-        <div className="admin-tabs">
-          {adminTabs.map(([key, label]) => (
-            <button key={key} className={activeTab === key ? 'admin-tab active' : 'admin-tab'} onClick={() => setActiveTab(key)}>
-              {label}
-            </button>
-          ))}
-        </div>
-
-        {activeTab === 'main' ? (
+        {activeTab === 'records' ? (
           <div className="stack">
-            <Card title="Сегодня" subtitle="Занятия на текущий день">
-              <div className="pill-row">
-                <Pill label="Занятий" value={dashboardKpi?.today_lessons ?? 0} tone="mint" />
-                <Pill label="Ожидает" value={dashboardKpi?.pending_approvals ?? 0} tone="blue" />
-                <Pill label="Доход дня" value={`${dashboardKpi?.today_income ?? 0} ₽`} tone="violet" />
+            <Card title="Записи" subtitle="Журнал и заявки">
+              <div className="segmented records-switch">
+                <button className={recordsRange === 'day' ? 'seg active' : 'seg'} onClick={() => setRecordsRange('day')}>Сегодня</button>
+                <button className={recordsRange === 'week' ? 'seg active' : 'seg'} onClick={() => setRecordsRange('week')}>Неделя</button>
+                <button className={recordsRange === 'month' ? 'seg active' : 'seg'} onClick={() => setRecordsRange('month')}>Месяц</button>
+                <button className={recordsRange === 'booking_requests' ? 'seg active' : 'seg'} onClick={() => setRecordsRange('booking_requests')}>Заявки</button>
               </div>
-              <ul className="list list-compact">
-                {(dashboardToday || []).slice(0, 12).map((i, idx) => (
-                  <li key={`td-${idx}`}>
-                    <strong>{i.time}</strong>
-                    <span>{i.full_name || '—'}</span>
-                    <small>{i.kind} • {i.duration}м • {i.status === 'completed' ? 'проведено' : 'запланировано'}</small>
-                  </li>
-                ))}
-              </ul>
             </Card>
 
-            <Card title="Статистика месяца" subtitle="Доход и проведённые занятия">
-              <div className="pill-row">
-                <Pill label="Доход мес." value={`${dashboardKpi?.month_income ?? 0} ₽`} tone="mint" />
-                <Pill label="Должники" value={dashboardKpi?.debtors ?? 0} tone="blue" />
-                <Pill label="Клиенты" value={usersTotal || users.length || 0} tone="violet" />
-              </div>
-              <div className="bar-chart">
-                {(monthActivity || []).map(day => {
-                  const maxRevenue = Math.max(1, ...monthActivity.map(d => d.revenue || 0))
-                  const maxLessons = Math.max(1, ...monthActivity.map(d => d.lessons_done || 0))
-                  const hRevenue = Math.max(4, Math.round(((day.revenue || 0) / maxRevenue) * 48))
-                  const hLessons = Math.max(4, Math.round(((day.lessons_done || 0) / maxLessons) * 48))
-                  return (
-                    <div className="bar-col" key={`m-${day.date}`} title={`${day.date}: ${day.revenue} ₽ / ${day.lessons_done} занятий`}>
-                      <div className="bar-wrap">
-                        <span className="bar bar-revenue" style={{ height: `${hRevenue}px` }} />
-                        <span className="bar bar-lessons" style={{ height: `${hLessons}px` }} />
+            {recordsRange === 'booking_requests' ? (
+              <>
+                <Card title="Заявки на занятие" subtitle="Ожидают согласования">
+                  <button className="btn secondary" onClick={() => loadApprovals().catch(e => setError(String(e.message || e)))}>Обновить заявки</button>
+                  <ul className="list list-compact">
+                    {approvals.map(a => (
+                      <li key={a.record_id}>
+                        <button className="btn secondary" onClick={() => openApproval(a.record_id).catch(e => setError(String(e.message || e)))}>
+                          {a.date} {a.time} • {a.full_name || a.telegram_id}
+                        </button>
+                      </li>
+                    ))}
+                  </ul>
+                </Card>
+                {selectedApproval ? (
+                  <Card title={`Заявка #${selectedApproval.record_id}`} subtitle={`${selectedApproval.date} ${selectedApproval.time} • ${selectedApproval.duration} мин`}>
+                    <div className="stack">
+                      <div><strong>Клиент:</strong> {selectedApproval.full_name || selectedApproval.telegram_id}</div>
+                      <div><strong>Тип:</strong> {selectedApproval.kind}</div>
+                      <div><strong>До:</strong></div>
+                      <ul className="list list-compact">
+                        {(selectedApproval.neighbors_before || []).map((n, i) => <li key={`b-${i}`}><span>{n.time}</span><small>{n.full_name || n.kind}</small></li>)}
+                      </ul>
+                      <div><strong>После:</strong></div>
+                      <ul className="list list-compact">
+                        {(selectedApproval.neighbors_after || []).map((n, i) => <li key={`a-${i}`}><span>{n.time}</span><small>{n.full_name || n.kind}</small></li>)}
+                      </ul>
+                      <div className="mini-actions-row">
+                        <button className="btn" onClick={() => decideApproval(selectedApproval.record_id, 'approve').catch(e => setError(String(e.message || e)))}>Approve</button>
+                        <button className="btn secondary" onClick={() => decideApproval(selectedApproval.record_id, 'reject').catch(e => setError(String(e.message || e)))}>Reject</button>
                       </div>
-                      <small>{day.day}</small>
+                      <button className="btn secondary" onClick={() => { setDay(selectedApproval.date); setActiveTab('schedule') }}>Open in schedule day</button>
                     </div>
-                  )
-                })}
-              </div>
-            </Card>
+                  </Card>
+                ) : null}
+              </>
+            ) : (
+              <>
+                <Card title={recordsRange === 'day' ? 'Сегодня' : recordsRange === 'week' ? 'Записи за неделю' : 'Записи за месяц'} subtitle="Занятия и статус">
+                  <div className="pill-row">
+                    <Pill label="Занятий" value={dashboardKpi?.today_lessons ?? 0} tone="mint" />
+                    <Pill label="Ожидает" value={dashboardKpi?.pending_approvals ?? 0} tone="blue" />
+                    <Pill label="Доход дня" value={`${dashboardKpi?.today_income ?? 0} ₽`} tone="violet" />
+                  </div>
+                  <ul className="list list-compact">
+                    {(dashboardToday || []).slice(0, recordsRange === 'day' ? 12 : 20).map((i, idx) => (
+                      <li key={`td-${idx}`}>
+                        <strong>{i.time}</strong>
+                        <span>{i.full_name || '—'}</span>
+                        <small>{i.kind} • {i.duration}м • {i.status === 'completed' ? 'проведено' : 'запланировано'}</small>
+                      </li>
+                    ))}
+                  </ul>
+                </Card>
+
+                {recordsRange === 'month' ? (
+                  <Card title="Динамика месяца" subtitle="Доход и проведённые занятия">
+                    <div className="bar-chart">
+                      {(monthActivity || []).map(dayItem => {
+                        const maxRevenue = Math.max(1, ...monthActivity.map(d => d.revenue || 0))
+                        const maxLessons = Math.max(1, ...monthActivity.map(d => d.lessons_done || 0))
+                        const hRevenue = Math.max(4, Math.round(((dayItem.revenue || 0) / maxRevenue) * 48))
+                        const hLessons = Math.max(4, Math.round(((dayItem.lessons_done || 0) / maxLessons) * 48))
+                        return (
+                          <div className="bar-col" key={`records-month-${dayItem.date}`} title={`${dayItem.date}: ${dayItem.revenue} ₽ / ${dayItem.lessons_done} занятий`}>
+                            <div className="bar-wrap">
+                              <span className="bar bar-revenue" style={{ height: `${hRevenue}px` }} />
+                              <span className="bar bar-lessons" style={{ height: `${hLessons}px` }} />
+                            </div>
+                            <small>{dayItem.day}</small>
+                          </div>
+                        )
+                      })}
+                    </div>
+                  </Card>
+                ) : null}
+              </>
+            )}
 
             <Card title="Быстрые действия" subtitle="Ежедневные операции">
               <div className="mini-actions-row">
-                <button className="btn" onClick={() => setActiveTab('requests')}>Согласовать заявки</button>
-                <button className="btn secondary" onClick={() => setActiveTab('schedule')}>Открыть расписание</button>
+                <button className="btn" onClick={() => setActiveTab('schedule')}>Открыть график</button>
+                <button className="btn secondary" onClick={() => setActiveTab('manage')}>Открыть управление</button>
               </div>
             </Card>
-          </div>
-        ) : null}
-
-        {activeTab === 'clients' ? (
-          <div className="stack">
-            <Card title="Пользователи" subtitle="Поиск и карточка клиента">
-              <div className="custom-row">
-                <input className="input" value={query} onChange={e => setQuery(e.target.value)} placeholder="Имя/телефон" />
-                <button className="btn" onClick={() => loadUsers().catch(e => setError(String(e.message || e)))}>Поиск</button>
-              </div>
-              <div className="mini-actions-row">
-                <button className="btn secondary" disabled={usersPage <= 1} onClick={() => { setUsersPage(p => Math.max(1, p - 1)) }}>← Стр.</button>
-                <button className="btn secondary" onClick={() => { setUsersPage(p => p + 1) }}>Стр. →</button>
-              </div>
-              <small>Всего: {usersTotal}</small>
-              <ul className="list list-compact">
-                {users.map(u => (
-                  <li key={u.telegram_id}>
-                    <button className="btn secondary" onClick={() => selectUser(u.telegram_id).catch(e => setError(String(e.message || e)))}>
-                      {(u.full_name || u.telegram_id)} {u.blocked ? '🔒' : ''}
-                    </button>
-                  </li>
-                ))}
-              </ul>
-            </Card>
-
-            {selectedUser ? (
-              <Card title={selectedUser.full_name || String(selectedUser.telegram_id)} subtitle={`ID: ${selectedUser.telegram_id}`}>
-                <div className="stack">
-                  <input className="input" value={userEdit.full_name} onChange={e => setUserEdit(v => ({ ...v, full_name: e.target.value }))} placeholder="Имя" />
-                  <input className="input" value={userEdit.telephone} onChange={e => setUserEdit(v => ({ ...v, telephone: e.target.value }))} placeholder="Телефон" />
-                  <input className="input" value={userEdit.price} onChange={e => setUserEdit(v => ({ ...v, price: e.target.value }))} placeholder="Цена" />
-                  <div className="mini-actions-row">
-                    <button className="btn" onClick={() => saveUserPatch({
-                      full_name: userEdit.full_name,
-                      telephone: userEdit.telephone,
-                      price: userEdit.price === '' ? null : Number(userEdit.price),
-                    }).catch(e => setError(String(e.message || e)))}>
-                      Сохранить профиль
-                    </button>
-                    <button className="btn secondary" onClick={() => toggleUserBlock().catch(e => setError(String(e.message || e)))}>
-                      {selectedUser.blocked ? 'Разблокировать' : 'Заблокировать'}
-                    </button>
-                  </div>
-                  <div className="custom-row">
-                    <input className="input" value={userEdit.balance_set} onChange={e => setUserEdit(v => ({ ...v, balance_set: e.target.value }))} placeholder="Баланс (set)" />
-                    <button className="btn secondary" onClick={() => saveUserPatch({ balance_lessons_set: Number(userEdit.balance_set || 0) }).catch(e => setError(String(e.message || e)))}>Set</button>
-                  </div>
-                  <div className="custom-row">
-                    <input className="input" value={userEdit.balance_add} onChange={e => setUserEdit(v => ({ ...v, balance_add: e.target.value }))} placeholder="Баланс (+/-)" />
-                    <button className="btn secondary" onClick={() => saveUserPatch({ balance_lessons_add: Number(userEdit.balance_add || 0) }).catch(e => setError(String(e.message || e)))}>Add</button>
-                  </div>
-                  <div className="stack">
-                    <strong>Ближайшие</strong>
-                    <ul className="list list-compact">
-                      {(selectedUserUpcoming || []).slice(0, 5).map((b, i) => <li key={`up-${i}`}><span>{b.date} {b.time}</span><small>{b.kind}</small></li>)}
-                    </ul>
-                    <strong>Архив</strong>
-                    <ul className="list list-compact">
-                      {(selectedUserArchive || []).slice(0, 5).map((b, i) => <li key={`ar-${i}`}><span>{b.date} {b.time}</span><small>{b.kind}</small></li>)}
-                    </ul>
-                  </div>
-                </div>
-              </Card>
-            ) : null}
           </div>
         ) : null}
 
@@ -1138,64 +1116,148 @@ function AdminView({ token }) {
           </div>
         ) : null}
 
-        {activeTab === 'requests' ? (
+        {activeTab === 'manage' ? (
           <div className="stack">
-            <Card title="Approvals" subtitle="Заявки на согласование">
-              <button className="btn secondary" onClick={() => loadApprovals().catch(e => setError(String(e.message || e)))}>Обновить заявки</button>
-              <ul className="list list-compact">
-                {approvals.map(a => (
-                  <li key={a.record_id}>
-                    <button className="btn secondary" onClick={() => openApproval(a.record_id).catch(e => setError(String(e.message || e)))}>
-                      {a.date} {a.time} • {a.full_name || a.telegram_id}
-                    </button>
-                  </li>
-                ))}
-              </ul>
+            <Card title="Управление" subtitle="Клиенты, финансы, рассылки">
+              <div className="segmented">
+                <button className={manageSection === 'clients' ? 'seg active' : 'seg'} onClick={() => setManageSection('clients')}>Клиенты</button>
+                <button className={manageSection === 'finance' ? 'seg active' : 'seg'} onClick={() => setManageSection('finance')}>Финансы</button>
+                <button className={manageSection === 'broadcast' ? 'seg active' : 'seg'} onClick={() => setManageSection('broadcast')}>Рассылки</button>
+              </div>
             </Card>
-            {selectedApproval ? (
-              <Card title={`Заявка #${selectedApproval.record_id}`} subtitle={`${selectedApproval.date} ${selectedApproval.time} • ${selectedApproval.duration} мин`}>
-                <div className="stack">
-                  <div><strong>Клиент:</strong> {selectedApproval.full_name || selectedApproval.telegram_id}</div>
-                  <div><strong>Тип:</strong> {selectedApproval.kind}</div>
-                  <div><strong>До:</strong></div>
-                  <ul className="list list-compact">
-                    {(selectedApproval.neighbors_before || []).map((n, i) => <li key={`b-${i}`}><span>{n.time}</span><small>{n.full_name || n.kind}</small></li>)}
-                  </ul>
-                  <div><strong>После:</strong></div>
-                  <ul className="list list-compact">
-                    {(selectedApproval.neighbors_after || []).map((n, i) => <li key={`a-${i}`}><span>{n.time}</span><small>{n.full_name || n.kind}</small></li>)}
-                  </ul>
-                  <div className="mini-actions-row">
-                    <button className="btn" onClick={() => decideApproval(selectedApproval.record_id, 'approve').catch(e => setError(String(e.message || e)))}>Approve</button>
-                    <button className="btn secondary" onClick={() => decideApproval(selectedApproval.record_id, 'reject').catch(e => setError(String(e.message || e)))}>Reject</button>
+
+            {manageSection === 'clients' ? (
+              <>
+                <Card title="Пользователи" subtitle="Поиск и карточка клиента">
+                  <div className="custom-row">
+                    <input className="input" value={query} onChange={e => setQuery(e.target.value)} placeholder="Имя/телефон" />
+                    <button className="btn" onClick={() => loadUsers().catch(e => setError(String(e.message || e)))}>Поиск</button>
                   </div>
-                  <button className="btn secondary" onClick={() => { setDay(selectedApproval.date); setActiveTab('schedule') }}>Open in schedule day</button>
-                </div>
+                  <div className="mini-actions-row">
+                    <button className="btn secondary" disabled={usersPage <= 1} onClick={() => { setUsersPage(p => Math.max(1, p - 1)) }}>← Стр.</button>
+                    <button className="btn secondary" onClick={() => { setUsersPage(p => p + 1) }}>Стр. →</button>
+                  </div>
+                  <small>Всего: {usersTotal}</small>
+                  <ul className="list list-compact">
+                    {users.map(u => (
+                      <li key={u.telegram_id}>
+                        <button className="btn secondary" onClick={() => selectUser(u.telegram_id).catch(e => setError(String(e.message || e)))}>
+                          {(u.full_name || u.telegram_id)} {u.blocked ? '🔒' : ''}
+                        </button>
+                      </li>
+                    ))}
+                  </ul>
+                </Card>
+
+                {selectedUser ? (
+                  <Card title={selectedUser.full_name || String(selectedUser.telegram_id)} subtitle={`ID: ${selectedUser.telegram_id}`}>
+                    <div className="stack">
+                      <input className="input" value={userEdit.full_name} onChange={e => setUserEdit(v => ({ ...v, full_name: e.target.value }))} placeholder="Имя" />
+                      <input className="input" value={userEdit.telephone} onChange={e => setUserEdit(v => ({ ...v, telephone: e.target.value }))} placeholder="Телефон" />
+                      <input className="input" value={userEdit.price} onChange={e => setUserEdit(v => ({ ...v, price: e.target.value }))} placeholder="Цена" />
+                      <div className="mini-actions-row">
+                        <button className="btn" onClick={() => saveUserPatch({
+                          full_name: userEdit.full_name,
+                          telephone: userEdit.telephone,
+                          price: userEdit.price === '' ? null : Number(userEdit.price),
+                        }).catch(e => setError(String(e.message || e)))}>
+                          Сохранить профиль
+                        </button>
+                        <button className="btn secondary" onClick={() => toggleUserBlock().catch(e => setError(String(e.message || e)))}>
+                          {selectedUser.blocked ? 'Разблокировать' : 'Заблокировать'}
+                        </button>
+                      </div>
+                      <div className="custom-row">
+                        <input className="input" value={userEdit.balance_set} onChange={e => setUserEdit(v => ({ ...v, balance_set: e.target.value }))} placeholder="Баланс (set)" />
+                        <button className="btn secondary" onClick={() => saveUserPatch({ balance_lessons_set: Number(userEdit.balance_set || 0) }).catch(e => setError(String(e.message || e)))}>Set</button>
+                      </div>
+                      <div className="custom-row">
+                        <input className="input" value={userEdit.balance_add} onChange={e => setUserEdit(v => ({ ...v, balance_add: e.target.value }))} placeholder="Баланс (+/-)" />
+                        <button className="btn secondary" onClick={() => saveUserPatch({ balance_lessons_add: Number(userEdit.balance_add || 0) }).catch(e => setError(String(e.message || e)))}>Add</button>
+                      </div>
+                      <div className="stack">
+                        <strong>Ближайшие</strong>
+                        <ul className="list list-compact">
+                          {(selectedUserUpcoming || []).slice(0, 5).map((b, i) => <li key={`up-${i}`}><span>{b.date} {b.time}</span><small>{b.kind}</small></li>)}
+                        </ul>
+                        <strong>Архив</strong>
+                        <ul className="list list-compact">
+                          {(selectedUserArchive || []).slice(0, 5).map((b, i) => <li key={`ar-${i}`}><span>{b.date} {b.time}</span><small>{b.kind}</small></li>)}
+                        </ul>
+                      </div>
+                    </div>
+                  </Card>
+                ) : null}
+              </>
+            ) : null}
+
+            {manageSection === 'finance' ? (
+              <>
+                <Card title="Manual payment" subtitle="Ручная оплата">
+                  <input className="input" value={manualPay.telegram_id} onChange={e => setManualPay(v => ({ ...v, telegram_id: e.target.value }))} placeholder="Telegram ID" />
+                  <input type="date" className="input" value={manualPay.date} onChange={e => setManualPay(v => ({ ...v, date: e.target.value }))} />
+                  <input className="input" value={manualPay.time} onChange={e => setManualPay(v => ({ ...v, time: e.target.value }))} placeholder="HH:MM" />
+                  <input className="input" value={manualPay.amount} onChange={e => setManualPay(v => ({ ...v, amount: e.target.value }))} placeholder="Сумма" />
+                  <button className="btn" onClick={() => addManualPayment().catch(e => setError(String(e.message || e)))}>Сохранить оплату</button>
+                </Card>
+                <Card title="Debtors" subtitle="Должники">
+                  <button className="btn secondary" onClick={() => loadDebtors().catch(e => setError(String(e.message || e)))}>Обновить</button>
+                  <ul className="list list-compact">
+                    {debtors.map(d => (
+                      <li key={d.payment_id}>
+                        <span>{d.full_name || d.telegram_id}</span>
+                        <small>{d.date} {d.time}</small>
+                        <strong>{d.amount || 0} ₽</strong>
+                      </li>
+                    ))}
+                  </ul>
+                </Card>
+              </>
+            ) : null}
+
+            {manageSection === 'broadcast' ? (
+              <Card title="Broadcast" subtitle="Рассылка пользователям">
+                <textarea className="input" rows={4} value={broadcast} onChange={e => setBroadcast(e.target.value)} placeholder="Текст сообщения" />
+                <label className="broadcast-check">
+                  <input type="checkbox" checked={broadcastOnlyUnpaid} onChange={e => setBroadcastOnlyUnpaid(e.target.checked)} />
+                  Только должникам
+                </label>
+                <button className="btn" disabled={!broadcast.trim()} onClick={() => sendBroadcast().catch(e => setError(String(e.message || e)))}>
+                  Отправить
+                </button>
               </Card>
             ) : null}
           </div>
         ) : null}
 
-        {activeTab === 'finance' ? (
+        {activeTab === 'analytics' ? (
           <div className="stack">
-            <Card title="Manual payment" subtitle="Ручная оплата">
-              <input className="input" value={manualPay.telegram_id} onChange={e => setManualPay(v => ({ ...v, telegram_id: e.target.value }))} placeholder="Telegram ID" />
-              <input type="date" className="input" value={manualPay.date} onChange={e => setManualPay(v => ({ ...v, date: e.target.value }))} />
-              <input className="input" value={manualPay.time} onChange={e => setManualPay(v => ({ ...v, time: e.target.value }))} placeholder="HH:MM" />
-              <input className="input" value={manualPay.amount} onChange={e => setManualPay(v => ({ ...v, amount: e.target.value }))} placeholder="Сумма" />
-              <button className="btn" onClick={() => addManualPayment().catch(e => setError(String(e.message || e)))}>Сохранить оплату</button>
+            <Card title="Аналитика" subtitle="KPI и графики">
+              <div className="pill-row">
+                <Pill label="Доход мес." value={`${dashboardKpi?.month_income ?? 0} ₽`} tone="mint" />
+                <Pill label="Доход дня" value={`${dashboardKpi?.today_income ?? 0} ₽`} tone="blue" />
+                <Pill label="Заявок" value={dashboardKpi?.pending_approvals ?? 0} tone="violet" />
+              </div>
             </Card>
-            <Card title="Debtors" subtitle="Должники">
-              <button className="btn secondary" onClick={() => loadDebtors().catch(e => setError(String(e.message || e)))}>Обновить</button>
-              <ul className="list list-compact">
-                {debtors.map(d => (
-                  <li key={d.payment_id}>
-                    <span>{d.full_name || d.telegram_id}</span>
-                    <small>{d.date} {d.time}</small>
-                    <strong>{d.amount || 0} ₽</strong>
-                  </li>
-                ))}
-              </ul>
+
+            <Card title="Доход и занятия по дням" subtitle="Текущий месяц">
+              <div className="bar-chart">
+                {(monthActivity || []).map(dayItem => {
+                  const maxRevenue = Math.max(1, ...monthActivity.map(d => d.revenue || 0))
+                  const maxLessons = Math.max(1, ...monthActivity.map(d => d.lessons_done || 0))
+                  const hRevenue = Math.max(4, Math.round(((dayItem.revenue || 0) / maxRevenue) * 48))
+                  const hLessons = Math.max(4, Math.round(((dayItem.lessons_done || 0) / maxLessons) * 48))
+                  return (
+                    <div className="bar-col" key={`analytics-${dayItem.date}`} title={`${dayItem.date}: ${dayItem.revenue} ₽ / ${dayItem.lessons_done} занятий`}>
+                      <div className="bar-wrap">
+                        <span className="bar bar-revenue" style={{ height: `${hRevenue}px` }} />
+                        <span className="bar bar-lessons" style={{ height: `${hLessons}px` }} />
+                      </div>
+                      <small>{dayItem.day}</small>
+                    </div>
+                  )
+                })}
+              </div>
             </Card>
 
             <Card title="Статистика" subtitle="День / неделя / месяц">
@@ -1218,19 +1280,9 @@ function AdminView({ token }) {
           </div>
         ) : null}
 
-        {activeTab === 'more' ? (
+        {activeTab === 'settings' ? (
           <div className="stack">
-            <Card title="Broadcast" subtitle="Рассылка пользователям">
-              <textarea className="input" rows={4} value={broadcast} onChange={e => setBroadcast(e.target.value)} placeholder="Текст сообщения" />
-              <label className="broadcast-check">
-                <input type="checkbox" checked={broadcastOnlyUnpaid} onChange={e => setBroadcastOnlyUnpaid(e.target.checked)} />
-                Только должникам
-              </label>
-              <button className="btn" disabled={!broadcast.trim()} onClick={() => sendBroadcast().catch(e => setError(String(e.message || e)))}>
-                Отправить
-              </button>
-            </Card>
-            <Card title="System" subtitle="Health / backup status">
+            <Card title="System" subtitle="Health / backup status (read-only)">
               <button className="btn secondary" onClick={() => loadSystem().catch(e => setError(String(e.message || e)))}>Refresh</button>
               <ul className="list list-compact">
                 <li><span>API/DB</span><strong>{systemHealth?.status || '—'}</strong></li>
@@ -1246,14 +1298,17 @@ function AdminView({ token }) {
         {!!normalizeErrorMessage(error) && <div className="toast error">{normalizeErrorMessage(error)}</div>}
       </div>
 
-      <nav className="bottom-nav bottom-nav-two">
-        <button className={`bottom-item ${activeTab === 'main' ? 'active' : ''}`} onClick={() => setActiveTab('main')}><span className="bottom-ico">⌂</span><span>Главная</span></button>
-        <button className={`bottom-item ${activeTab === 'requests' ? 'active' : ''}`} onClick={() => setActiveTab('requests')}><span className="bottom-ico">◷</span><span>Заявки</span></button>
+      <nav className="bottom-nav bottom-nav-five">
+        {adminTabs.map(([key, label, icon]) => (
+          <button key={key} className={`bottom-item ${activeTab === key ? 'active' : ''}`} onClick={() => setActiveTab(key)}>
+            <span className="bottom-ico">{icon}</span>
+            <span>{label}</span>
+          </button>
+        ))}
       </nav>
     </div>
   )
 }
-
 export default function App() {
   const [token, setToken] = useState('')
   const [user, setUser] = useState(null)
