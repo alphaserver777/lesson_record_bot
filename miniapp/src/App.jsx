@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react'
+import React, { useEffect, useRef, useState } from 'react'
 import { api, authByTelegram } from './api'
 
 class ViewErrorBoundary extends React.Component {
@@ -70,6 +70,32 @@ function formatDateRu(isoDate) {
   }
 }
 
+function formatShortLessonLabel(isoDate, time) {
+  try {
+    const dt = new Date(`${isoDate}T${time || '00:00'}:00`)
+    const weekday = dt.toLocaleDateString('ru-RU', { weekday: 'short' })
+    const dateShort = dt.toLocaleDateString('ru-RU', { day: '2-digit', month: 'short' }).replace('.', '')
+    return `${weekday}, ${dateShort} • ${time || '--:--'}`
+  } catch {
+    return `${isoDate} • ${time || '--:--'}`
+  }
+}
+
+function shiftMonth(ym, diff) {
+  const [y, m] = ym.split('-').map(Number)
+  const dt = new Date(y, (m - 1) + diff, 1)
+  return `${dt.getFullYear()}-${String(dt.getMonth() + 1).padStart(2, '0')}`
+}
+
+function formatMonthRu(ym) {
+  const [y, m] = ym.split('-').map(Number)
+  try {
+    return new Date(y, m - 1, 1).toLocaleDateString('ru-RU', { month: 'long' })
+  } catch {
+    return ym
+  }
+}
+
 function normalizeErrorMessage(raw) {
   const text = String(raw || '').trim()
   if (!text || text === '{}' || text === 'null' || text === 'undefined') {
@@ -88,7 +114,8 @@ function normalizeErrorMessage(raw) {
 }
 
 function UserView({ token, appUser, tgUser }) {
-  const [month, setMonth] = useState(() => new Date().toISOString().slice(0, 7))
+  const currentMonth = new Date().toISOString().slice(0, 7)
+  const [month, setMonth] = useState(() => currentMonth)
   const [calendar, setCalendar] = useState([])
   const [date, setDate] = useState('')
   const [slots, setSlots] = useState([])
@@ -101,11 +128,28 @@ function UserView({ token, appUser, tgUser }) {
   const [now, setNow] = useState(() => new Date())
   const [error, setError] = useState('')
   const [success, setSuccess] = useState('')
+  const [calendarLoading, setCalendarLoading] = useState(true)
+  const [calendarReady, setCalendarReady] = useState(false)
+  const [calendarRetryTick, setCalendarRetryTick] = useState(0)
+  const [bookingsLoading, setBookingsLoading] = useState(true)
+  const [profileLoading, setProfileLoading] = useState(true)
+  const [bookingsReady, setBookingsReady] = useState(false)
+  const [bookingsRetryTick, setBookingsRetryTick] = useState(0)
+  const calendarReqRef = useRef(0)
 
   async function loadCalendar() {
-    const data = await api(`/api/user/calendar?month=${month}`, { token })
-    setCalendar(data.days)
-    setError('')
+    const reqId = ++calendarReqRef.current
+    setCalendarLoading(true)
+    try {
+      const data = await api(`/api/user/calendar?month=${month}`, { token })
+      if (reqId !== calendarReqRef.current) return
+      setCalendar(data.days)
+      setCalendarReady(true)
+      setError('')
+      return true
+    } finally {
+      if (reqId === calendarReqRef.current) setCalendarLoading(false)
+    }
   }
 
   async function loadSlots(d) {
@@ -116,19 +160,31 @@ function UserView({ token, appUser, tgUser }) {
     setError('')
   }
 
-  async function loadBookings() {
-    const data = await api('/api/user/bookings', { token })
-    setBookings({
-      single: Array.isArray(data?.single) ? data.single : [],
-      regular: Array.isArray(data?.regular) ? data.regular : [],
-    })
-    setError('')
+  async function loadBookings(silent = false) {
+    if (!silent) setBookingsLoading(true)
+    try {
+      const data = await api('/api/user/bookings', { token })
+      setBookings({
+        single: Array.isArray(data?.single) ? data.single : [],
+        regular: Array.isArray(data?.regular) ? data.regular : [],
+      })
+      setBookingsReady(true)
+      setError('')
+      return true
+    } finally {
+      if (!silent) setBookingsLoading(false)
+    }
   }
 
   async function loadMe() {
-    const data = await api('/api/me', { token })
-    setProfile(data.profile || null)
-    setError('')
+    setProfileLoading(true)
+    try {
+      const data = await api('/api/me', { token })
+      setProfile(data.profile || null)
+      setError('')
+    } finally {
+      setProfileLoading(false)
+    }
   }
 
   async function book(time) {
@@ -140,6 +196,24 @@ function UserView({ token, appUser, tgUser }) {
         method: 'POST',
         body: { date, time, duration, mode: lessonType }
       })
+      // Optimistic update so booking is visible in "Ваши занятия" immediately.
+      setBookingsLoading(false)
+      setBookings(prev => {
+        const nextSingle = Array.isArray(prev?.single) ? [...prev.single] : []
+        const exists = nextSingle.some(
+          item => item?.date === date && item?.time === time && String(item?.status || '') === 'pending'
+        )
+        if (!exists) {
+          nextSingle.unshift({
+            date,
+            time,
+            duration,
+            status: 'pending',
+            kind: lessonType === 'regular' ? 'regular' : 'single',
+          })
+        }
+        return { ...(prev || {}), single: nextSingle }
+      })
       await loadSlots(date)
       await loadBookings()
       setSelectedTime('')
@@ -150,8 +224,21 @@ function UserView({ token, appUser, tgUser }) {
   }
 
   useEffect(() => {
+    setCalendarReady(false)
     loadCalendar().catch(e => setError(normalizeErrorMessage(e.message || e)))
   }, [month])
+
+  useEffect(() => {
+    if (calendarReady || calendarLoading) return
+    const timer = setTimeout(() => setCalendarRetryTick(v => v + 1), 1800)
+    return () => clearTimeout(timer)
+  }, [calendarReady, calendarLoading, calendarRetryTick])
+
+  useEffect(() => {
+    if (!calendarReady && !calendarLoading) {
+      loadCalendar().catch(e => setError(normalizeErrorMessage(e.message || e)))
+    }
+  }, [calendarRetryTick])
 
   useEffect(() => {
     ;(async () => {
@@ -159,6 +246,31 @@ function UserView({ token, appUser, tgUser }) {
       await loadMe().catch(() => {})
     })()
   }, [])
+
+  useEffect(() => {
+    if (bookingsReady || bookingsLoading) return
+    const timer = setTimeout(() => setBookingsRetryTick(v => v + 1), 1800)
+    return () => clearTimeout(timer)
+  }, [bookingsReady, bookingsLoading, bookingsRetryTick])
+
+  useEffect(() => {
+    if (!bookingsReady && !bookingsLoading) {
+      loadBookings().catch(() => {})
+    }
+  }, [bookingsRetryTick])
+
+  useEffect(() => {
+    const timer = setInterval(() => {
+      loadBookings(true).catch(() => {})
+    }, 20000)
+    return () => clearInterval(timer)
+  }, [])
+
+  useEffect(() => {
+    if (activeTab === 'home') {
+      loadBookings(true).catch(() => {})
+    }
+  }, [activeTab])
 
   useEffect(() => {
     const timer = setInterval(() => setNow(new Date()), 30000)
@@ -183,13 +295,41 @@ function UserView({ token, appUser, tgUser }) {
     .map(chunk => chunk[0]?.toUpperCase())
     .join('')
   const availableSlots = slots.filter(s => s.available)
+  const groupedSlots = availableSlots.reduce((acc, slot) => {
+    const hour = slot.time.slice(0, 2)
+    if (!acc[hour]) acc[hour] = []
+    acc[hour].push(slot)
+    return acc
+  }, {})
+  const groupedHourKeys = Object.keys(groupedSlots).sort((a, b) => Number(a) - Number(b))
+  const selectedHour = selectedTime ? selectedTime.slice(0, 2) : ''
+  const nowTs = Date.now()
+  const upcomingSingles = singleBookings
+    .filter(s => {
+      if (String(s?.status || '') === 'pending') return true
+      const ts = new Date(`${s.date}T${s.time}:00`).getTime()
+      return !Number.isNaN(ts) && ts >= nowTs
+    })
+    .sort((a, b) => new Date(`${a.date}T${a.time}:00`) - new Date(`${b.date}T${b.time}:00`))
+  const archivedSingles = singleBookings
+    .filter(s => {
+      if (String(s?.status || '') === 'pending') return false
+      const ts = new Date(`${s.date}T${s.time}:00`).getTime()
+      return !Number.isNaN(ts) && ts < nowTs
+    })
+    .sort((a, b) => new Date(`${b.date}T${b.time}:00`) - new Date(`${a.date}T${a.time}:00`))
+
   const upcoming = [
-    ...singleBookings.slice(0, 5).map(s => ({
-      label: `${formatDateRu(s.date)} • ${s.time}`,
+    ...upcomingSingles.slice(0, 8).map(s => ({
+      label: formatShortLessonLabel(s.date, s.time),
       type: s.status === 'pending' ? 'На согласовании' : (s.kind === 'regular' ? 'Регулярное' : 'Разовое'),
     })),
-    ...regularBookings.slice(0, 5).map(r => ({ label: `${dayName(r.day_of_week)} • ${r.time || '--:--'}`, type: 'Регулярное' })),
-  ].slice(0, 5)
+    ...regularBookings.slice(0, 8).map(r => ({ label: `${dayName(r.day_of_week)} • ${r.time || '--:--'}`, type: 'Регулярное' })),
+  ].slice(0, 8)
+  const archive = archivedSingles.slice(0, 10).map(s => ({
+    label: formatShortLessonLabel(s.date, s.time),
+    type: s.kind === 'regular' ? 'Регулярное' : 'Разовое',
+  }))
   const nowDate = now.toLocaleDateString('ru-RU', { day: '2-digit', month: 'long', year: 'numeric' })
   const nowTime = now.toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' })
   const [year, mon] = month.split('-').map(Number)
@@ -218,34 +358,59 @@ function UserView({ token, appUser, tgUser }) {
         {activeTab === 'home' ? (
           <div className="stack">
             <Card title={`Привет, ${displayName}`} subtitle="Общая информация">
-              <div className="welcome">
-                <div className="avatar-wrap">
-                  {hasAvatar ? (
-                    <img src={tgUser.photo_url} alt={displayName} className="avatar" />
-                  ) : (
-                    <div className="avatar avatar-fallback">{initials}</div>
-                  )}
+              {profileLoading ? (
+                <div className="home-skeleton">
+                  <div className="skeleton-row">
+                    <div className="skeleton-box skeleton-avatar" />
+                    <div className="skeleton-col">
+                      <div className="skeleton-box skeleton-line-lg" />
+                      <div className="skeleton-box skeleton-line-md" />
+                      <div className="skeleton-box skeleton-line-sm" />
+                    </div>
+                  </div>
+                  <div className="skeleton-row">
+                    <div className="skeleton-box skeleton-badge" />
+                    <div className="skeleton-box skeleton-badge" />
+                  </div>
                 </div>
-                <div className="welcome-meta">
-                  <strong>{displayName}</strong>
-                  <span>{username ? `@${username.replace('@', '')}` : `Telegram ID: ${appUser?.telegram_id || '—'}`}</span>
-                  <span>{profile?.telephone ? `Телефон: ${profile.telephone}` : 'Телефон не указан'}</span>
-                </div>
-              </div>
-              <div className="lesson-strip">
-                <div className="lesson-badge">
-                  <small>Текущая дата и время</small>
-                  <strong>{nowDate} • {nowTime}</strong>
-                </div>
-                <div className="lesson-badge">
-                  <small>Ближайшее занятие</small>
-                  <strong>{nextLesson ? `${formatDateRu(nextLesson.date)} • ${nextLesson.time}` : 'Пока не запланировано'}</strong>
-                </div>
-              </div>
+              ) : (
+                <>
+                  <div className="welcome">
+                    <div className="avatar-wrap">
+                      {hasAvatar ? (
+                        <img src={tgUser.photo_url} alt={displayName} className="avatar" />
+                      ) : (
+                        <div className="avatar avatar-fallback">{initials}</div>
+                      )}
+                    </div>
+                    <div className="welcome-meta">
+                      <strong>{displayName}</strong>
+                      <span>{username ? `@${username.replace('@', '')}` : `Telegram ID: ${appUser?.telegram_id || '—'}`}</span>
+                      <span>{profile?.telephone ? `Телефон: ${profile.telephone}` : 'Телефон не указан'}</span>
+                    </div>
+                  </div>
+                  <div className="lesson-strip">
+                    <div className="lesson-badge">
+                      <small>Текущая дата и время</small>
+                      <strong>{nowDate} • {nowTime}</strong>
+                    </div>
+                    <div className="lesson-badge">
+                      <small>Ближайшее занятие</small>
+                      <strong>{nextLesson ? `${formatDateRu(nextLesson.date)} • ${nextLesson.time}` : 'Пока не запланировано'}</strong>
+                    </div>
+                  </div>
+                </>
+              )}
             </Card>
 
             <Card title="Ваши занятия" subtitle="Дата, время и тип">
-              {upcoming.length ? (
+              {!bookingsReady || bookingsLoading ? (
+                <div className="home-skeleton">
+                  <div className="skeleton-box skeleton-line-lg" />
+                  <div className="skeleton-box skeleton-line-lg" />
+                  <div className="skeleton-box skeleton-line-lg" />
+                </div>
+              ) : upcoming.length ? (
                 <ul className="list">
                   {upcoming.map((item, idx) => (
                     <li key={`${item.label}-${idx}`}>
@@ -256,6 +421,26 @@ function UserView({ token, appUser, tgUser }) {
                 </ul>
               ) : (
                 <div className="empty">Пока нет занятий. Перейдите на вкладку «Записаться».</div>
+              )}
+            </Card>
+
+            <Card title="Архив" subtitle="История прошедших занятий">
+              {!bookingsReady || bookingsLoading ? (
+                <div className="home-skeleton">
+                  <div className="skeleton-box skeleton-line-lg" />
+                  <div className="skeleton-box skeleton-line-lg" />
+                </div>
+              ) : archive.length ? (
+                <ul className="list">
+                  {archive.map((item, idx) => (
+                    <li key={`${item.label}-${idx}`}>
+                      <span>{item.label}</span>
+                      <strong>{item.type}</strong>
+                    </li>
+                  ))}
+                </ul>
+              ) : (
+                <div className="empty">Пока нет прошедших занятий.</div>
               )}
             </Card>
           </div>
@@ -273,28 +458,58 @@ function UserView({ token, appUser, tgUser }) {
             <Card
               title="Выбор даты"
               subtitle="Серые даты недоступны. Нажмите активную дату для выбора времени."
-              actions={<input type="month" value={month} onChange={e => setMonth(e.target.value)} className="input" />}
+              actions={
+                <div className="month-switch">
+                  <button
+                    className="chip ok"
+                    onClick={() => setMonth(prev => shiftMonth(prev, -1))}
+                    disabled={month <= currentMonth || calendarLoading}
+                    aria-label="Предыдущий месяц"
+                  >
+                    {'<'}
+                  </button>
+                  <strong>{formatMonthRu(month)}</strong>
+                  <button
+                    className="chip ok"
+                    onClick={() => setMonth(prev => shiftMonth(prev, 1))}
+                    disabled={calendarLoading}
+                    aria-label="Следующий месяц"
+                  >
+                    {'>'}
+                  </button>
+                </div>
+              }
             >
-              <div className="weekdays">
-                {weekDays.map(w => <div key={w}>{w}</div>)}
-              </div>
-              <div className="calendar-grid">
-                {calendarCells.map((day, idx) => (
-                  day ? (
-                    <button
-                      key={day.date}
-                      disabled={!day.available}
-                      className={`calendar-day ${day.available ? 'on' : 'off'} ${date === day.date ? 'selected' : ''}`}
-                      onClick={() => loadSlots(day.date)}
-                      title={day.available ? `${day.slots_count || 0} свободно` : day.reason || 'Недоступно'}
-                    >
-                      <span>{Number(day.date.slice(8))}</span>
-                    </button>
-                  ) : (
-                    <div key={`empty-${idx}`} className="calendar-day empty" />
-                  )
-                ))}
-              </div>
+              {!calendarReady || calendarLoading ? (
+                <div className="calendar-skeleton">
+                  {Array.from({ length: 35 }).map((_, idx) => (
+                    <div key={`cal-skeleton-${idx}`} className="skeleton-box skeleton-day" />
+                  ))}
+                </div>
+              ) : (
+                <>
+                  <div className="weekdays">
+                    {weekDays.map(w => <div key={w}>{w}</div>)}
+                  </div>
+                  <div className="calendar-grid">
+                    {calendarCells.map((day, idx) => (
+                      day ? (
+                        <button
+                          key={day.date}
+                          disabled={!day.available}
+                          className={`calendar-day ${day.available ? 'on' : 'off'} ${date === day.date ? 'selected' : ''}`}
+                          onClick={() => loadSlots(day.date)}
+                          title={day.available ? `${day.slots_count || 0} свободно` : day.reason || 'Недоступно'}
+                        >
+                          <span>{Number(day.date.slice(8))}</span>
+                        </button>
+                      ) : (
+                        <div key={`empty-${idx}`} className="calendar-day empty" />
+                      )
+                    ))}
+                  </div>
+                </>
+              )}
             </Card>
 
             <Card title={date ? `Время на ${formatDateRu(date)}` : 'Выберите дату'} subtitle="Только свободные слоты">
@@ -306,23 +521,37 @@ function UserView({ token, appUser, tgUser }) {
               {!date ? (
                 <div className="empty">Сначала выберите день.</div>
               ) : availableSlots.length ? (
-                <div className="slots-grid">
-                  {availableSlots.map(s => (
-                    <button
-                      key={s.time}
-                      className={`chip ok ${selectedTime === s.time ? 'active' : ''}`}
-                      onClick={() => setSelectedTime(s.time)}
-                    >
-                      {s.time}
-                    </button>
+                <div className="slots-hours">
+                  {groupedHourKeys.map(hour => (
+                    <div key={hour} className="slots-hour-block">
+                      <div className="slots-hour-title">{hour}:00</div>
+                      <div className="slots-grid">
+                        {groupedSlots[hour].map(s => (
+                          <button
+                            key={s.time}
+                            className={`chip ok ${selectedTime === s.time ? 'active' : ''}`}
+                            onClick={() => setSelectedTime(s.time)}
+                          >
+                            {s.time}
+                          </button>
+                        ))}
+                      </div>
+                      {selectedHour === hour ? (
+                        <div className="slot-confirm-panel">
+                          <div className="slot-confirm-meta">
+                            Выбрано: <strong>{selectedTime}</strong> • {duration} мин
+                          </div>
+                          <button className="btn slot-confirm-btn" onClick={() => book(selectedTime)}>
+                            Подтвердить запись
+                          </button>
+                        </div>
+                      ) : null}
+                    </div>
                   ))}
                 </div>
               ) : (
                 <div className="empty">На выбранную дату свободного времени нет.</div>
               )}
-              <button className="btn" disabled={!date || !selectedTime} onClick={() => book(selectedTime)}>
-                Подтвердить запись
-              </button>
             </Card>
           </div>
         ) : null}

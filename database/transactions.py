@@ -440,8 +440,14 @@ async def check_date_time_appointment(date: datetime, hour: int, minute: int) ->
     return []
 
 
-async def is_slot_busy(date: datetime.date, hour: int, minute: int, duration_minutes: int = SLOT_DURATION_MINUTES) -> bool:
-    busy_intervals = await get_busy_intervals(date)
+async def is_slot_busy(
+    date: datetime.date,
+    hour: int,
+    minute: int,
+    duration_minutes: int = SLOT_DURATION_MINUTES,
+    exclude_record_id: int | None = None,
+) -> bool:
+    busy_intervals = await get_busy_intervals(date, exclude_record_id=exclude_record_id)
     slot_start = datetime.datetime.combine(date, datetime.time(hour, minute), tzinfo=get_calendar_tz())
     slot_end = slot_start + datetime.timedelta(minutes=duration_minutes)
     for start, end in busy_intervals:
@@ -604,11 +610,23 @@ async def add_pending_single_slot(
     return int(record.id)
 
 
+async def _reset_transaction_snapshot() -> None:
+    """Reset shared session transaction to avoid stale snapshot reads in long-lived process."""
+    try:
+        if session.in_transaction():
+            await session.rollback()
+    except Exception:
+        # Best-effort reset; keep existing flow if rollback is not available in current context.
+        pass
+
+
 async def get_record_by_id(record_id: int) -> RecordDate | None:
+    await _reset_transaction_snapshot()
     return await session.get(RecordDate, record_id)
 
 
 async def approve_pending_booking(record_id: int, admin_id: int) -> tuple[str, RecordDate | None]:
+    await _reset_transaction_snapshot()
     rec = await session.get(RecordDate, record_id)
     if not rec:
         return ("not_found", None)
@@ -624,6 +642,7 @@ async def approve_pending_booking(record_id: int, admin_id: int) -> tuple[str, R
         rec.hour,
         rec.minute,
         rec.duration_minutes or SLOT_DURATION_MINUTES,
+        exclude_record_id=rec.id,
     )
     is_busy_local = await is_slot_overlapping_local(
         rec.record_date,
@@ -661,6 +680,7 @@ async def approve_pending_booking(record_id: int, admin_id: int) -> tuple[str, R
 
 
 async def reject_pending_booking(record_id: int, admin_id: int) -> tuple[str, RecordDate | None]:
+    await _reset_transaction_snapshot()
     rec = await session.get(RecordDate, record_id)
     if not rec:
         return ("not_found", None)
@@ -984,6 +1004,7 @@ async def view_record(telegram_id: int) -> list[Any]:
 
 
 async def view_record_with_status(telegram_id: int) -> list[Any]:
+    await _reset_transaction_snapshot()
     res = await session.execute(
         select(
             RecordDate.record_date,

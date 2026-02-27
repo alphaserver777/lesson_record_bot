@@ -33,17 +33,32 @@ async def list_events(time_min: str, time_max: str) -> List[dict]:
     return []
 
 
-async def get_busy_intervals(target_date: datetime.date) -> List[Tuple[datetime.datetime, datetime.datetime]]:
+async def get_busy_intervals(
+    target_date: datetime.date,
+    exclude_record_id: int | None = None,
+) -> List[Tuple[datetime.datetime, datetime.datetime]]:
     tz = get_calendar_tz()
     busy: list[tuple[datetime.datetime, datetime.datetime]] = []
 
     rows = await session.execute(
-        select(RecordDate.hour, RecordDate.minute, RecordDate.duration_minutes, RecordDate.kind).where(
+        select(
+            RecordDate.id,
+            RecordDate.hour,
+            RecordDate.minute,
+            RecordDate.duration_minutes,
+            RecordDate.kind,
+            RecordDate.booking_status,
+        ).where(
             RecordDate.record_date == target_date,
             RecordDate.kind != "allow",
         )
     )
     for row in rows:
+        if exclude_record_id is not None and int(row.id) == int(exclude_record_id):
+            continue
+        status = (row.booking_status or "").lower()
+        if status == "rejected":
+            continue
         hour = int(row.hour or 0)
         minute = int(row.minute or 0)
         duration = int(row.duration_minutes or 60)
