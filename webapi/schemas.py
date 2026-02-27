@@ -46,3 +46,12 @@ class ManualPaymentIn(BaseModel):
 class BroadcastIn(BaseModel):
     message: str
     only_unpaid: bool = False
+
+
+class AdminUserPatchIn(BaseModel):
+    full_name: str | None = None
+    telephone: str | None = None
+    price: int | None = None
+    balance_lessons_set: int | None = None
+    balance_lessons_add: int | None = None
+    blocked: bool | None = None

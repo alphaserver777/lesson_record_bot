@@ -4,22 +4,26 @@ from __future__ import annotations
 import calendar
 import datetime
 import logging
+import os
+import sqlite3
 from typing import Any
 
 from aiogram.exceptions import TelegramBadRequest
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 from fastapi import Depends, FastAPI, Header, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
-from sqlalchemy import text
+from sqlalchemy import select, text
 
 from config_data.config import ADMINS_TELEGRAM_ID
 from database import transactions
 from database.connect import session
+from database.models import RecordDate, StudentProfile
 from loader import bot
 from utils.calendar_backend import get_busy_intervals, get_calendar_tz
 from utils.schedule import is_time_in_schedule, slots_for_date
 from webapi.auth import issue_session_token, verify_init_data, verify_session_token
 from webapi.schemas import (
+    AdminUserPatchIn,
     AuthIn,
     BookIn,
     BroadcastIn,
@@ -30,6 +34,9 @@ from webapi.schemas import (
 
 logger = logging.getLogger(__name__)
 app = FastAPI(title="Lesson Record MiniApp API", version="1.0.0")
+ADMIN_MINIAPP_APPROVALS_ENABLED = os.getenv("ADMIN_MINIAPP_APPROVALS_ENABLED", "1").strip().lower() in {"1", "true", "yes", "on"}
+ADMIN_BOT_LEGACY_ENABLED = os.getenv("ADMIN_BOT_LEGACY_ENABLED", "1").strip().lower() in {"1", "true", "yes", "on"}
+MINI_APP_URL = os.getenv("MINI_APP_URL", "http://localhost:5173")
 
 app.add_middleware(
     CORSMiddleware,
@@ -71,6 +78,50 @@ def _approval_keyboard(record_id: int) -> InlineKeyboardMarkup:
             ]
         ]
     )
+
+
+def _fmt_date_time(date_obj: datetime.date, hour: int, minute: int) -> str:
+    return f"{date_obj.isoformat()} {hour:02d}:{minute:02d}"
+
+
+def _booking_status_filter(status: str) -> Any:
+    if status == "pending":
+        return RecordDate.booking_status == "pending"
+    if status == "approved":
+        return (RecordDate.booking_status.is_(None)) | (RecordDate.booking_status == "approved")
+    if status == "rejected":
+        return RecordDate.booking_status == "rejected"
+    raise HTTPException(status_code=422, detail="INVALID_STATUS")
+
+
+def _booking_kind_label(kind: str | None) -> str:
+    return "regular" if (kind or "").lower() == "regular" else "single"
+
+
+def _serialize_day_item(item: Any) -> dict[str, Any]:
+    return {
+        "full_name": item[0],
+        "phone": item[1],
+        "hour": int(item[2]),
+        "minute": int(item[3]),
+        "kind": item[4],
+        "telegram_id": item[5],
+        "duration": item[6],
+        "username": item[7] if len(item) > 7 else None,
+        "time": f"{int(item[2]):02d}:{int(item[3]):02d}",
+    }
+
+
+def _normalize_http_error_for_booking(status: str) -> HTTPException:
+    if status == "slot_busy":
+        return HTTPException(status_code=409, detail={"code": "SLOT_BUSY"})
+    if status in ("already_approved", "already_rejected"):
+        return HTTPException(status_code=409, detail={"code": "ALREADY_PROCESSED", "status": status})
+    if status == "not_found":
+        return HTTPException(status_code=404, detail={"code": "BOOKING_NOT_FOUND"})
+    if status == "calendar_error":
+        return HTTPException(status_code=500, detail={"code": "CALENDAR_ERROR"})
+    return HTTPException(status_code=400, detail={"code": "INVALID_STATUS", "status": status})
 
 
 async def _audit(admin_id: int, action: str, entity: str, payload: dict[str, Any]) -> None:
@@ -270,7 +321,8 @@ async def user_book(payload: BookIn, user: dict[str, Any] = Depends(get_current_
         f"Дата: {payload.date.isoformat()}\n"
         f"Время: {hh:02d}:{mm:02d}\n"
         f"Длительность: {payload.duration} мин\n"
-        f"Тип: {'Регулярное' if booking_kind == 'regular' else 'Разовое'}"
+        f"Тип: {'Регулярное' if booking_kind == 'regular' else 'Разовое'}\n"
+        f"Mini App: {MINI_APP_URL}"
     )
     for admin_id in ADMINS_TELEGRAM_ID:
         try:
@@ -371,6 +423,218 @@ async def admin_user(telegram_id: int, _: dict[str, Any] = Depends(require_admin
     }
 
 
+@app.patch("/api/admin/users/{telegram_id}")
+async def admin_patch_user(
+    telegram_id: int,
+    payload: AdminUserPatchIn,
+    admin: dict[str, Any] = Depends(require_admin),
+) -> dict[str, Any]:
+    profile = await transactions.get_student_profile(telegram_id)
+    if not profile:
+        raise HTTPException(status_code=404, detail="not found")
+
+    updates: dict[str, Any] = {}
+    if payload.full_name is not None:
+        updates["full_name"] = payload.full_name
+    if payload.telephone is not None:
+        updates["telephone"] = payload.telephone
+    if payload.price is not None:
+        updates["price"] = payload.price
+    if payload.balance_lessons_set is not None:
+        updates["balance_lessons"] = payload.balance_lessons_set
+    if updates:
+        await transactions.upsert_student_profile(telegram_id=telegram_id, **updates)
+
+    if payload.balance_lessons_add is not None:
+        await transactions.change_balance(telegram_id, payload.balance_lessons_add)
+
+    if payload.blocked is not None:
+        await transactions.block_unblock_user(telegram_id, "bl" if payload.blocked else "un")
+
+    await _audit(int(admin["sub"]), "update", "user", {"telegram_id": telegram_id, **payload.model_dump()})
+    updated = await transactions.get_student_profile(telegram_id)
+    return {
+        "status": "ok",
+        "item": {
+            "telegram_id": updated.telegram_id,
+            "full_name": updated.full_name,
+            "username": updated.telegram_username,
+            "phone": updated.telephone,
+            "blocked": bool(updated.blocked),
+            "balance_lessons": updated.balance_lessons or 0,
+            "price": updated.price or 0,
+        },
+    }
+
+
+@app.get("/api/admin/users/{telegram_id}/bookings")
+async def admin_user_bookings(
+    telegram_id: int,
+    scope: str = Query(default="upcoming", pattern=r"^(upcoming|archive)$"),
+    _: dict[str, Any] = Depends(require_admin),
+) -> dict[str, Any]:
+    recs = await transactions.view_record_with_status(telegram_id)
+    now_local = datetime.datetime.now(get_calendar_tz()).replace(tzinfo=None)
+    items: list[dict[str, Any]] = []
+    for r in recs:
+        d = r[0]
+        hh, mm = int(r[1]), int(r[2])
+        dt = datetime.datetime.combine(d, datetime.time(hh, mm))
+        is_archive = dt < now_local
+        if scope == "archive" and not is_archive:
+            continue
+        if scope == "upcoming" and is_archive:
+            continue
+        items.append(
+            {
+                "date": d.isoformat() if hasattr(d, "isoformat") else str(d),
+                "time": f"{hh:02d}:{mm:02d}",
+                "duration": int(r[3] or 60),
+                "status": r[4] or "approved",
+                "kind": _booking_kind_label(r[5]),
+            }
+        )
+    items.sort(key=lambda x: (x["date"], x["time"]), reverse=(scope == "archive"))
+    return {"scope": scope, "items": items}
+
+
+@app.get("/api/admin/approvals")
+async def admin_approvals(
+    status: str = Query(default="pending", pattern=r"^(pending|approved|rejected)$"),
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=20, ge=1, le=100),
+    _: dict[str, Any] = Depends(require_admin),
+) -> dict[str, Any]:
+    if not ADMIN_MINIAPP_APPROVALS_ENABLED:
+        raise HTTPException(status_code=404, detail="DISABLED")
+
+    rows = await session.execute(
+        select(RecordDate, StudentProfile)
+        .join(StudentProfile, StudentProfile.telegram_id == RecordDate.telegram_id, isouter=True)
+        .where(
+            RecordDate.telegram_id.is_not(None),
+            RecordDate.kind.not_in(["block", "allow"]),
+            _booking_status_filter(status),
+        )
+        .order_by(RecordDate.record_date.asc(), RecordDate.hour.asc(), RecordDate.minute.asc(), RecordDate.id.asc())
+    )
+    all_rows = rows.all()
+    total = len(all_rows)
+    start = (page - 1) * page_size
+    page_rows = all_rows[start:start + page_size]
+    items = []
+    for rec, profile in page_rows:
+        items.append(
+            {
+                "record_id": int(rec.id),
+                "telegram_id": int(rec.telegram_id),
+                "full_name": profile.full_name if profile else None,
+                "username": profile.telegram_username if profile else None,
+                "phone": profile.telephone if profile else None,
+                "date": rec.record_date.isoformat(),
+                "time": f"{int(rec.hour):02d}:{int(rec.minute):02d}",
+                "duration": int(rec.duration_minutes or 60),
+                "kind": _booking_kind_label(rec.kind),
+                "status": rec.booking_status or "approved",
+            }
+        )
+    return {"status": status, "items": items, "total": total, "page": page}
+
+
+@app.get("/api/admin/schedule/context")
+async def admin_schedule_context(
+    date: datetime.date,
+    time: str = Query(..., pattern=r"^\d{2}:\d{2}$"),
+    duration: int = Query(default=60, ge=30, le=180),
+    _: dict[str, Any] = Depends(require_admin),
+) -> dict[str, Any]:
+    hh, mm = _parse_hhmm(time)
+    target_minutes = hh * 60 + mm
+    items_raw = await transactions.viewing_recordings_day_db(date, show_blocks=True)
+    items = [_serialize_day_item(i) for i in items_raw]
+    items = sorted(items, key=lambda i: (i["hour"], i["minute"]))
+
+    before = [i for i in items if (i["hour"] * 60 + i["minute"]) < target_minutes][-3:]
+    after = [i for i in items if (i["hour"] * 60 + i["minute"]) > target_minutes][:3]
+
+    return {
+        "date": date.isoformat(),
+        "target": {"time": f"{hh:02d}:{mm:02d}", "duration": duration},
+        "neighbors_before": before,
+        "neighbors_after": after,
+        "day_load": items,
+    }
+
+
+@app.get("/api/admin/approvals/{record_id}")
+async def admin_approval_details(record_id: int, _: dict[str, Any] = Depends(require_admin)) -> dict[str, Any]:
+    if not ADMIN_MINIAPP_APPROVALS_ENABLED:
+        raise HTTPException(status_code=404, detail="DISABLED")
+
+    rec = await transactions.get_record_by_id(record_id)
+    if not rec:
+        raise HTTPException(status_code=404, detail={"code": "BOOKING_NOT_FOUND"})
+    profile = await transactions.get_student_profile(rec.telegram_id)
+    context = await admin_schedule_context(rec.record_date, f"{int(rec.hour):02d}:{int(rec.minute):02d}", int(rec.duration_minutes or 60), _)
+    return {
+        "record_id": int(rec.id),
+        "telegram_id": int(rec.telegram_id),
+        "full_name": profile.full_name if profile else None,
+        "username": profile.telegram_username if profile else None,
+        "phone": profile.telephone if profile else None,
+        "date": rec.record_date.isoformat(),
+        "time": f"{int(rec.hour):02d}:{int(rec.minute):02d}",
+        "duration": int(rec.duration_minutes or 60),
+        "kind": _booking_kind_label(rec.kind),
+        "status": rec.booking_status or "approved",
+        "neighbors_before": context["neighbors_before"],
+        "neighbors_after": context["neighbors_after"],
+        "day_load": context["day_load"],
+    }
+
+
+@app.post("/api/admin/approvals/{record_id}/approve")
+async def admin_approval_approve(record_id: int, admin: dict[str, Any] = Depends(require_admin)) -> dict[str, Any]:
+    if not ADMIN_MINIAPP_APPROVALS_ENABLED:
+        raise HTTPException(status_code=404, detail="DISABLED")
+
+    status, rec = await transactions.approve_pending_booking(record_id, int(admin["sub"]))
+    if status != "approved":
+        raise _normalize_http_error_for_booking(status)
+
+    try:
+        await bot.send_message(
+            chat_id=rec.telegram_id,
+            text=f"✅ Ваша запись согласована: {_fmt_date_time(rec.record_date, rec.hour, rec.minute)}",
+        )
+    except Exception as exc:  # pylint: disable=broad-except
+        logger.warning("failed to notify approved booking id=%s: %s", record_id, exc)
+
+    await _audit(int(admin["sub"]), "approve", "booking", {"record_id": record_id})
+    return {"status": "approved", "record_id": record_id}
+
+
+@app.post("/api/admin/approvals/{record_id}/reject")
+async def admin_approval_reject(record_id: int, admin: dict[str, Any] = Depends(require_admin)) -> dict[str, Any]:
+    if not ADMIN_MINIAPP_APPROVALS_ENABLED:
+        raise HTTPException(status_code=404, detail="DISABLED")
+
+    status, rec = await transactions.reject_pending_booking(record_id, int(admin["sub"]))
+    if status != "rejected":
+        raise _normalize_http_error_for_booking(status)
+
+    try:
+        await bot.send_message(
+            chat_id=rec.telegram_id,
+            text=f"❌ Ваша запись отклонена: {_fmt_date_time(rec.record_date, rec.hour, rec.minute)}",
+        )
+    except Exception as exc:  # pylint: disable=broad-except
+        logger.warning("failed to notify rejected booking id=%s: %s", record_id, exc)
+
+    await _audit(int(admin["sub"]), "reject", "booking", {"record_id": record_id})
+    return {"status": "rejected", "record_id": record_id}
+
+
 @app.post("/api/admin/lessons/single")
 async def admin_add_single(payload: SingleLessonIn, admin: dict[str, Any] = Depends(require_admin)) -> dict[str, Any]:
     hh, mm = _parse_hhmm(payload.time)
@@ -385,6 +649,19 @@ async def admin_add_single(payload: SingleLessonIn, admin: dict[str, Any] = Depe
     ok = await transactions.add_single_slot(payload.telegram_id, payload.date, hh, mm, payload.duration)
     if not ok:
         raise HTTPException(status_code=500, detail="CREATE_FAILED")
+    try:
+        await bot.send_message(
+            chat_id=payload.telegram_id,
+            text=(
+                "📌 Вам назначено занятие администратором\n"
+                f"Дата: {payload.date.isoformat()}\n"
+                f"Время: {hh:02d}:{mm:02d}\n"
+                f"Длительность: {payload.duration} мин\n"
+                "Тип: Разовое"
+            ),
+        )
+    except Exception as exc:  # pylint: disable=broad-except
+        logger.warning("failed to notify user about admin single lesson telegram_id=%s: %s", payload.telegram_id, exc)
     await _audit(int(admin["sub"]), "create", "single_lesson", payload.model_dump())
     return {"status": "ok"}
 
@@ -398,6 +675,20 @@ async def admin_add_regular(payload: RegularLessonIn, admin: dict[str, Any] = De
     if not _check_working_hours(sample_date, hh, mm, payload.duration):
         raise HTTPException(status_code=422, detail="OUTSIDE_WORKING_HOURS")
     await transactions.add_regular_slot(payload.telegram_id, payload.day_of_week, hh, mm, payload.duration)
+    day_names = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"]
+    try:
+        await bot.send_message(
+            chat_id=payload.telegram_id,
+            text=(
+                "📌 Вам назначено регулярное занятие администратором\n"
+                f"День: {day_names[payload.day_of_week]}\n"
+                f"Время: {hh:02d}:{mm:02d}\n"
+                f"Длительность: {payload.duration} мин\n"
+                "Тип: Регулярное"
+            ),
+        )
+    except Exception as exc:  # pylint: disable=broad-except
+        logger.warning("failed to notify user about admin regular lesson telegram_id=%s: %s", payload.telegram_id, exc)
     await _audit(int(admin["sub"]), "create", "regular_lesson", payload.model_dump())
     return {"status": "ok"}
 
@@ -439,6 +730,144 @@ async def admin_schedule_day(date: datetime.date, _: dict[str, Any] = Depends(re
             for i in items
         ],
     }
+
+
+@app.get("/api/admin/schedule/free")
+async def admin_schedule_free(
+    date: datetime.date,
+    duration: int = Query(default=60, ge=30, le=180),
+    _: dict[str, Any] = Depends(require_admin),
+) -> dict[str, Any]:
+    slots = await _available_slots_for_date(date, duration)
+    free = [s["time"] for s in slots if s.get("available")]
+    return {"date": date.isoformat(), "duration": duration, "slots": free}
+
+
+@app.get("/api/admin/schedule/month")
+async def admin_schedule_month(
+    month: str = Query(..., pattern=r"^\d{4}-\d{2}$"),
+    duration: int = Query(default=60, ge=30, le=180),
+    _: dict[str, Any] = Depends(require_admin),
+) -> dict[str, Any]:
+    year, mon = month.split("-")
+    y, m = int(year), int(mon)
+    today = datetime.date.today()
+    days: list[dict[str, Any]] = []
+
+    for day in range(1, calendar.monthrange(y, m)[1] + 1):
+        d = datetime.date(y, m, day)
+        booked_items = await transactions.viewing_recordings_day_db(d, show_blocks=False)
+        booked_count = len(booked_items)
+        if d < today:
+            free_count = 0
+        else:
+            slots = await _available_slots_for_date(d, duration)
+            free_count = sum(1 for s in slots if s.get("available"))
+        days.append(
+            {
+                "date": d.isoformat(),
+                "booked_count": booked_count,
+                "free_count": free_count,
+                "has_booked": booked_count > 0,
+                "has_free": free_count > 0,
+                "past": d < today,
+            }
+        )
+    return {"month": month, "duration": duration, "days": days}
+
+
+@app.get("/api/admin/dashboard/today")
+async def admin_dashboard_today(_: dict[str, Any] = Depends(require_admin)) -> dict[str, Any]:
+    today = datetime.date.today()
+    now_local = datetime.datetime.now(get_calendar_tz()).replace(tzinfo=None)
+
+    items = await transactions.viewing_recordings_day_db(today, show_blocks=False)
+    agenda = []
+    for i in items:
+        hh, mm = int(i[2]), int(i[3])
+        slot_dt = datetime.datetime.combine(today, datetime.time(hh, mm))
+        agenda.append(
+            {
+                "time": f"{hh:02d}:{mm:02d}",
+                "full_name": i[0],
+                "kind": i[4],
+                "duration": int(i[6] or 60) if len(i) > 6 else 60,
+                "telegram_id": i[5],
+                "status": "completed" if slot_dt < now_local else "planned",
+            }
+        )
+
+    summary_day = await transactions.payments_summary_for_range(today, today)
+    month_start = today.replace(day=1)
+    summary_month = await transactions.payments_summary_for_range(month_start, today)
+    pending_rows = await session.execute(
+        text("SELECT COUNT(*) FROM record_dates WHERE booking_status='pending' AND telegram_id IS NOT NULL")
+    )
+    pending_count = int((pending_rows.one_or_none() or [0])[0])
+
+    debtors = await transactions.list_unpaid_payments()
+    return {
+        "date": today.isoformat(),
+        "agenda": agenda,
+        "kpi": {
+            "today_lessons": len(agenda),
+            "today_income": int(summary_day.get("earned_total", 0)),
+            "month_income": int(summary_month.get("earned_total", 0)),
+            "pending_approvals": pending_count,
+            "debtors": len(debtors),
+        },
+    }
+
+
+@app.get("/api/admin/stats/month/activity")
+async def stats_month_activity(year: int, month: int, _: dict[str, Any] = Depends(require_admin)) -> dict[str, Any]:
+    start = datetime.date(year, month, 1)
+    end = datetime.date(year + (1 if month == 12 else 0), 1 if month == 12 else month + 1, 1) - datetime.timedelta(days=1)
+    now_local = datetime.datetime.now(get_calendar_tz()).replace(tzinfo=None)
+
+    pay_daily = await transactions.payments_daily_breakdown(start, end)
+    revenue_map: dict[str, int] = {}
+    for d, _, earned, _, _ in pay_daily:
+        key = d.isoformat() if hasattr(d, "isoformat") else str(d)
+        revenue_map[key] = int(earned or 0)
+
+    lesson_rows = await session.execute(
+        select(
+            RecordDate.record_date,
+            RecordDate.hour,
+            RecordDate.minute,
+        ).where(
+            RecordDate.record_date >= start,
+            RecordDate.record_date <= end,
+            RecordDate.telegram_id.is_not(None),
+            RecordDate.kind.not_in(["block", "allow"]),
+            (RecordDate.booking_status.is_(None)) | (RecordDate.booking_status == "approved"),
+        )
+    )
+    lessons_map: dict[str, int] = {}
+    for row in lesson_rows:
+        d = row.record_date
+        slot_dt = datetime.datetime.combine(d, datetime.time(int(row.hour), int(row.minute)))
+        if slot_dt > now_local:
+            continue
+        key = d.isoformat() if hasattr(d, "isoformat") else str(d)
+        lessons_map[key] = lessons_map.get(key, 0) + 1
+
+    days = []
+    cursor = start
+    while cursor <= end:
+        key = cursor.isoformat()
+        days.append(
+            {
+                "date": key,
+                "day": cursor.day,
+                "revenue": revenue_map.get(key, 0),
+                "lessons_done": lessons_map.get(key, 0),
+            }
+        )
+        cursor += datetime.timedelta(days=1)
+
+    return {"year": year, "month": month, "days": days}
 
 
 @app.post("/api/admin/payments/manual")
@@ -498,6 +927,32 @@ async def admin_broadcast(payload: BroadcastIn, admin: dict[str, Any] = Depends(
             continue
     await _audit(int(admin["sub"]), "broadcast", "message", {"sent": sent, "only_unpaid": payload.only_unpaid})
     return {"status": "ok", "sent": sent}
+
+
+@app.get("/api/admin/system/health")
+async def admin_system_health(_: dict[str, Any] = Depends(require_admin)) -> dict[str, Any]:
+    db_ok = True
+    try:
+        db_path = os.getenv("DB_PATH", "database/database.db")
+        conn = sqlite3.connect(db_path)
+        cur = conn.cursor()
+        cur.execute("SELECT 1")
+        cur.fetchone()
+        conn.close()
+    except Exception:
+        db_ok = False
+    return {
+        "status": "ok" if db_ok else "degraded",
+        "db": "ok" if db_ok else "error",
+        "api_time": datetime.datetime.utcnow().isoformat() + "Z",
+        "approvals_enabled": ADMIN_MINIAPP_APPROVALS_ENABLED,
+        "bot_legacy_enabled": ADMIN_BOT_LEGACY_ENABLED,
+    }
+
+
+@app.get("/api/admin/system/backup")
+async def admin_system_backup(_: dict[str, Any] = Depends(require_admin)) -> dict[str, Any]:
+    return {"status": "unknown", "last_backup": None, "note": "read-only placeholder"}
 
 
 @app.get("/api/admin/stats/day")
