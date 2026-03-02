@@ -771,7 +771,7 @@ function AdminView({ token }) {
   }
 
   async function closeLessonDecision(item, decision, source = 'manual') {
-    const amount = Number(item?.price || 0)
+    const amount = Number(item?.expected_amount ?? item?.price ?? 0)
     await api('/api/admin/lessons/close', {
       token,
       method: 'POST',
@@ -806,7 +806,7 @@ function AdminView({ token }) {
           date: item.date,
           time: item.time,
           duration: Number(item.duration || 60),
-          amount: Number(item.price || 0),
+          amount: Number(item.expected_amount ?? item.price ?? 0),
         })),
       },
     })
@@ -1417,12 +1417,12 @@ function AdminView({ token }) {
                           }}
                         />
                         <span>{d.full_name || d.telegram_id}</span>
-                        <small>{d.date} {d.time} • {d.kind === 'regular' ? 'Регулярное' : 'Разовое'}</small>
+                        <small>{d.date} {d.time} • {d.duration || 60} мин • {d.kind === 'regular' ? 'Регулярное' : 'Разовое'}</small>
                         <div className="mini-actions-row">
-                          <strong>{d.price || 0} ₽</strong>
+                          <strong>{d.expected_amount ?? d.price ?? 0} ₽</strong>
                           {d.can_pay_from_balance ? (
                             <button className="btn secondary" onClick={() => closeLessonDecision(d, 'paid', 'balance').catch(e => setError(String(e.message || e)))}>
-                              Списать с баланса ({d.balance_lessons || 0})
+                              Списать с баланса ({d.balance_lessons || 0} ₽)
                             </button>
                           ) : null}
                           <button className="btn secondary" onClick={() => closeLessonDecision(d, 'paid').catch(e => setError(String(e.message || e)))}>

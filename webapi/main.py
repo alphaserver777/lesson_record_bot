@@ -107,6 +107,12 @@ def _minutes_to_hhmm(total_minutes: int) -> str:
     return f"{total_minutes // 60:02d}:{total_minutes % 60:02d}"
 
 
+def _lesson_amount_for_duration(base_price: int | None, duration: int) -> int:
+    price = int(base_price or 0)
+    dur = int(duration or 60)
+    return max(0, int(round(price * (dur / 60.0))))
+
+
 def _parse_time_to_minutes(hhmm: str) -> int:
     hh, mm = _parse_hhmm(hhmm)
     return hh * 60 + mm
@@ -1190,6 +1196,8 @@ async def admin_unclosed_lessons(
             seen.add(key)
 
             profile = await transactions.get_student_profile(int(telegram_id))
+            duration_val = int(row[3] or 60)
+            expected_amount = _lesson_amount_for_duration(int(profile.price or 0) if profile else 0, duration_val)
             items.append(
                 {
                     "telegram_id": int(telegram_id),
@@ -1198,11 +1206,12 @@ async def admin_unclosed_lessons(
                     "time": f"{hh:02d}:{mm:02d}",
                     "hour": hh,
                     "minute": mm,
-                    "duration": int(row[3] or 60),
+                    "duration": duration_val,
                     "kind": "regular" if str(row[4] or "single") == "regular" else "single",
                     "price": int(profile.price or 0) if profile and profile.price is not None else 0,
+                    "expected_amount": expected_amount,
                     "balance_lessons": int(profile.balance_lessons or 0) if profile else 0,
-                    "can_pay_from_balance": bool(profile and int(profile.balance_lessons or 0) > 0),
+                    "can_pay_from_balance": bool(profile and int(profile.balance_lessons or 0) >= expected_amount),
                 }
             )
             if len(items) >= limit:
@@ -1222,19 +1231,19 @@ async def admin_close_lesson(payload: LessonCloseIn, admin: dict[str, Any] = Dep
         raise HTTPException(status_code=409, detail={"code": "ALREADY_PROCESSED", "message": "Решение уже принято"})
 
     profile = await transactions.get_student_profile(payload.telegram_id)
+    expected_amount = _lesson_amount_for_duration(int(profile.price or 0) if profile else 0, int(payload.duration or 60))
     amount = payload.amount
     if payload.source == "balance":
         if payload.decision != "paid":
             raise HTTPException(status_code=422, detail={"code": "BALANCE_REQUIRES_PAID", "message": "Списание баланса возможно только для оплаченного занятия"})
         current_balance = int(profile.balance_lessons or 0) if profile else 0
-        if current_balance <= 0:
+        if current_balance < expected_amount:
             raise HTTPException(status_code=422, detail={"code": "BALANCE_EMPTY", "message": "Недостаточно баланса занятий"})
-        await transactions.change_balance(payload.telegram_id, -1)
-        if amount is None:
-            amount = int(profile.price or 0) if profile and profile.price is not None else 0
+        await transactions.change_balance(payload.telegram_id, -expected_amount)
+        amount = expected_amount if amount is None else int(amount)
     else:
         if amount is None:
-            amount = int(profile.price or 0) if profile and profile.price is not None else 0
+            amount = expected_amount
 
     pay = await transactions.add_payment(
         telegram_id=payload.telegram_id,
