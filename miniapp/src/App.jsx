@@ -1317,6 +1317,50 @@ function AdminView({ token }) {
 
             {manageSection === 'clients' ? (
               <>
+                {selectedUser ? (
+                  <Card title={`Карточка: ${selectedUser.full_name || String(selectedUser.telegram_id)}`} subtitle={`Telegram ID: ${selectedUser.telegram_id}`}>
+                    <div className="stack">
+                      <small>ФИО</small>
+                      <input className="input" value={userEdit.full_name} onChange={e => setUserEdit(v => ({ ...v, full_name: e.target.value }))} placeholder="Имя и фамилия" />
+                      <small>Телефон</small>
+                      <input className="input" value={userEdit.telephone} onChange={e => setUserEdit(v => ({ ...v, telephone: e.target.value }))} placeholder="+7..." />
+                      <small>Цена за 60 мин (₽)</small>
+                      <input className="input" value={userEdit.price} onChange={e => setUserEdit(v => ({ ...v, price: e.target.value }))} placeholder="Например: 1500" />
+                      <div className="mini-actions-row">
+                        <button className="btn" onClick={() => saveUserPatch({
+                          full_name: userEdit.full_name,
+                          telephone: userEdit.telephone,
+                          price: userEdit.price === '' ? null : Number(userEdit.price),
+                        }).catch(e => setError(String(e.message || e)))}>
+                          Сохранить профиль
+                        </button>
+                        <button className="btn secondary" onClick={() => toggleUserBlock().catch(e => setError(String(e.message || e)))}>
+                          {selectedUser.blocked ? 'Разблокировать' : 'Заблокировать'}
+                        </button>
+                      </div>
+                      <small>Баланс клиента (текущий: {selectedUser.balance_lessons ?? 0} ₽)</small>
+                      <div className="custom-row">
+                        <input className="input" value={userEdit.balance_set} onChange={e => setUserEdit(v => ({ ...v, balance_set: e.target.value }))} placeholder="Установить баланс, ₽" />
+                        <button className="btn secondary" onClick={() => saveUserPatch({ balance_lessons_set: Number(userEdit.balance_set || 0) }).catch(e => setError(String(e.message || e)))}>Установить</button>
+                      </div>
+                      <div className="custom-row">
+                        <input className="input" value={userEdit.balance_add} onChange={e => setUserEdit(v => ({ ...v, balance_add: e.target.value }))} placeholder="Изменить баланс, ₽ (можно -)" />
+                        <button className="btn secondary" onClick={() => saveUserPatch({ balance_lessons_add: Number(userEdit.balance_add || 0) }).catch(e => setError(String(e.message || e)))}>Изменить</button>
+                      </div>
+                      <div className="stack">
+                        <strong>Ближайшие</strong>
+                        <ul className="list list-compact">
+                          {(selectedUserUpcoming || []).slice(0, 5).map((b, i) => <li key={`up-${i}`}><span>{b.date} {b.time}</span><small>{b.kind}</small></li>)}
+                        </ul>
+                        <strong>Архив</strong>
+                        <ul className="list list-compact">
+                          {(selectedUserArchive || []).slice(0, 5).map((b, i) => <li key={`ar-${i}`}><span>{b.date} {b.time}</span><small>{b.kind}</small></li>)}
+                        </ul>
+                      </div>
+                    </div>
+                  </Card>
+                ) : null}
+
                 <Card title="Пользователи" subtitle="Поиск и карточка клиента">
                   <div className="custom-row">
                     <input className="input" value={query} onChange={e => setQuery(e.target.value)} placeholder="Имя/телефон" />
@@ -1337,46 +1381,6 @@ function AdminView({ token }) {
                     ))}
                   </ul>
                 </Card>
-
-                {selectedUser ? (
-                  <Card title={selectedUser.full_name || String(selectedUser.telegram_id)} subtitle={`ID: ${selectedUser.telegram_id}`}>
-                    <div className="stack">
-                      <input className="input" value={userEdit.full_name} onChange={e => setUserEdit(v => ({ ...v, full_name: e.target.value }))} placeholder="Имя" />
-                      <input className="input" value={userEdit.telephone} onChange={e => setUserEdit(v => ({ ...v, telephone: e.target.value }))} placeholder="Телефон" />
-                      <input className="input" value={userEdit.price} onChange={e => setUserEdit(v => ({ ...v, price: e.target.value }))} placeholder="Цена" />
-                      <div className="mini-actions-row">
-                        <button className="btn" onClick={() => saveUserPatch({
-                          full_name: userEdit.full_name,
-                          telephone: userEdit.telephone,
-                          price: userEdit.price === '' ? null : Number(userEdit.price),
-                        }).catch(e => setError(String(e.message || e)))}>
-                          Сохранить профиль
-                        </button>
-                        <button className="btn secondary" onClick={() => toggleUserBlock().catch(e => setError(String(e.message || e)))}>
-                          {selectedUser.blocked ? 'Разблокировать' : 'Заблокировать'}
-                        </button>
-                      </div>
-                      <div className="custom-row">
-                        <input className="input" value={userEdit.balance_set} onChange={e => setUserEdit(v => ({ ...v, balance_set: e.target.value }))} placeholder="Баланс (set)" />
-                        <button className="btn secondary" onClick={() => saveUserPatch({ balance_lessons_set: Number(userEdit.balance_set || 0) }).catch(e => setError(String(e.message || e)))}>Set</button>
-                      </div>
-                      <div className="custom-row">
-                        <input className="input" value={userEdit.balance_add} onChange={e => setUserEdit(v => ({ ...v, balance_add: e.target.value }))} placeholder="Баланс (+/-)" />
-                        <button className="btn secondary" onClick={() => saveUserPatch({ balance_lessons_add: Number(userEdit.balance_add || 0) }).catch(e => setError(String(e.message || e)))}>Add</button>
-                      </div>
-                      <div className="stack">
-                        <strong>Ближайшие</strong>
-                        <ul className="list list-compact">
-                          {(selectedUserUpcoming || []).slice(0, 5).map((b, i) => <li key={`up-${i}`}><span>{b.date} {b.time}</span><small>{b.kind}</small></li>)}
-                        </ul>
-                        <strong>Архив</strong>
-                        <ul className="list list-compact">
-                          {(selectedUserArchive || []).slice(0, 5).map((b, i) => <li key={`ar-${i}`}><span>{b.date} {b.time}</span><small>{b.kind}</small></li>)}
-                        </ul>
-                      </div>
-                    </div>
-                  </Card>
-                ) : null}
               </>
             ) : null}
 
