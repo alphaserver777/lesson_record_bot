@@ -1110,6 +1110,53 @@ async def rebind_student_telegram_id(old_telegram_id: int, new_telegram_id: int)
     await session.commit()
 
 
+async def merge_student_into_existing(old_telegram_id: int, new_telegram_id: int) -> None:
+    if old_telegram_id == new_telegram_id:
+        return
+
+    source = await session.get(StudentProfile, old_telegram_id)
+    target = await session.get(StudentProfile, new_telegram_id)
+    if not source:
+        raise LookupError("PROFILE_NOT_FOUND")
+    if not target:
+        raise LookupError("TARGET_PROFILE_NOT_FOUND")
+
+    # Переносим все связанные сущности на новый telegram_id.
+    await session.execute(
+        update(RecordDate).where(RecordDate.telegram_id == old_telegram_id).values(telegram_id=new_telegram_id)
+    )
+    await session.execute(
+        update(RegularLesson).where(RegularLesson.telegram_id == old_telegram_id).values(telegram_id=new_telegram_id)
+    )
+    await session.execute(
+        update(Payment).where(Payment.telegram_id == old_telegram_id).values(telegram_id=new_telegram_id)
+    )
+
+    # Объединяем профиль: берем значимые поля из старого, если они заполнены.
+    if source.full_name:
+        target.full_name = source.full_name
+    if source.telegram_username:
+        target.telegram_username = source.telegram_username
+    if source.age is not None:
+        target.age = source.age
+    if source.price is not None:
+        target.price = source.price
+    if source.direction:
+        target.direction = source.direction
+    if source.goal:
+        target.goal = source.goal
+    if source.notes:
+        target.notes = source.notes
+    if source.telephone:
+        target.telephone = source.telephone
+    target.balance_lessons = int(target.balance_lessons or 0) + int(source.balance_lessons or 0)
+    target.blocked = bool(target.blocked and source.blocked)
+    target.is_deleted = 0
+
+    await session.delete(source)
+    await session.commit()
+
+
 async def soft_delete_user(telegram_id: int) -> bool:
     profile = await session.get(StudentProfile, telegram_id)
     if not profile:

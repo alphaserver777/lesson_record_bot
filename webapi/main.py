@@ -551,10 +551,17 @@ async def admin_patch_user(
             await transactions.rebind_student_telegram_id(telegram_id, int(payload.telegram_id_new))
             target_telegram_id = int(payload.telegram_id_new)
         except ValueError:
-            raise HTTPException(
-                status_code=409,
-                detail={"code": "TELEGRAM_ID_ALREADY_EXISTS", "message": "Пользователь с таким Telegram ID уже существует"},
-            ) from None
+            if payload.merge_if_exists:
+                try:
+                    await transactions.merge_student_into_existing(telegram_id, int(payload.telegram_id_new))
+                    target_telegram_id = int(payload.telegram_id_new)
+                except LookupError:
+                    raise HTTPException(status_code=404, detail={"code": "NOT_FOUND", "message": "Профиль не найден"}) from None
+            else:
+                raise HTTPException(
+                    status_code=409,
+                    detail={"code": "TELEGRAM_ID_ALREADY_EXISTS", "message": "Пользователь с таким Telegram ID уже существует"},
+                ) from None
         except LookupError:
             raise HTTPException(status_code=404, detail={"code": "NOT_FOUND", "message": "Профиль не найден"}) from None
 

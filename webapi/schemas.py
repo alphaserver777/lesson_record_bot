@@ -73,6 +73,7 @@ class BroadcastIn(BaseModel):
 
 class AdminUserPatchIn(BaseModel):
     telegram_id_new: int | None = None
+    merge_if_exists: bool = False
     full_name: str | None = None
     telephone: str | None = None
     price: int | None = None

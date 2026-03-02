@@ -686,11 +686,32 @@ function AdminView({ token }) {
 
   async function saveUserPatch(fields, successMessage = 'Сохранено') {
     if (!selectedUser?.telegram_id) return
-    const data = await api(`/api/admin/users/${selectedUser.telegram_id}`, { token, method: 'PATCH', body: fields })
-    const nextId = Number(data?.item?.telegram_id || selectedUser.telegram_id)
-    await selectUser(nextId)
-    await loadUsers()
-    setSuccess(successMessage)
+    try {
+      const data = await api(`/api/admin/users/${selectedUser.telegram_id}`, { token, method: 'PATCH', body: fields })
+      const nextId = Number(data?.item?.telegram_id || selectedUser.telegram_id)
+      await selectUser(nextId)
+      await loadUsers()
+      setSuccess(successMessage)
+    } catch (e) {
+      const msg = String(e?.message || e || '')
+      if (fields?.telegram_id_new && msg.includes('TELEGRAM_ID_ALREADY_EXISTS')) {
+        const okMerge = window.confirm('Этот Telegram ID уже существует. Объединить старый и новый аккаунт (с переносом истории)?')
+        if (!okMerge) {
+          throw e
+        }
+        const data = await api(`/api/admin/users/${selectedUser.telegram_id}`, {
+          token,
+          method: 'PATCH',
+          body: { ...fields, merge_if_exists: true },
+        })
+        const nextId = Number(data?.item?.telegram_id || fields.telegram_id_new || selectedUser.telegram_id)
+        await selectUser(nextId)
+        await loadUsers()
+        setSuccess('Аккаунты объединены')
+        return
+      }
+      throw e
+    }
   }
 
   async function toggleUserBlock() {
