@@ -28,6 +28,7 @@ from webapi.schemas import (
     BookIn,
     BroadcastIn,
     LessonCloseIn,
+    LessonCloseBulkIn,
     ManualPaymentIn,
     RegularLessonIn,
     SingleLessonIn,
@@ -1249,6 +1250,56 @@ async def admin_close_lesson(payload: LessonCloseIn, admin: dict[str, Any] = Dep
         },
     )
     return {"status": "ok", "payment_id": pay.id}
+
+
+@app.post("/api/admin/lessons/close-bulk")
+async def admin_close_lessons_bulk(payload: LessonCloseBulkIn, admin: dict[str, Any] = Depends(require_admin)) -> dict[str, Any]:
+    processed = 0
+    skipped = 0
+    failed: list[dict[str, Any]] = []
+
+    for item in payload.items:
+        hh, mm = _parse_hhmm(item.time)
+        try:
+            exists = await transactions.find_payment(item.telegram_id, item.date, hh, mm)
+            if exists:
+                skipped += 1
+                continue
+
+            profile = await transactions.get_student_profile(item.telegram_id)
+            amount = item.amount
+            if amount is None:
+                amount = int(profile.price or 0) if profile and profile.price is not None else 0
+
+            await transactions.add_payment(
+                telegram_id=item.telegram_id,
+                full_name=profile.full_name if profile else None,
+                lesson_date=item.date,
+                hour=hh,
+                minute=mm,
+                duration_minutes=item.duration,
+                amount=max(0, int(amount)),
+                status=payload.decision,
+                source="lesson_close",
+            )
+            processed += 1
+        except Exception as exc:  # pylint: disable=broad-except
+            failed.append(
+                {
+                    "telegram_id": item.telegram_id,
+                    "date": item.date.isoformat(),
+                    "time": item.time,
+                    "error": str(exc),
+                }
+            )
+
+    await _audit(
+        int(admin["sub"]),
+        "close_bulk",
+        "lesson",
+        {"decision": payload.decision, "items": len(payload.items), "processed": processed, "skipped": skipped, "failed": len(failed)},
+    )
+    return {"status": "ok", "processed": processed, "skipped": skipped, "failed": failed}
 
 
 @app.get("/api/admin/payments/debtors")

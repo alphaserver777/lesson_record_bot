@@ -616,6 +616,8 @@ function AdminView({ token }) {
   })
   const [debtors, setDebtors] = useState([])
   const [unclosedLessons, setUnclosedLessons] = useState([])
+  const [unclosedDaysBack, setUnclosedDaysBack] = useState(21)
+  const [selectedUnclosedKeys, setSelectedUnclosedKeys] = useState([])
 
   const [broadcast, setBroadcast] = useState('')
   const [broadcastOnlyUnpaid, setBroadcastOnlyUnpaid] = useState(false)
@@ -763,8 +765,9 @@ function AdminView({ token }) {
   }
 
   async function loadUnclosedLessons() {
-    const data = await api('/api/admin/lessons/unclosed?limit=200&days_back=90', { token })
+    const data = await api(`/api/admin/lessons/unclosed?limit=200&days_back=${unclosedDaysBack}`, { token })
     setUnclosedLessons(data.items || [])
+    setSelectedUnclosedKeys([])
   }
 
   async function closeLessonDecision(item, decision) {
@@ -779,6 +782,31 @@ function AdminView({ token }) {
         decision,
         amount,
         duration: Number(item.duration || 60),
+      },
+    })
+    await loadUnclosedLessons().catch(() => {})
+    await loadDebtors().catch(() => {})
+  }
+
+  function unclosedKey(item, idx) {
+    return `${item.telegram_id}|${item.date}|${item.time}|${idx}`
+  }
+
+  async function closeSelectedUnclosed(decision) {
+    const selectedItems = (unclosedLessons || []).filter((item, idx) => selectedUnclosedKeys.includes(unclosedKey(item, idx)))
+    if (!selectedItems.length) return
+    await api('/api/admin/lessons/close-bulk', {
+      token,
+      method: 'POST',
+      body: {
+        decision,
+        items: selectedItems.map(item => ({
+          telegram_id: Number(item.telegram_id),
+          date: item.date,
+          time: item.time,
+          duration: Number(item.duration || 60),
+          amount: Number(item.price || 0),
+        })),
       },
     })
     await loadUnclosedLessons().catch(() => {})
@@ -937,6 +965,12 @@ function AdminView({ token }) {
       loadApprovals().catch(() => {})
     }
   }, [activeTab, scheduleMode, day, scheduleDuration])
+
+  useEffect(() => {
+    if (activeTab === 'manage' && manageSection === 'finance') {
+      loadUnclosedLessons().catch(() => {})
+    }
+  }, [activeTab, manageSection, unclosedDaysBack])
 
   const filteredClients = (clientOptions || [])
     .filter(c => {
@@ -1345,10 +1379,42 @@ function AdminView({ token }) {
                   <button className="btn" onClick={() => addManualPayment().catch(e => setError(String(e.message || e)))}>Сохранить оплату</button>
                 </Card>
                 <Card title="Незакрытые занятия" subtitle="Прошедшие занятия, где еще не выбрано: оплачено/долг/отмена">
-                  <button className="btn secondary" onClick={() => loadUnclosedLessons().catch(e => setError(String(e.message || e)))}>Обновить</button>
+                  <div className="mini-actions-row">
+                    <select className="input" value={unclosedDaysBack} onChange={e => setUnclosedDaysBack(Number(e.target.value || 21))}>
+                      <option value={7}>За 7 дней</option>
+                      <option value={14}>За 14 дней</option>
+                      <option value={21}>За 21 день</option>
+                      <option value={30}>За 30 дней</option>
+                      <option value={60}>За 60 дней</option>
+                    </select>
+                    <button className="btn secondary" onClick={() => loadUnclosedLessons().catch(e => setError(String(e.message || e)))}>Обновить</button>
+                  </div>
+                  <div className="mini-actions-row">
+                    <button
+                      className="btn secondary"
+                      onClick={() => setSelectedUnclosedKeys((unclosedLessons || []).map((item, idx) => unclosedKey(item, idx)))}
+                    >
+                      Выбрать все
+                    </button>
+                    <button className="btn secondary" onClick={() => setSelectedUnclosedKeys([])}>Снять выбор</button>
+                    <button className="btn secondary" disabled={!selectedUnclosedKeys.length} onClick={() => closeSelectedUnclosed('paid').catch(e => setError(String(e.message || e)))}>
+                      Массово: Оплачено
+                    </button>
+                    <button className="btn secondary" disabled={!selectedUnclosedKeys.length} onClick={() => closeSelectedUnclosed('unpaid').catch(e => setError(String(e.message || e)))}>
+                      Массово: В долг
+                    </button>
+                  </div>
                   <ul className="list list-compact">
                     {unclosedLessons.map((d, idx) => (
                       <li key={`unclosed-${d.telegram_id}-${d.date}-${d.time}-${idx}`}>
+                        <input
+                          type="checkbox"
+                          checked={selectedUnclosedKeys.includes(unclosedKey(d, idx))}
+                          onChange={e => {
+                            const key = unclosedKey(d, idx)
+                            setSelectedUnclosedKeys(prev => e.target.checked ? [...prev, key] : prev.filter(v => v !== key))
+                          }}
+                        />
                         <span>{d.full_name || d.telegram_id}</span>
                         <small>{d.date} {d.time} • {d.kind === 'regular' ? 'Регулярное' : 'Разовое'}</small>
                         <div className="mini-actions-row">

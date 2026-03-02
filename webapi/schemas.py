@@ -52,6 +52,19 @@ class LessonCloseIn(BaseModel):
     duration: int = 60
 
 
+class LessonCloseBulkItemIn(BaseModel):
+    telegram_id: int
+    date: date
+    time: str = Field(pattern=r"^\d{2}:\d{2}$")
+    duration: int = 60
+    amount: int | None = Field(default=None, ge=0)
+
+
+class LessonCloseBulkIn(BaseModel):
+    items: list[LessonCloseBulkItemIn]
+    decision: str = Field(pattern=r"^(paid|unpaid|canceled)$")
+
+
 class BroadcastIn(BaseModel):
     message: str
     only_unpaid: bool = False
