@@ -1056,6 +1056,7 @@ function AdminView({ token }) {
   const adminLeadingEmpty = (adminFirstWeekday + 6) % 7
   const adminCalendarCells = [...Array(adminLeadingEmpty).fill(null), ...(scheduleMonthDays || [])]
   const weekDays = ['Пн', 'Вт', 'Ср', 'Чт', 'Пт', 'Сб', 'Вс']
+  const analyticsPeriodClosed = Boolean(analyticsOverview?.period?.closed)
 
   async function assignClientToFreeSlot(timeValue) {
     if (!timeValue || !lessonForm.telegram_id) return
@@ -1656,7 +1657,7 @@ function AdminView({ token }) {
                   />
                   <Pill
                     label="Стали неактивны"
-                    value={analyticsOverview.clients?.became_inactive_count ?? 0}
+                    value={analyticsPeriodClosed ? (analyticsOverview.clients?.became_inactive_count ?? 0) : '—'}
                     tone="violet"
                   />
                 </div>
@@ -1683,8 +1684,12 @@ function AdminView({ token }) {
                   <li>
                     <span>Активные ученики</span>
                     <strong>
-                      {(analyticsOverview.clients?.active_now ?? 0) - (analyticsOverview.clients?.active_prev ?? 0) >= 0 ? '+' : ''}
-                      {(analyticsOverview.clients?.active_now ?? 0) - (analyticsOverview.clients?.active_prev ?? 0)}
+                      {analyticsPeriodClosed ? (
+                        <>
+                          {(analyticsOverview.clients?.active_now ?? 0) - (analyticsOverview.clients?.active_prev ?? 0) >= 0 ? '+' : ''}
+                          {(analyticsOverview.clients?.active_now ?? 0) - (analyticsOverview.clients?.active_prev ?? 0)}
+                        </>
+                      ) : '—'}
                     </strong>
                   </li>
                   <li>
