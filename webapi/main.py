@@ -1343,6 +1343,15 @@ async def admin_debtors(_: dict[str, Any] = Depends(require_admin)) -> dict[str,
     }
 
 
+@app.post("/api/admin/payments/{payment_id}/mark-paid")
+async def admin_mark_debt_paid(payment_id: int, admin: dict[str, Any] = Depends(require_admin)) -> dict[str, Any]:
+    ok = await transactions.mark_payment_paid(payment_id)
+    if not ok:
+        raise HTTPException(status_code=404, detail={"code": "NOT_FOUND", "message": "Платеж не найден"})
+    await _audit(int(admin["sub"]), "update", "payment", {"payment_id": payment_id, "status": "paid"})
+    return {"status": "ok", "payment_id": payment_id}
+
+
 @app.post("/api/admin/broadcast")
 async def admin_broadcast(payload: BroadcastIn, admin: dict[str, Any] = Depends(require_admin)) -> dict[str, Any]:
     sent = 0

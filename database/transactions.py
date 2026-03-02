@@ -1664,11 +1664,13 @@ async def list_unpaid_payments() -> list[Any]:
     return res.all()
 
 
-async def mark_payment_paid(payment_id: int) -> None:
+async def mark_payment_paid(payment_id: int) -> bool:
     pay = await session.get(Payment, payment_id)
     if pay:
         pay.status = "paid"
         await session.commit()
+        return True
+    return False
 
 
 async def mark_payment_status(payment_id: int, status: str) -> None:

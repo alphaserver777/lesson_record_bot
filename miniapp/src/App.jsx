@@ -764,6 +764,15 @@ function AdminView({ token }) {
     setDebtors(data.items || [])
   }
 
+  async function markDebtPaid(paymentId) {
+    await api(`/api/admin/payments/${paymentId}/mark-paid`, {
+      token,
+      method: 'POST',
+    })
+    await loadDebtors().catch(() => {})
+    await loadStats().catch(() => {})
+  }
+
   async function loadUnclosedLessons() {
     const data = await api(`/api/admin/lessons/unclosed?limit=200&days_back=${unclosedDaysBack}`, { token })
     setUnclosedLessons(data.items || [])
@@ -970,6 +979,7 @@ function AdminView({ token }) {
   useEffect(() => {
     if (activeTab === 'manage' && manageSection === 'finance') {
       loadUnclosedLessons().catch(() => {})
+      loadDebtors().catch(() => {})
     }
   }, [activeTab, manageSection, unclosedDaysBack])
 
@@ -1438,6 +1448,37 @@ function AdminView({ token }) {
                       </li>
                     ))}
                   </ul>
+                </Card>
+                <Card title="Долги" subtitle="Занятия, отмеченные как 'В долг'">
+                  <div className="mini-actions-row">
+                    <button className="btn secondary" onClick={() => loadDebtors().catch(e => setError(String(e.message || e)))}>
+                      Обновить
+                    </button>
+                    <strong>
+                      Всего: {debtors.length} • Сумма: {(debtors || []).reduce((sum, d) => sum + Number(d.amount || 0), 0)} ₽
+                    </strong>
+                  </div>
+                  {!debtors.length ? (
+                    <div className="placeholder-box">Нет долгов.</div>
+                  ) : (
+                    <ul className="list list-compact">
+                      {debtors.map((d, idx) => (
+                        <li key={`debt-${d.payment_id || `${d.telegram_id}-${d.date}-${d.time}-${idx}`}`}>
+                          <span>{d.full_name || d.telegram_id}</span>
+                          <small>{d.date} {d.time}</small>
+                          <div className="mini-actions-row">
+                            <strong>{Number(d.amount || 0)} ₽</strong>
+                            <button
+                              className="btn secondary"
+                              onClick={() => markDebtPaid(d.payment_id).catch(e => setError(String(e.message || e)))}
+                            >
+                              Отметить оплачено
+                            </button>
+                          </div>
+                        </li>
+                      ))}
+                    </ul>
+                  )}
                 </Card>
               </>
             ) : null}
