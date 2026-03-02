@@ -50,6 +50,7 @@ class LessonCloseIn(BaseModel):
     decision: str = Field(pattern=r"^(paid|unpaid|canceled)$")
     amount: int | None = Field(default=None, ge=0)
     duration: int = 60
+    source: str = Field(default="manual", pattern=r"^(manual|balance)$")
 
 
 class LessonCloseBulkItemIn(BaseModel):

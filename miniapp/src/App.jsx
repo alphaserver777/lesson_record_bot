@@ -770,7 +770,7 @@ function AdminView({ token }) {
     setSelectedUnclosedKeys([])
   }
 
-  async function closeLessonDecision(item, decision) {
+  async function closeLessonDecision(item, decision, source = 'manual') {
     const amount = Number(item?.price || 0)
     await api('/api/admin/lessons/close', {
       token,
@@ -782,6 +782,7 @@ function AdminView({ token }) {
         decision,
         amount,
         duration: Number(item.duration || 60),
+        source,
       },
     })
     await loadUnclosedLessons().catch(() => {})
@@ -1419,6 +1420,11 @@ function AdminView({ token }) {
                         <small>{d.date} {d.time} • {d.kind === 'regular' ? 'Регулярное' : 'Разовое'}</small>
                         <div className="mini-actions-row">
                           <strong>{d.price || 0} ₽</strong>
+                          {d.can_pay_from_balance ? (
+                            <button className="btn secondary" onClick={() => closeLessonDecision(d, 'paid', 'balance').catch(e => setError(String(e.message || e)))}>
+                              Списать с баланса ({d.balance_lessons || 0})
+                            </button>
+                          ) : null}
                           <button className="btn secondary" onClick={() => closeLessonDecision(d, 'paid').catch(e => setError(String(e.message || e)))}>
                             Оплачено
                           </button>

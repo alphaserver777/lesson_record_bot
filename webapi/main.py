@@ -1201,6 +1201,8 @@ async def admin_unclosed_lessons(
                     "duration": int(row[3] or 60),
                     "kind": "regular" if str(row[4] or "single") == "regular" else "single",
                     "price": int(profile.price or 0) if profile and profile.price is not None else 0,
+                    "balance_lessons": int(profile.balance_lessons or 0) if profile else 0,
+                    "can_pay_from_balance": bool(profile and int(profile.balance_lessons or 0) > 0),
                 }
             )
             if len(items) >= limit:
@@ -1221,8 +1223,18 @@ async def admin_close_lesson(payload: LessonCloseIn, admin: dict[str, Any] = Dep
 
     profile = await transactions.get_student_profile(payload.telegram_id)
     amount = payload.amount
-    if amount is None:
-        amount = int(profile.price or 0) if profile and profile.price is not None else 0
+    if payload.source == "balance":
+        if payload.decision != "paid":
+            raise HTTPException(status_code=422, detail={"code": "BALANCE_REQUIRES_PAID", "message": "Списание баланса возможно только для оплаченного занятия"})
+        current_balance = int(profile.balance_lessons or 0) if profile else 0
+        if current_balance <= 0:
+            raise HTTPException(status_code=422, detail={"code": "BALANCE_EMPTY", "message": "Недостаточно баланса занятий"})
+        await transactions.change_balance(payload.telegram_id, -1)
+        if amount is None:
+            amount = int(profile.price or 0) if profile and profile.price is not None else 0
+    else:
+        if amount is None:
+            amount = int(profile.price or 0) if profile and profile.price is not None else 0
 
     pay = await transactions.add_payment(
         telegram_id=payload.telegram_id,
@@ -1233,7 +1245,7 @@ async def admin_close_lesson(payload: LessonCloseIn, admin: dict[str, Any] = Dep
         duration_minutes=payload.duration,
         amount=max(0, int(amount)),
         status=payload.decision,
-        source="lesson_close",
+        source="balance" if payload.source == "balance" else "lesson_close",
     )
 
     await _audit(
@@ -1246,6 +1258,7 @@ async def admin_close_lesson(payload: LessonCloseIn, admin: dict[str, Any] = Dep
             "time": payload.time,
             "decision": payload.decision,
             "amount": amount,
+            "source": payload.source,
             "payment_id": pay.id,
         },
     )
