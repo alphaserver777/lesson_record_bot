@@ -1488,6 +1488,7 @@ async def analytics_overview(
     _: dict[str, Any] = Depends(require_admin),
 ) -> dict[str, Any]:
     current_from, current_to, prev_from, prev_to = _period_bounds(anchor_date, mode)
+    period_closed = anchor_date >= current_to
 
     cur_sum = await transactions.payments_summary_for_range(current_from, current_to)
     prev_sum = await transactions.payments_summary_for_range(prev_from, prev_to)
@@ -1497,7 +1498,7 @@ async def analytics_overview(
     cur_ids = {int(i["telegram_id"]) for i in cur_clients if i.get("telegram_id") is not None}
     prev_ids = {int(i["telegram_id"]) for i in prev_clients if i.get("telegram_id") is not None}
     new_active_ids = cur_ids - prev_ids
-    became_inactive_ids = prev_ids - cur_ids
+    became_inactive_ids = (prev_ids - cur_ids) if period_closed else set()
 
     first_dates = await transactions.first_lesson_dates_for_clients(list(new_active_ids))
     new_clients_with_first_lesson = sum(
@@ -1527,6 +1528,7 @@ async def analytics_overview(
             "current_to": current_to.isoformat(),
             "previous_from": prev_from.isoformat(),
             "previous_to": prev_to.isoformat(),
+            "closed": period_closed,
         },
         "finance": {
             "paid_now": paid_now,
@@ -1565,13 +1567,14 @@ async def analytics_clients_delta(
     _: dict[str, Any] = Depends(require_admin),
 ) -> dict[str, Any]:
     current_from, current_to, prev_from, prev_to = _period_bounds(anchor_date, mode)
+    period_closed = anchor_date >= current_to
 
     cur_clients = await transactions.client_activity_for_range(current_from, current_to)
     prev_clients = await transactions.client_activity_for_range(prev_from, prev_to)
     cur_map = {int(i["telegram_id"]): i for i in cur_clients if i.get("telegram_id") is not None}
     prev_map = {int(i["telegram_id"]): i for i in prev_clients if i.get("telegram_id") is not None}
     new_ids = sorted(cur_map.keys() - prev_map.keys())
-    inactive_ids = sorted(prev_map.keys() - cur_map.keys())
+    inactive_ids = sorted(prev_map.keys() - cur_map.keys()) if period_closed else []
 
     first_dates = await transactions.first_lesson_dates_for_clients(new_ids)
 
@@ -1594,6 +1597,7 @@ async def analytics_clients_delta(
             "current_to": current_to.isoformat(),
             "previous_from": prev_from.isoformat(),
             "previous_to": prev_to.isoformat(),
+            "closed": period_closed,
         },
         "new_active": new_active,
         "became_inactive": became_inactive,
