@@ -563,6 +563,9 @@ async def admin_users(query: str | None = None, page: int = 1, page_size: int = 
     total = len(profiles)
     start = max(0, (page - 1) * page_size)
     items = profiles[start:start + page_size]
+    ids = [int(p.telegram_id) for p in items if p and p.telegram_id is not None]
+    last_lessons = await transactions.last_lessons_for_clients(ids)
+    active_cutoff = datetime.date.today() - datetime.timedelta(days=7)
     return {
         "items": [
             {
@@ -575,6 +578,12 @@ async def admin_users(query: str | None = None, page: int = 1, page_size: int = 
                 "blocked": bool(p.blocked),
                 "balance_lessons": p.balance_lessons or 0,
                 "price": p.price or 0,
+                "last_lesson_date": last_lessons.get(int(p.telegram_id), {}).get("date"),
+                "last_lesson_time": last_lessons.get(int(p.telegram_id), {}).get("time"),
+                "active_recent": bool(
+                    last_lessons.get(int(p.telegram_id), {}).get("date")
+                    and datetime.date.fromisoformat(last_lessons[int(p.telegram_id)]["date"]) >= active_cutoff
+                ),
             }
             for p in items
         ],

@@ -1897,6 +1897,38 @@ async def payments_timeseries_for_range(
     return items
 
 
+async def last_lessons_for_clients(client_ids: list[int]) -> dict[int, dict[str, Any]]:
+    """
+    Последнее проведенное занятие (по payments, без canceled) для списка клиентов.
+    """
+    if not client_ids:
+        return {}
+    res = await session.execute(
+        select(
+            Payment.telegram_id,
+            Payment.lesson_date,
+            Payment.hour,
+            Payment.minute,
+        )
+        .where(
+            Payment.telegram_id.in_(client_ids),
+            Payment.status != "canceled",
+        )
+        .order_by(Payment.telegram_id.asc(), Payment.lesson_date.desc(), Payment.hour.desc(), Payment.minute.desc(), Payment.id.desc())
+    )
+    out: dict[int, dict[str, Any]] = {}
+    for row in res.all():
+        tg = int(row[0]) if row[0] is not None else None
+        if tg is None or tg in out:
+            continue
+        lesson_date = row[1]
+        out[tg] = {
+            "date": lesson_date.isoformat() if lesson_date and hasattr(lesson_date, "isoformat") else (str(lesson_date) if lesson_date else None),
+            "time": f"{int(row[2] or 0):02d}:{int(row[3] or 0):02d}",
+        }
+    return out
+
+
 # --- Оплаты ---
 async def add_payment(
         telegram_id: int | None,

@@ -1478,10 +1478,18 @@ function AdminView({ token }) {
                   <small>Всего: {usersTotal}</small>
                   <ul className="list list-compact">
                     {users.map(u => (
-                      <li key={u.telegram_id} className="user-list-item">
+                      <li
+                        key={u.telegram_id}
+                        className={`user-list-item ${u.active_recent ? 'is-active' : 'is-inactive'}`}
+                      >
                         <button className="btn secondary" onClick={() => selectUser(u.telegram_id).catch(e => setError(String(e.message || e)))}>
                           {(u.full_name || u.telegram_id)} {u.blocked ? '🔒' : ''}
                         </button>
+                        <small className="user-last-lesson">
+                          {u.last_lesson_date
+                            ? `Последнее занятие: ${u.last_lesson_date} ${u.last_lesson_time || ''}`
+                            : 'Последних проведённых занятий нет'}
+                        </small>
                         {selectedUser && Number(selectedUser.telegram_id) === Number(u.telegram_id) ? (
                           <div className="inline-user-editor">
                             <div className="stack">
