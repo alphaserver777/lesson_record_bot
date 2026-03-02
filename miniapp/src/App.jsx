@@ -591,7 +591,7 @@ function AdminView({ token }) {
   const [selectedUser, setSelectedUser] = useState(null)
   const [selectedUserUpcoming, setSelectedUserUpcoming] = useState([])
   const [selectedUserArchive, setSelectedUserArchive] = useState([])
-  const [userEdit, setUserEdit] = useState({ full_name: '', telephone: '', price: '', balance_set: '', balance_add: '' })
+  const [userEdit, setUserEdit] = useState({ telegram_id: '', full_name: '', telephone: '', price: '', balance_set: '', balance_add: '' })
 
   const [day, setDay] = useState(() => new Date().toISOString().slice(0, 10))
   const [adminMonth, setAdminMonth] = useState(() => new Date().toISOString().slice(0, 7))
@@ -671,6 +671,7 @@ function AdminView({ token }) {
     const data = await api(`/api/admin/users/${telegramId}`, { token })
     setSelectedUser(data)
     setUserEdit({
+      telegram_id: String(data.telegram_id ?? ''),
       full_name: data.full_name || '',
       telephone: data.phone || '',
       price: String(data.price ?? ''),
@@ -683,17 +684,31 @@ function AdminView({ token }) {
     setSelectedUserArchive(archive.items || [])
   }
 
-  async function saveUserPatch(fields) {
+  async function saveUserPatch(fields, successMessage = 'Сохранено') {
     if (!selectedUser?.telegram_id) return
-    await api(`/api/admin/users/${selectedUser.telegram_id}`, { token, method: 'PATCH', body: fields })
-    await selectUser(selectedUser.telegram_id)
+    const data = await api(`/api/admin/users/${selectedUser.telegram_id}`, { token, method: 'PATCH', body: fields })
+    const nextId = Number(data?.item?.telegram_id || selectedUser.telegram_id)
+    await selectUser(nextId)
     await loadUsers()
-    setSuccess('Профиль сохранен')
+    setSuccess(successMessage)
   }
 
   async function toggleUserBlock() {
     if (!selectedUser?.telegram_id) return
-    await saveUserPatch({ blocked: !selectedUser.blocked })
+    await saveUserPatch({ blocked: !selectedUser.blocked }, selectedUser.blocked ? 'Клиент разблокирован' : 'Клиент заблокирован')
+  }
+
+  async function deleteSelectedUser() {
+    if (!selectedUser?.telegram_id) return
+    if (!window.confirm('Удалить клиента из активной базы? История оплат сохранится.')) return
+    await api(`/api/admin/users/${selectedUser.telegram_id}`, { token, method: 'DELETE' })
+    setSelectedUser(null)
+    setSelectedUserUpcoming([])
+    setSelectedUserArchive([])
+    setUserEdit({ telegram_id: '', full_name: '', telephone: '', price: '', balance_set: '', balance_add: '' })
+    await loadUsers(1, query).catch(() => {})
+    setUsersPage(1)
+    setSuccess('Клиент удален')
   }
 
   async function loadSchedule() {
@@ -1325,6 +1340,61 @@ function AdminView({ token }) {
 
             {manageSection === 'clients' ? (
               <>
+                {selectedUser ? (
+                  <Card title={`Карточка: ${selectedUser.full_name || String(selectedUser.telegram_id)}`} subtitle={`Текущий Telegram ID: ${selectedUser.telegram_id}`}>
+                    <div className="stack">
+                      <small>Telegram ID</small>
+                      <input
+                        className="input"
+                        value={userEdit.telegram_id}
+                        onChange={e => setUserEdit(v => ({ ...v, telegram_id: e.target.value }))}
+                        placeholder="Например: 123456789"
+                      />
+                      <small>ФИО</small>
+                      <input className="input" value={userEdit.full_name} onChange={e => setUserEdit(v => ({ ...v, full_name: e.target.value }))} placeholder="Имя и фамилия" />
+                      <small>Телефон</small>
+                      <input className="input" value={userEdit.telephone} onChange={e => setUserEdit(v => ({ ...v, telephone: e.target.value }))} placeholder="+7..." />
+                      <small>Цена за 60 мин (₽)</small>
+                      <input className="input" value={userEdit.price} onChange={e => setUserEdit(v => ({ ...v, price: e.target.value }))} placeholder="Например: 1500" />
+                      <div className="mini-actions-row">
+                        <button className="btn" onClick={() => saveUserPatch({
+                          telegram_id_new: Number(userEdit.telegram_id || selectedUser.telegram_id),
+                          full_name: userEdit.full_name,
+                          telephone: userEdit.telephone,
+                          price: userEdit.price === '' ? null : Number(userEdit.price),
+                        }, 'Профиль сохранен').catch(e => setError(String(e.message || e)))}>
+                          Сохранить профиль
+                        </button>
+                        <button className="btn secondary" onClick={() => toggleUserBlock().catch(e => setError(String(e.message || e)))}>
+                          {selectedUser.blocked ? 'Разблокировать' : 'Заблокировать'}
+                        </button>
+                        <button className="btn secondary" onClick={() => deleteSelectedUser().catch(e => setError(String(e.message || e)))}>
+                          Удалить клиента
+                        </button>
+                      </div>
+                      <small>Баланс клиента (текущий: {selectedUser.balance_lessons ?? 0} ₽)</small>
+                      <div className="custom-row">
+                        <input className="input" value={userEdit.balance_set} onChange={e => setUserEdit(v => ({ ...v, balance_set: e.target.value }))} placeholder="Установить баланс, ₽" />
+                        <button className="btn secondary" onClick={() => saveUserPatch({ balance_lessons_set: Number(userEdit.balance_set || 0) }, 'Баланс установлен').catch(e => setError(String(e.message || e)))}>Установить</button>
+                      </div>
+                      <div className="custom-row">
+                        <input className="input" value={userEdit.balance_add} onChange={e => setUserEdit(v => ({ ...v, balance_add: e.target.value }))} placeholder="Изменить баланс, ₽ (можно -)" />
+                        <button className="btn secondary" onClick={() => saveUserPatch({ balance_lessons_add: Number(userEdit.balance_add || 0) }, 'Баланс изменен').catch(e => setError(String(e.message || e)))}>Изменить</button>
+                      </div>
+                      <div className="stack">
+                        <strong>Ближайшие</strong>
+                        <ul className="list list-compact">
+                          {(selectedUserUpcoming || []).slice(0, 5).map((b, i) => <li key={`up-${i}`}><span>{b.date} {b.time}</span><small>{b.kind}</small></li>)}
+                        </ul>
+                        <strong>Архив</strong>
+                        <ul className="list list-compact">
+                          {(selectedUserArchive || []).slice(0, 5).map((b, i) => <li key={`ar-${i}`}><span>{b.date} {b.time}</span><small>{b.kind}</small></li>)}
+                        </ul>
+                      </div>
+                    </div>
+                  </Card>
+                ) : null}
+
                 <Card title="Пользователи" subtitle="Поиск и карточка клиента">
                   <div className="custom-row">
                     <input className="input" value={query} onChange={e => setQuery(e.target.value)} placeholder="Имя/телефон" />
@@ -1349,47 +1419,6 @@ function AdminView({ token }) {
                         <button className="btn secondary" onClick={() => selectUser(u.telegram_id).catch(e => setError(String(e.message || e)))}>
                           {(u.full_name || u.telegram_id)} {u.blocked ? '🔒' : ''}
                         </button>
-                        {selectedUser && selectedUser.telegram_id === u.telegram_id ? (
-                          <div className="stack" style={{ marginTop: 10 }}>
-                            <small>ФИО</small>
-                            <input className="input" value={userEdit.full_name} onChange={e => setUserEdit(v => ({ ...v, full_name: e.target.value }))} placeholder="Имя и фамилия" />
-                            <small>Телефон</small>
-                            <input className="input" value={userEdit.telephone} onChange={e => setUserEdit(v => ({ ...v, telephone: e.target.value }))} placeholder="+7..." />
-                            <small>Цена за 60 мин (₽)</small>
-                            <input className="input" value={userEdit.price} onChange={e => setUserEdit(v => ({ ...v, price: e.target.value }))} placeholder="Например: 1500" />
-                            <div className="mini-actions-row">
-                              <button className="btn" onClick={() => saveUserPatch({
-                                full_name: userEdit.full_name,
-                                telephone: userEdit.telephone,
-                                price: userEdit.price === '' ? null : Number(userEdit.price),
-                              }).catch(e => setError(String(e.message || e)))}>
-                                Сохранить профиль
-                              </button>
-                              <button className="btn secondary" onClick={() => toggleUserBlock().catch(e => setError(String(e.message || e)))}>
-                                {selectedUser.blocked ? 'Разблокировать' : 'Заблокировать'}
-                              </button>
-                            </div>
-                            <small>Баланс клиента (текущий: {selectedUser.balance_lessons ?? 0} ₽)</small>
-                            <div className="custom-row">
-                              <input className="input" value={userEdit.balance_set} onChange={e => setUserEdit(v => ({ ...v, balance_set: e.target.value }))} placeholder="Установить баланс, ₽" />
-                              <button className="btn secondary" onClick={() => saveUserPatch({ balance_lessons_set: Number(userEdit.balance_set || 0) }).catch(e => setError(String(e.message || e)))}>Установить</button>
-                            </div>
-                            <div className="custom-row">
-                              <input className="input" value={userEdit.balance_add} onChange={e => setUserEdit(v => ({ ...v, balance_add: e.target.value }))} placeholder="Изменить баланс, ₽ (можно -)" />
-                              <button className="btn secondary" onClick={() => saveUserPatch({ balance_lessons_add: Number(userEdit.balance_add || 0) }).catch(e => setError(String(e.message || e)))}>Изменить</button>
-                            </div>
-                            <div className="stack">
-                              <strong>Ближайшие</strong>
-                              <ul className="list list-compact">
-                                {(selectedUserUpcoming || []).slice(0, 5).map((b, i) => <li key={`up-${i}`}><span>{b.date} {b.time}</span><small>{b.kind}</small></li>)}
-                              </ul>
-                              <strong>Архив</strong>
-                              <ul className="list list-compact">
-                                {(selectedUserArchive || []).slice(0, 5).map((b, i) => <li key={`ar-${i}`}><span>{b.date} {b.time}</span><small>{b.kind}</small></li>)}
-                              </ul>
-                            </div>
-                          </div>
-                        ) : null}
                       </li>
                     ))}
                   </ul>

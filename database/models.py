@@ -56,6 +56,7 @@ class StudentProfile(Base):
     notes = Column(String(255), nullable=True)
     telephone = Column(String(20), nullable=True)
     blocked = Column(Boolean, default=False)
+    is_deleted = Column(Boolean, default=False)
     last_visit_date = Column(String(50), nullable=True)
     balance_lessons = Column(Integer, nullable=False, default=0)
 

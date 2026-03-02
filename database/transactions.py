@@ -3,7 +3,7 @@ import datetime
 import logging
 from typing import Any
 
-from sqlalchemy import case, delete, func, select, text
+from sqlalchemy import case, delete, func, select, text, update
 
 from database.connect import Base, engine, session
 from database.models import Payment, RecordDate, RegularLesson, StudentProfile
@@ -295,6 +295,9 @@ async def _ensure_student_profiles_columns() -> None:
         await session.commit()
     if "telegram_username" not in column_names:
         await session.execute(text("ALTER TABLE student_profiles ADD COLUMN telegram_username VARCHAR(100)"))
+        await session.commit()
+    if "is_deleted" not in column_names:
+        await session.execute(text("ALTER TABLE student_profiles ADD COLUMN is_deleted BOOLEAN DEFAULT 0"))
         await session.commit()
 
 
@@ -987,7 +990,9 @@ async def ensure_allow_slot(
 
 
 async def view_clients() -> list[Any]:
-    res = await session.execute(select(StudentProfile))
+    res = await session.execute(
+        select(StudentProfile).where((StudentProfile.is_deleted.is_(None)) | (StudentProfile.is_deleted == 0))
+    )
     return res.all()
 
 
@@ -1047,13 +1052,72 @@ async def del_user(telegram_id: int) -> None:
 
 
 async def search_client(search_text: str) -> list[Any]:
-    res = await session.execute(select(StudentProfile).where(StudentProfile.telephone.ilike(f'%{search_text}%')))
+    base_filter = ((StudentProfile.is_deleted.is_(None)) | (StudentProfile.is_deleted == 0))
+    res = await session.execute(
+        select(StudentProfile).where(base_filter, StudentProfile.telephone.ilike(f'%{search_text}%'))
+    )
     res = res.all()
 
     if not res:
-        res = await session.execute(select(StudentProfile).where(StudentProfile.full_name.ilike(f'%{search_text}%')))
+        res = await session.execute(
+            select(StudentProfile).where(base_filter, StudentProfile.full_name.ilike(f'%{search_text}%'))
+        )
         res = res.all()
     return res
+
+
+async def rebind_student_telegram_id(old_telegram_id: int, new_telegram_id: int) -> None:
+    if old_telegram_id == new_telegram_id:
+        return
+
+    profile = await session.get(StudentProfile, old_telegram_id)
+    if not profile:
+        raise LookupError("PROFILE_NOT_FOUND")
+
+    existing = await session.get(StudentProfile, new_telegram_id)
+    if existing:
+        raise ValueError("TELEGRAM_ID_ALREADY_EXISTS")
+
+    replacement = StudentProfile(
+        telegram_id=new_telegram_id,
+        full_name=profile.full_name,
+        telegram_username=profile.telegram_username,
+        age=profile.age,
+        price=profile.price,
+        direction=profile.direction,
+        goal=profile.goal,
+        notes=profile.notes,
+        telephone=profile.telephone,
+        blocked=profile.blocked,
+        is_deleted=profile.is_deleted,
+        last_visit_date=profile.last_visit_date,
+        balance_lessons=profile.balance_lessons,
+    )
+    session.add(replacement)
+    await session.flush()
+
+    await session.execute(
+        update(RecordDate).where(RecordDate.telegram_id == old_telegram_id).values(telegram_id=new_telegram_id)
+    )
+    await session.execute(
+        update(RegularLesson).where(RegularLesson.telegram_id == old_telegram_id).values(telegram_id=new_telegram_id)
+    )
+    await session.execute(
+        update(Payment).where(Payment.telegram_id == old_telegram_id).values(telegram_id=new_telegram_id)
+    )
+
+    await session.delete(profile)
+    await session.commit()
+
+
+async def soft_delete_user(telegram_id: int) -> bool:
+    profile = await session.get(StudentProfile, telegram_id)
+    if not profile:
+        return False
+    profile.is_deleted = 1
+    profile.blocked = 1
+    await session.commit()
+    return True
 
 
 async def reserve_day(

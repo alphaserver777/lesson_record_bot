@@ -545,6 +545,19 @@ async def admin_patch_user(
     if not profile:
         raise HTTPException(status_code=404, detail="not found")
 
+    target_telegram_id = telegram_id
+    if payload.telegram_id_new is not None and payload.telegram_id_new != telegram_id:
+        try:
+            await transactions.rebind_student_telegram_id(telegram_id, int(payload.telegram_id_new))
+            target_telegram_id = int(payload.telegram_id_new)
+        except ValueError:
+            raise HTTPException(
+                status_code=409,
+                detail={"code": "TELEGRAM_ID_ALREADY_EXISTS", "message": "Пользователь с таким Telegram ID уже существует"},
+            ) from None
+        except LookupError:
+            raise HTTPException(status_code=404, detail={"code": "NOT_FOUND", "message": "Профиль не найден"}) from None
+
     updates: dict[str, Any] = {}
     if payload.full_name is not None:
         updates["full_name"] = payload.full_name
@@ -555,16 +568,16 @@ async def admin_patch_user(
     if payload.balance_lessons_set is not None:
         updates["balance_lessons"] = payload.balance_lessons_set
     if updates:
-        await transactions.upsert_student_profile(telegram_id=telegram_id, **updates)
+        await transactions.upsert_student_profile(telegram_id=target_telegram_id, **updates)
 
     if payload.balance_lessons_add is not None:
-        await transactions.change_balance(telegram_id, payload.balance_lessons_add)
+        await transactions.change_balance(target_telegram_id, payload.balance_lessons_add)
 
     if payload.blocked is not None:
-        await transactions.block_unblock_user(telegram_id, "bl" if payload.blocked else "un")
+        await transactions.block_unblock_user(target_telegram_id, "bl" if payload.blocked else "un")
 
     await _audit(int(admin["sub"]), "update", "user", {"telegram_id": telegram_id, **payload.model_dump()})
-    updated = await transactions.get_student_profile(telegram_id)
+    updated = await transactions.get_student_profile(target_telegram_id)
     return {
         "status": "ok",
         "item": {
@@ -577,6 +590,15 @@ async def admin_patch_user(
             "price": updated.price or 0,
         },
     }
+
+
+@app.delete("/api/admin/users/{telegram_id}")
+async def admin_delete_user(telegram_id: int, admin: dict[str, Any] = Depends(require_admin)) -> dict[str, Any]:
+    ok = await transactions.soft_delete_user(telegram_id)
+    if not ok:
+        raise HTTPException(status_code=404, detail={"code": "NOT_FOUND", "message": "Профиль не найден"})
+    await _audit(int(admin["sub"]), "delete", "user", {"telegram_id": telegram_id, "mode": "soft_delete"})
+    return {"status": "ok"}
 
 
 @app.get("/api/admin/users/{telegram_id}/bookings")
