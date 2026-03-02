@@ -32,6 +32,7 @@ from webapi.schemas import (
     ManualPaymentIn,
     RegularLessonIn,
     SingleLessonIn,
+    UserProfileIn,
     WorkScheduleApplyIn,
     WorkScheduleIn,
     WorkSchedulePreviewIn,
@@ -101,6 +102,16 @@ def _booking_status_filter(status: str) -> Any:
 
 def _booking_kind_label(kind: str | None) -> str:
     return "regular" if (kind or "").lower() == "regular" else "single"
+
+
+def _profile_display_name(profile: StudentProfile | None) -> str:
+    if not profile:
+        return ""
+    first = (profile.first_name or "").strip()
+    last = (profile.last_name or "").strip()
+    if first or last:
+        return " ".join([last, first]).strip()
+    return (profile.full_name or "").strip()
 
 
 def _minutes_to_hhmm(total_minutes: int) -> str:
@@ -339,7 +350,6 @@ async def auth_telegram(payload: AuthIn) -> dict[str, Any]:
 
     await transactions.upsert_student_profile(
         telegram_id=data["telegram_id"],
-        full_name=data.get("full_name") or None,
         username=data.get("username") or None,
     )
     await transactions.update_visit_date(data["telegram_id"])
@@ -351,7 +361,7 @@ async def auth_telegram(payload: AuthIn) -> dict[str, Any]:
         "user": {
             "telegram_id": data["telegram_id"],
             "role": role,
-            "full_name": data.get("full_name"),
+            "full_name": None,
             "username": data.get("username"),
         },
     }
@@ -360,14 +370,41 @@ async def auth_telegram(payload: AuthIn) -> dict[str, Any]:
 @app.get("/api/me")
 async def me(user: dict[str, Any] = Depends(get_current_user)) -> dict[str, Any]:
     profile = await transactions.get_student_profile(int(user["sub"]))
+    display_name = _profile_display_name(profile)
     return {
         "telegram_id": int(user["sub"]),
         "role": user["role"],
         "profile": {
-            "full_name": profile.full_name if profile else None,
+            "full_name": display_name or (profile.full_name if profile else None),
+            "first_name": profile.first_name if profile else None,
+            "last_name": profile.last_name if profile else None,
+            "username": profile.telegram_username if profile else None,
             "telephone": profile.telephone if profile else None,
             "price": profile.price if profile else None,
             "balance_lessons": profile.balance_lessons if profile else 0,
+            "profile_completed": bool(profile and profile.first_name and profile.last_name and profile.telephone),
+        },
+    }
+
+
+@app.post("/api/user/profile")
+async def user_profile_upsert(payload: UserProfileIn, user: dict[str, Any] = Depends(get_current_user)) -> dict[str, Any]:
+    telegram_id = int(user["sub"])
+    profile = await transactions.upsert_student_profile(
+        telegram_id=telegram_id,
+        first_name=payload.first_name,
+        last_name=payload.last_name,
+        telephone=payload.telephone,
+    )
+    return {
+        "status": "ok",
+        "profile": {
+            "full_name": _profile_display_name(profile),
+            "first_name": profile.first_name,
+            "last_name": profile.last_name,
+            "username": profile.telegram_username,
+            "telephone": profile.telephone,
+            "profile_completed": bool(profile.first_name and profile.last_name and profile.telephone),
         },
     }
 
@@ -522,7 +559,7 @@ async def user_cancel(payload: BookIn, user: dict[str, Any] = Depends(get_curren
 async def admin_users(query: str | None = None, page: int = 1, page_size: int = 20, _: dict[str, Any] = Depends(require_admin)) -> dict[str, Any]:
     rows = await (transactions.search_client(query) if query else transactions.view_clients())
     profiles = [r[0] for r in rows if r and r[0]]
-    profiles.sort(key=lambda x: (x.full_name or "").lower())
+    profiles.sort(key=lambda x: (_profile_display_name(x) or "").lower())
     total = len(profiles)
     start = max(0, (page - 1) * page_size)
     items = profiles[start:start + page_size]
@@ -530,7 +567,9 @@ async def admin_users(query: str | None = None, page: int = 1, page_size: int = 
         "items": [
             {
                 "telegram_id": p.telegram_id,
-                "full_name": p.full_name,
+                "full_name": _profile_display_name(p) or p.full_name,
+                "first_name": p.first_name,
+                "last_name": p.last_name,
                 "username": p.telegram_username,
                 "phone": p.telephone,
                 "blocked": bool(p.blocked),
@@ -553,7 +592,9 @@ async def admin_user(telegram_id: int, _: dict[str, Any] = Depends(require_admin
     regular = await transactions.view_regular_lessons(telegram_id)
     return {
         "telegram_id": p.telegram_id,
-        "full_name": p.full_name,
+        "full_name": _profile_display_name(p) or p.full_name,
+        "first_name": p.first_name,
+        "last_name": p.last_name,
         "username": p.telegram_username,
         "phone": p.telephone,
         "blocked": bool(p.blocked),
@@ -600,6 +641,10 @@ async def admin_patch_user(
     updates: dict[str, Any] = {}
     if payload.full_name is not None:
         updates["full_name"] = payload.full_name
+    if payload.first_name is not None:
+        updates["first_name"] = payload.first_name
+    if payload.last_name is not None:
+        updates["last_name"] = payload.last_name
     if payload.telephone is not None:
         updates["telephone"] = payload.telephone
     if payload.price is not None:
@@ -621,7 +666,9 @@ async def admin_patch_user(
         "status": "ok",
         "item": {
             "telegram_id": updated.telegram_id,
-            "full_name": updated.full_name,
+            "full_name": _profile_display_name(updated) or updated.full_name,
+            "first_name": updated.first_name,
+            "last_name": updated.last_name,
             "username": updated.telegram_username,
             "phone": updated.telephone,
             "blocked": bool(updated.blocked),

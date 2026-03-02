@@ -122,6 +122,8 @@ function UserView({ token, appUser, tgUser }) {
   const [selectedTime, setSelectedTime] = useState('')
   const [bookings, setBookings] = useState({ single: [], regular: [] })
   const [profile, setProfile] = useState(null)
+  const [registerForm, setRegisterForm] = useState({ first_name: '', last_name: '', telephone: '' })
+  const [registerLoading, setRegisterLoading] = useState(false)
   const [activeTab, setActiveTab] = useState('home')
   const [lessonType, setLessonType] = useState('single')
   const [duration, setDuration] = useState(60)
@@ -180,10 +182,43 @@ function UserView({ token, appUser, tgUser }) {
     setProfileLoading(true)
     try {
       const data = await api('/api/me', { token })
-      setProfile(data.profile || null)
+      const p = data.profile || null
+      setProfile(p)
+      if (p) {
+        setRegisterForm({
+          first_name: p.first_name || '',
+          last_name: p.last_name || '',
+          telephone: p.telephone || '',
+        })
+      }
       setError('')
     } finally {
       setProfileLoading(false)
+    }
+  }
+
+  async function saveProfileRegistration() {
+    const first_name = (registerForm.first_name || '').trim()
+    const last_name = (registerForm.last_name || '').trim()
+    const telephone = (registerForm.telephone || '').trim()
+    if (!first_name || !last_name || !telephone) {
+      setError('Заполните имя, фамилию и телефон.')
+      return
+    }
+    setRegisterLoading(true)
+    try {
+      const data = await api('/api/user/profile', {
+        token,
+        method: 'POST',
+        body: { first_name, last_name, telephone },
+      })
+      setProfile(prev => ({ ...(prev || {}), ...(data.profile || {}) }))
+      setSuccess('Профиль сохранён')
+      setError('')
+    } catch (e) {
+      setError(normalizeErrorMessage(e.message || e))
+    } finally {
+      setRegisterLoading(false)
     }
   }
 
@@ -286,8 +321,9 @@ function UserView({ token, appUser, tgUser }) {
   const regularBookings = Array.isArray(bookings?.regular) ? bookings.regular : []
   const nextLesson = nearestBooking(singleBookings)
   const hasAvatar = Boolean(tgUser?.photo_url)
-  const displayName = profile?.full_name || appUser?.full_name || tgUser?.first_name || `ID ${appUser?.telegram_id || ''}`
-  const username = appUser?.username || tgUser?.username || ''
+  const displayName = [profile?.last_name, profile?.first_name].filter(Boolean).join(' ') || profile?.full_name || `ID ${appUser?.telegram_id || ''}`
+  const username = profile?.username || appUser?.username || tgUser?.username || ''
+  const profileCompleted = profileLoading ? true : Boolean(profile?.profile_completed)
   const initials = (displayName || 'U')
     .split(' ')
     .filter(Boolean)
@@ -358,6 +394,35 @@ function UserView({ token, appUser, tgUser }) {
         {activeTab === 'home' ? (
           <div className="stack">
             <Card title={`Привет, ${displayName}`} subtitle="Общая информация">
+              {!profileLoading && !profileCompleted ? (
+                <div className="stack" style={{ marginTop: 0 }}>
+                  <div className="toast error">Заполните профиль перед записью на занятия.</div>
+                  <small>Имя</small>
+                  <input
+                    className="input"
+                    value={registerForm.first_name}
+                    onChange={e => setRegisterForm(v => ({ ...v, first_name: e.target.value }))}
+                    placeholder="Имя"
+                  />
+                  <small>Фамилия</small>
+                  <input
+                    className="input"
+                    value={registerForm.last_name}
+                    onChange={e => setRegisterForm(v => ({ ...v, last_name: e.target.value }))}
+                    placeholder="Фамилия"
+                  />
+                  <small>Телефон</small>
+                  <input
+                    className="input"
+                    value={registerForm.telephone}
+                    onChange={e => setRegisterForm(v => ({ ...v, telephone: e.target.value }))}
+                    placeholder="+7..."
+                  />
+                  <button className="btn" onClick={saveProfileRegistration} disabled={registerLoading}>
+                    {registerLoading ? 'Сохраняем...' : 'Сохранить профиль'}
+                  </button>
+                </div>
+              ) : null}
               {profileLoading ? (
                 <div className="home-skeleton">
                   <div className="skeleton-row">
@@ -448,6 +513,13 @@ function UserView({ token, appUser, tgUser }) {
 
         {activeTab === 'book' ? (
           <div className="stack">
+            {!profileCompleted ? (
+              <Card title="Профиль не заполнен" subtitle="Сначала заполните имя, фамилию и телефон на вкладке «Профиль».">
+                <div className="empty">После сохранения профиля откроется запись на занятия.</div>
+              </Card>
+            ) : null}
+            {profileCompleted ? (
+              <>
             <Card title="Тип занятия" subtitle="Выберите формат">
               <div className="segmented">
                 <button className={lessonType === 'single' ? 'seg active' : 'seg'} onClick={() => setLessonType('single')}>Разовое</button>
@@ -553,6 +625,8 @@ function UserView({ token, appUser, tgUser }) {
                 <div className="empty">На выбранную дату свободного времени нет.</div>
               )}
             </Card>
+              </>
+            ) : null}
           </div>
         ) : null}
 
@@ -594,7 +668,15 @@ function AdminView({ token }) {
   const [selectedUser, setSelectedUser] = useState(null)
   const [selectedUserUpcoming, setSelectedUserUpcoming] = useState([])
   const [selectedUserArchive, setSelectedUserArchive] = useState([])
-  const [userEdit, setUserEdit] = useState({ telegram_id: '', full_name: '', telephone: '', price: '', balance_set: '', balance_add: '' })
+  const [userEdit, setUserEdit] = useState({
+    telegram_id: '',
+    first_name: '',
+    last_name: '',
+    telephone: '',
+    price: '',
+    balance_set: '',
+    balance_add: '',
+  })
 
   const [day, setDay] = useState(() => new Date().toISOString().slice(0, 10))
   const [adminMonth, setAdminMonth] = useState(() => new Date().toISOString().slice(0, 7))
@@ -679,7 +761,8 @@ function AdminView({ token }) {
     setSelectedUser(data)
     setUserEdit({
       telegram_id: String(data.telegram_id ?? ''),
-      full_name: data.full_name || '',
+      first_name: data.first_name || '',
+      last_name: data.last_name || '',
       telephone: data.phone || '',
       price: String(data.price ?? ''),
       balance_set: String(data.balance_lessons ?? ''),
@@ -733,7 +816,7 @@ function AdminView({ token }) {
     setSelectedUser(null)
     setSelectedUserUpcoming([])
     setSelectedUserArchive([])
-    setUserEdit({ telegram_id: '', full_name: '', telephone: '', price: '', balance_set: '', balance_add: '' })
+    setUserEdit({ telegram_id: '', first_name: '', last_name: '', telephone: '', price: '', balance_set: '', balance_add: '' })
     await loadUsers(1, query).catch(() => {})
     setUsersPage(1)
     setSuccess('Клиент удален')
@@ -1375,9 +1458,48 @@ function AdminView({ token }) {
 
             {manageSection === 'clients' ? (
               <>
+                <Card title="Пользователи" subtitle="Поиск и карточка клиента">
+                  <div className="custom-row">
+                    <input className="input" value={query} onChange={e => setQuery(e.target.value)} placeholder="Имя/телефон" />
+                    <button
+                      className="btn"
+                      onClick={() => {
+                        setUsersPage(1)
+                        loadUsers(1, query).catch(e => setError(String(e.message || e)))
+                      }}
+                    >
+                      Поиск
+                    </button>
+                  </div>
+                  <div className="mini-actions-row">
+                    <button className="btn secondary" disabled={usersPage <= 1} onClick={() => { setUsersPage(p => Math.max(1, p - 1)) }}>← Стр.</button>
+                    <button className="btn secondary" onClick={() => { setUsersPage(p => p + 1) }}>Стр. →</button>
+                  </div>
+                  <small>Всего: {usersTotal}</small>
+                  <ul className="list list-compact">
+                    {users.map(u => (
+                      <li key={u.telegram_id}>
+                        <button className="btn secondary" onClick={() => selectUser(u.telegram_id).catch(e => setError(String(e.message || e)))}>
+                          {(u.full_name || u.telegram_id)} {u.blocked ? '🔒' : ''}
+                        </button>
+                      </li>
+                    ))}
+                  </ul>
+                </Card>
+
                 {selectedUser ? (
                   <Card title={`Карточка: ${selectedUser.full_name || String(selectedUser.telegram_id)}`} subtitle={`Текущий Telegram ID: ${selectedUser.telegram_id}`}>
                     <div className="stack">
+                      {selectedUser.username ? (
+                        <a
+                          className="username-link"
+                          href={`https://t.me/${String(selectedUser.username).replace('@', '')}`}
+                          target="_blank"
+                          rel="noreferrer"
+                        >
+                          @{String(selectedUser.username).replace('@', '')}
+                        </a>
+                      ) : null}
                       <small>Telegram ID</small>
                       <input
                         className="input"
@@ -1385,8 +1507,10 @@ function AdminView({ token }) {
                         onChange={e => setUserEdit(v => ({ ...v, telegram_id: e.target.value }))}
                         placeholder="Например: 123456789"
                       />
-                      <small>ФИО</small>
-                      <input className="input" value={userEdit.full_name} onChange={e => setUserEdit(v => ({ ...v, full_name: e.target.value }))} placeholder="Имя и фамилия" />
+                      <small>Имя</small>
+                      <input className="input" value={userEdit.first_name} onChange={e => setUserEdit(v => ({ ...v, first_name: e.target.value }))} placeholder="Имя" />
+                      <small>Фамилия</small>
+                      <input className="input" value={userEdit.last_name} onChange={e => setUserEdit(v => ({ ...v, last_name: e.target.value }))} placeholder="Фамилия" />
                       <small>Телефон</small>
                       <input className="input" value={userEdit.telephone} onChange={e => setUserEdit(v => ({ ...v, telephone: e.target.value }))} placeholder="+7..." />
                       <small>Цена за 60 мин (₽)</small>
@@ -1394,7 +1518,8 @@ function AdminView({ token }) {
                       <div className="mini-actions-row">
                         <button className="btn" onClick={() => saveUserPatch({
                           telegram_id_new: Number(userEdit.telegram_id || selectedUser.telegram_id),
-                          full_name: userEdit.full_name,
+                          first_name: userEdit.first_name,
+                          last_name: userEdit.last_name,
                           telephone: userEdit.telephone,
                           price: userEdit.price === '' ? null : Number(userEdit.price),
                         }, 'Профиль сохранен').catch(e => setError(String(e.message || e)))}>
@@ -1464,35 +1589,6 @@ function AdminView({ token }) {
                     </div>
                   </Card>
                 ) : null}
-
-                <Card title="Пользователи" subtitle="Поиск и карточка клиента">
-                  <div className="custom-row">
-                    <input className="input" value={query} onChange={e => setQuery(e.target.value)} placeholder="Имя/телефон" />
-                    <button
-                      className="btn"
-                      onClick={() => {
-                        setUsersPage(1)
-                        loadUsers(1, query).catch(e => setError(String(e.message || e)))
-                      }}
-                    >
-                      Поиск
-                    </button>
-                  </div>
-                  <div className="mini-actions-row">
-                    <button className="btn secondary" disabled={usersPage <= 1} onClick={() => { setUsersPage(p => Math.max(1, p - 1)) }}>← Стр.</button>
-                    <button className="btn secondary" onClick={() => { setUsersPage(p => p + 1) }}>Стр. →</button>
-                  </div>
-                  <small>Всего: {usersTotal}</small>
-                  <ul className="list list-compact">
-                    {users.map(u => (
-                      <li key={u.telegram_id}>
-                        <button className="btn secondary" onClick={() => selectUser(u.telegram_id).catch(e => setError(String(e.message || e)))}>
-                          {(u.full_name || u.telegram_id)} {u.blocked ? '🔒' : ''}
-                        </button>
-                      </li>
-                    ))}
-                  </ul>
-                </Card>
               </>
             ) : null}
 

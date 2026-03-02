@@ -75,11 +75,19 @@ class AdminUserPatchIn(BaseModel):
     telegram_id_new: int | None = None
     merge_if_exists: bool = False
     full_name: str | None = None
+    first_name: str | None = None
+    last_name: str | None = None
     telephone: str | None = None
     price: int | None = None
     balance_lessons_set: int | None = None
     balance_lessons_add: int | None = None
     blocked: bool | None = None
+
+
+class UserProfileIn(BaseModel):
+    first_name: str = Field(min_length=1, max_length=100)
+    last_name: str = Field(min_length=1, max_length=100)
+    telephone: str = Field(min_length=5, max_length=20)
 
 
 class WorkIntervalIn(BaseModel):

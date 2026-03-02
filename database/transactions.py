@@ -31,6 +31,25 @@ def _build_event_summary(full_name: str | None, kind: str) -> str:
     return f"{name} ({kind_label})"
 
 
+def _split_full_name(full_name: str | None) -> tuple[str | None, str | None]:
+    raw = (full_name or "").strip()
+    if not raw:
+        return None, None
+    parts = [p for p in raw.split() if p]
+    if len(parts) == 1:
+        return parts[0], None
+    # Стандартизируем: Фамилия + Имя(+Отчество) в first_name
+    return " ".join(parts[1:]), parts[0]
+
+
+def _compose_full_name(first_name: str | None, last_name: str | None) -> str | None:
+    first = (first_name or "").strip()
+    last = (last_name or "").strip()
+    if not first and not last:
+        return None
+    return " ".join([last, first]).strip()
+
+
 async def init_db() -> None:
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
@@ -299,6 +318,32 @@ async def _ensure_student_profiles_columns() -> None:
     if "is_deleted" not in column_names:
         await session.execute(text("ALTER TABLE student_profiles ADD COLUMN is_deleted BOOLEAN DEFAULT 0"))
         await session.commit()
+    if "first_name" not in column_names:
+        await session.execute(text("ALTER TABLE student_profiles ADD COLUMN first_name VARCHAR(100)"))
+        await session.commit()
+    if "last_name" not in column_names:
+        await session.execute(text("ALTER TABLE student_profiles ADD COLUMN last_name VARCHAR(100)"))
+        await session.commit()
+
+    # Мягкий backfill для старых профилей: заполняем first/last из full_name, если поля пустые.
+    rows = await session.execute(
+        select(StudentProfile).where(
+            StudentProfile.full_name.is_not(None),
+            (StudentProfile.first_name.is_(None)) | (StudentProfile.first_name == ""),
+            (StudentProfile.last_name.is_(None)) | (StudentProfile.last_name == ""),
+        )
+    )
+    changed = False
+    for (profile,) in rows.all():
+        first_name, last_name = _split_full_name(profile.full_name)
+        if first_name and not profile.first_name:
+            profile.first_name = first_name
+            changed = True
+        if last_name and not profile.last_name:
+            profile.last_name = last_name
+            changed = True
+    if changed:
+        await session.commit()
 
 
 async def _ensure_payments_columns() -> None:
@@ -330,18 +375,30 @@ async def user_check(telegram_id: int) -> tuple[Any]:
 
 async def add_user(telegram_id: int, full_name: str) -> None:
     profile = await session.get(StudentProfile, telegram_id)
+    first_name, last_name = _split_full_name(full_name)
     if profile is None:
-        profile = StudentProfile(telegram_id=telegram_id, full_name=full_name)
+        profile = StudentProfile(
+            telegram_id=telegram_id,
+            full_name=full_name,
+            first_name=first_name,
+            last_name=last_name,
+        )
         session.add(profile)
     else:
         if full_name and full_name != profile.full_name:
             profile.full_name = full_name
+        if first_name and not profile.first_name:
+            profile.first_name = first_name
+        if last_name and not profile.last_name:
+            profile.last_name = last_name
     await session.commit()
 
 
 async def upsert_student_profile(
     telegram_id: int,
     full_name: str | None = None,
+    first_name: str | None = None,
+    last_name: str | None = None,
     age: int | None = None,
     username: str | None = None,
     price: int | None = None,
@@ -362,6 +419,18 @@ async def upsert_student_profile(
 
     if full_name is not None:
         profile.full_name = full_name
+        if first_name is None and last_name is None:
+            parsed_first, parsed_last = _split_full_name(full_name)
+            if parsed_first:
+                profile.first_name = parsed_first
+            if parsed_last:
+                profile.last_name = parsed_last
+    if first_name is not None:
+        profile.first_name = first_name.strip() or None
+    if last_name is not None:
+        profile.last_name = last_name.strip() or None
+    if first_name is not None or last_name is not None:
+        profile.full_name = _compose_full_name(profile.first_name, profile.last_name)
     if age is not None:
         profile.age = age
     if username is not None:
@@ -1135,6 +1204,10 @@ async def merge_student_into_existing(old_telegram_id: int, new_telegram_id: int
     # Объединяем профиль: берем значимые поля из старого, если они заполнены.
     if source.full_name:
         target.full_name = source.full_name
+    if source.first_name:
+        target.first_name = source.first_name
+    if source.last_name:
+        target.last_name = source.last_name
     if source.telegram_username:
         target.telegram_username = source.telegram_username
     if source.age is not None:
@@ -1149,6 +1222,7 @@ async def merge_student_into_existing(old_telegram_id: int, new_telegram_id: int
         target.notes = source.notes
     if source.telephone:
         target.telephone = source.telephone
+    target.full_name = _compose_full_name(target.first_name, target.last_name) or target.full_name
     target.balance_lessons = int(target.balance_lessons or 0) + int(source.balance_lessons or 0)
     target.blocked = bool(target.blocked and source.blocked)
     target.is_deleted = 0
