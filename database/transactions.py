@@ -1240,6 +1240,7 @@ async def viewing_recordings_day_db(date: datetime, show_blocks: bool = False) -
             StudentProfile.full_name,
             StudentProfile.telephone,
             StudentProfile.telegram_username,
+            StudentProfile.price,
             RecordDate.hour,
             RecordDate.minute,
             RecordDate.telegram_id,
@@ -1271,6 +1272,7 @@ async def viewing_recordings_day_db(date: datetime, show_blocks: bool = False) -
             row.telegram_id,
             row.duration_minutes or SLOT_DURATION_MINUTES,
             row.telegram_username,
+            row.price if row.price is not None else 0,
         ))
 
     weekday = target_date.weekday()
@@ -1279,6 +1281,7 @@ async def viewing_recordings_day_db(date: datetime, show_blocks: bool = False) -
             StudentProfile.full_name,
             StudentProfile.telephone,
             StudentProfile.telegram_username,
+            StudentProfile.price,
             RegularLesson.hour,
             RegularLesson.minute,
             RegularLesson.telegram_id,
@@ -1307,12 +1310,13 @@ async def viewing_recordings_day_db(date: datetime, show_blocks: bool = False) -
             row.telegram_id,
             row.duration_minutes or SLOT_DURATION_MINUTES,
             row.telegram_username,
+            row.price if row.price is not None else 0,
         ))
 
     # Добавляем информацию о блоках (для админов) с реальным временем
     if show_blocks and blocked_times:
         for (bh, bm), note in sorted(blocked_times.items(), key=lambda x: (x[0][0], x[0][1])):
-            result.append(("Резерв администратора", "", bh, bm, "Блок", note or "День недоступен", None, None))
+            result.append(("Резерв администратора", "", bh, bm, "Блок", note or "День недоступен", None, None, 0))
 
     return sorted(result, key=lambda r: (r[2], r[3]))
 

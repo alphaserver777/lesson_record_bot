@@ -1281,24 +1281,31 @@ function AdminView({ token }) {
                 <button className="btn secondary" onClick={() => loadSchedule().catch(e => setError(String(e.message || e)))}>Обновить</button>
                 <ul className="list list-compact">
                   {schedule.map((s, idx) => (
-                    <li key={`${s.hour}-${s.minute}-${idx}`}>
-                      <strong>{String(s.hour).padStart(2, '0')}:{String(s.minute).padStart(2, '0')}</strong>
-                      <span>{s.full_name}</span>
-                      <small>{s.kind}</small>
+                    <li key={`${s.hour}-${s.minute}-${idx}`} className="record-item">
+                      <div className="record-main">
+                        <strong className="record-time">{String(s.hour).padStart(2, '0')}:{String(s.minute).padStart(2, '0')}</strong>
+                        <span className="record-name">{s.full_name}</span>
+                      </div>
+                      <div className="record-meta">
+                        <small>{s.kind} • {s.duration || 60} мин</small>
+                        {s.kind_code !== 'block' ? <small>{s.amount || 0} ₽</small> : null}
+                      </div>
                       {s.telegram_id && s.kind_code !== 'block' ? (
                         s.kind_code === 'regular' ? (
-                          <div className="mini-actions-row">
-                            <button className="btn secondary" onClick={() => deleteScheduleItem(s, 'single').catch(e => setError(String(e.message || e)))}>
-                              Удалить только это
+                          <div className="record-actions">
+                            <button className="btn secondary compact" onClick={() => deleteScheduleItem(s, 'single').catch(e => setError(String(e.message || e)))}>
+                              Удалить это
                             </button>
-                            <button className="btn secondary" onClick={() => deleteScheduleItem(s, 'all_regular').catch(e => setError(String(e.message || e)))}>
-                              Удалить все регулярные
+                            <button className="btn secondary compact" onClick={() => deleteScheduleItem(s, 'all_regular').catch(e => setError(String(e.message || e)))}>
+                              Удалить серию
                             </button>
                           </div>
                         ) : (
-                          <button className="btn secondary" onClick={() => deleteScheduleItem(s, 'single').catch(e => setError(String(e.message || e)))}>
-                            Удалить
-                          </button>
+                          <div className="record-actions">
+                            <button className="btn secondary compact" onClick={() => deleteScheduleItem(s, 'single').catch(e => setError(String(e.message || e)))}>
+                              Удалить
+                            </button>
+                          </div>
                         )
                       ) : null}
                     </li>

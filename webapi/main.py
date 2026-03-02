@@ -1029,6 +1029,8 @@ async def admin_schedule_day(date: datetime.date, _: dict[str, Any] = Depends(re
                 "telegram_id": i[5],
                 "duration": i[6],
                 "username": i[7] if len(i) > 7 else None,
+                "price_60": int(i[8] or 0) if len(i) > 8 else 0,
+                "amount": _lesson_amount_for_duration(int(i[8] or 0) if len(i) > 8 else 0, int(i[6] or 60)),
             }
             for i in items
         ],

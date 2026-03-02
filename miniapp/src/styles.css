@@ -25,6 +25,7 @@ body {
 }
 
 .mini-layout {
+  width: min(430px, calc(100vw - 16px));
   max-width: 430px;
   margin: 0 auto;
   min-height: calc(100vh - 30px);
@@ -106,6 +107,8 @@ body {
   margin-top: 10px;
   position: relative;
   z-index: 3;
+  width: 100%;
+  min-width: 0;
 }
 
 .hero {
@@ -146,6 +149,8 @@ body {
   display: grid;
   gap: 14px;
   margin-top: 14px;
+  width: 100%;
+  min-width: 0;
 }
 
 .admin-tabs {
@@ -213,6 +218,10 @@ body {
   background: linear-gradient(160deg, rgba(28, 28, 32, 0.95), rgba(18, 18, 21, 0.92));
   box-shadow: 0 18px 40px rgba(0, 0, 0, 0.5);
   backdrop-filter: blur(8px);
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
+  overflow: hidden;
 }
 
 .card-head {
@@ -815,6 +824,51 @@ body {
 
 .list small {
   color: #aaaaaf;
+}
+
+.record-item {
+  display: grid !important;
+  grid-template-columns: 1fr;
+  align-items: stretch !important;
+  gap: 7px !important;
+}
+
+.record-main {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  min-width: 0;
+}
+
+.record-time {
+  font-size: 23px;
+  line-height: 1;
+  letter-spacing: 0.01em;
+}
+
+.record-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 16px;
+}
+
+.record-meta {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.record-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.btn.compact {
+  min-height: 34px;
+  padding: 0 12px;
+  font-size: 13px;
 }
 
 .badge {
