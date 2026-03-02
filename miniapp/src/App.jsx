@@ -615,6 +615,7 @@ function AdminView({ token }) {
     duration: 60,
   })
   const [debtors, setDebtors] = useState([])
+  const [unclosedLessons, setUnclosedLessons] = useState([])
 
   const [broadcast, setBroadcast] = useState('')
   const [broadcastOnlyUnpaid, setBroadcastOnlyUnpaid] = useState(false)
@@ -761,6 +762,29 @@ function AdminView({ token }) {
     setDebtors(data.items || [])
   }
 
+  async function loadUnclosedLessons() {
+    const data = await api('/api/admin/lessons/unclosed?limit=200&days_back=90', { token })
+    setUnclosedLessons(data.items || [])
+  }
+
+  async function closeLessonDecision(item, decision) {
+    const amount = Number(item?.price || 0)
+    await api('/api/admin/lessons/close', {
+      token,
+      method: 'POST',
+      body: {
+        telegram_id: Number(item.telegram_id),
+        date: item.date,
+        time: item.time,
+        decision,
+        amount,
+        duration: Number(item.duration || 60),
+      },
+    })
+    await loadUnclosedLessons().catch(() => {})
+    await loadDebtors().catch(() => {})
+  }
+
   async function sendBroadcast() {
     await api('/api/admin/broadcast', {
       token,
@@ -889,6 +913,7 @@ function AdminView({ token }) {
       await loadStats().catch(() => {})
       await loadApprovals().catch(() => {})
       await loadDebtors().catch(() => {})
+      await loadUnclosedLessons().catch(() => {})
       await loadSystem().catch(() => {})
       await loadWorkSchedule().catch(() => {})
     })()
@@ -1319,14 +1344,25 @@ function AdminView({ token }) {
                   <input className="input" value={manualPay.amount} onChange={e => setManualPay(v => ({ ...v, amount: e.target.value }))} placeholder="Сумма" />
                   <button className="btn" onClick={() => addManualPayment().catch(e => setError(String(e.message || e)))}>Сохранить оплату</button>
                 </Card>
-                <Card title="Debtors" subtitle="Должники">
-                  <button className="btn secondary" onClick={() => loadDebtors().catch(e => setError(String(e.message || e)))}>Обновить</button>
+                <Card title="Незакрытые занятия" subtitle="Прошедшие занятия, где еще не выбрано: оплачено/долг/отмена">
+                  <button className="btn secondary" onClick={() => loadUnclosedLessons().catch(e => setError(String(e.message || e)))}>Обновить</button>
                   <ul className="list list-compact">
-                    {debtors.map(d => (
-                      <li key={d.payment_id}>
+                    {unclosedLessons.map((d, idx) => (
+                      <li key={`unclosed-${d.telegram_id}-${d.date}-${d.time}-${idx}`}>
                         <span>{d.full_name || d.telegram_id}</span>
-                        <small>{d.date} {d.time}</small>
-                        <strong>{d.amount || 0} ₽</strong>
+                        <small>{d.date} {d.time} • {d.kind === 'regular' ? 'Регулярное' : 'Разовое'}</small>
+                        <div className="mini-actions-row">
+                          <strong>{d.price || 0} ₽</strong>
+                          <button className="btn secondary" onClick={() => closeLessonDecision(d, 'paid').catch(e => setError(String(e.message || e)))}>
+                            Оплачено
+                          </button>
+                          <button className="btn secondary" onClick={() => closeLessonDecision(d, 'unpaid').catch(e => setError(String(e.message || e)))}>
+                            В долг
+                          </button>
+                          <button className="btn secondary" onClick={() => closeLessonDecision(d, 'canceled').catch(e => setError(String(e.message || e)))}>
+                            Отмена
+                          </button>
+                        </div>
                       </li>
                     ))}
                   </ul>

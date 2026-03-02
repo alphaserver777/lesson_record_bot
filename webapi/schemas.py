@@ -43,6 +43,15 @@ class ManualPaymentIn(BaseModel):
     duration: int = 60
 
 
+class LessonCloseIn(BaseModel):
+    telegram_id: int
+    date: date
+    time: str = Field(pattern=r"^\d{2}:\d{2}$")
+    decision: str = Field(pattern=r"^(paid|unpaid|canceled)$")
+    amount: int | None = Field(default=None, ge=0)
+    duration: int = 60
+
+
 class BroadcastIn(BaseModel):
     message: str
     only_unpaid: bool = False

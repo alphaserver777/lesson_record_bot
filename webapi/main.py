@@ -27,6 +27,7 @@ from webapi.schemas import (
     AuthIn,
     BookIn,
     BroadcastIn,
+    LessonCloseIn,
     ManualPaymentIn,
     RegularLessonIn,
     SingleLessonIn,
@@ -1152,6 +1153,101 @@ async def admin_manual_payment(payload: ManualPaymentIn, admin: dict[str, Any] =
         source="manual",
     )
     await _audit(int(admin["sub"]), "create", "payment", {"payment_id": pay.id, **payload.model_dump()})
+    return {"status": "ok", "payment_id": pay.id}
+
+
+@app.get("/api/admin/lessons/unclosed")
+async def admin_unclosed_lessons(
+    limit: int = Query(default=200, ge=1, le=500),
+    days_back: int = Query(default=60, ge=1, le=365),
+    _: dict[str, Any] = Depends(require_admin),
+) -> dict[str, Any]:
+    now_local = datetime.datetime.now(get_calendar_tz()).replace(tzinfo=None)
+    today = now_local.date()
+    items: list[dict[str, Any]] = []
+    seen: set[tuple[int, str, str]] = set()
+
+    for delta in range(0, days_back + 1):
+        date_value = today - datetime.timedelta(days=delta)
+        rows = await transactions.lessons_for_date(date_value)
+        for row in rows:
+            telegram_id = row[0]
+            if telegram_id is None:
+                continue
+            hh, mm = int(row[1]), int(row[2])
+            slot_dt = datetime.datetime.combine(date_value, datetime.time(hh, mm))
+            if slot_dt >= now_local:
+                continue
+
+            exists_payment = await transactions.find_payment(int(telegram_id), date_value, hh, mm)
+            if exists_payment:
+                continue
+
+            key = (int(telegram_id), date_value.isoformat(), f"{hh:02d}:{mm:02d}")
+            if key in seen:
+                continue
+            seen.add(key)
+
+            profile = await transactions.get_student_profile(int(telegram_id))
+            items.append(
+                {
+                    "telegram_id": int(telegram_id),
+                    "full_name": profile.full_name if profile else None,
+                    "date": date_value.isoformat(),
+                    "time": f"{hh:02d}:{mm:02d}",
+                    "hour": hh,
+                    "minute": mm,
+                    "duration": int(row[3] or 60),
+                    "kind": "regular" if str(row[4] or "single") == "regular" else "single",
+                    "price": int(profile.price or 0) if profile and profile.price is not None else 0,
+                }
+            )
+            if len(items) >= limit:
+                break
+        if len(items) >= limit:
+            break
+
+    items.sort(key=lambda i: f"{i['date']} {i['time']}", reverse=True)
+    return {"items": items, "total": len(items)}
+
+
+@app.post("/api/admin/lessons/close")
+async def admin_close_lesson(payload: LessonCloseIn, admin: dict[str, Any] = Depends(require_admin)) -> dict[str, Any]:
+    hh, mm = _parse_hhmm(payload.time)
+    exists = await transactions.find_payment(payload.telegram_id, payload.date, hh, mm)
+    if exists:
+        raise HTTPException(status_code=409, detail={"code": "ALREADY_PROCESSED", "message": "Решение уже принято"})
+
+    profile = await transactions.get_student_profile(payload.telegram_id)
+    amount = payload.amount
+    if amount is None:
+        amount = int(profile.price or 0) if profile and profile.price is not None else 0
+
+    pay = await transactions.add_payment(
+        telegram_id=payload.telegram_id,
+        full_name=profile.full_name if profile else None,
+        lesson_date=payload.date,
+        hour=hh,
+        minute=mm,
+        duration_minutes=payload.duration,
+        amount=max(0, int(amount)),
+        status=payload.decision,
+        source="lesson_close",
+    )
+
+    await _audit(
+        int(admin["sub"]),
+        "close",
+        "lesson",
+        {
+            "telegram_id": payload.telegram_id,
+            "date": payload.date.isoformat(),
+            "time": payload.time,
+            "decision": payload.decision,
+            "amount": amount,
+            "payment_id": pay.id,
+        },
+    )
     return {"status": "ok", "payment_id": pay.id}
 
 
