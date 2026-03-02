@@ -1040,7 +1040,8 @@ async def admin_apply_work_schedule_impact(
 
 @app.get("/api/admin/schedule/day")
 async def admin_schedule_day(date: datetime.date, _: dict[str, Any] = Depends(require_admin)) -> dict[str, Any]:
-    items = await transactions.viewing_recordings_day_db(date, show_blocks=True)
+    raw_items = await transactions.viewing_recordings_day_db(date, show_blocks=True)
+
     def _kind_code(kind_label: str) -> str:
         if kind_label == "Регулярное":
             return "regular"
@@ -1048,24 +1049,77 @@ async def admin_schedule_day(date: datetime.date, _: dict[str, Any] = Depends(re
             return "block"
         return "single"
 
+    def _to_item(row: Any) -> dict[str, Any]:
+        kind = row[4]
+        kind_code = _kind_code(kind)
+        duration_val = int(row[6] or 60) if len(row) > 6 and row[6] is not None else (5 if kind_code == "block" else 60)
+        tg_raw = row[5] if len(row) > 5 else None
+        tg_id = int(tg_raw) if isinstance(tg_raw, int) else None
+        note = str(tg_raw) if kind_code == "block" and isinstance(tg_raw, str) else None
+        return {
+            "full_name": row[0],
+            "phone": row[1],
+            "hour": int(row[2]),
+            "minute": int(row[3]),
+            "kind": kind,
+            "kind_code": kind_code,
+            "telegram_id": tg_id,
+            "duration": duration_val,
+            "username": row[7] if len(row) > 7 else None,
+            "price_60": int(row[8] or 0) if len(row) > 8 else 0,
+            "amount": _lesson_amount_for_duration(int(row[8] or 0) if len(row) > 8 else 0, duration_val),
+            "note": note,
+        }
+
+    items = [_to_item(i) for i in raw_items]
+
+    # Склеиваем подряд идущие блоки в интервалы, чтобы день не спамился 5-минутными карточками.
+    plain_items = [i for i in items if i["kind_code"] != "block"]
+    block_items = sorted(
+        [i for i in items if i["kind_code"] == "block"],
+        key=lambda x: (x["hour"], x["minute"]),
+    )
+    merged_blocks: list[dict[str, Any]] = []
+    current: dict[str, Any] | None = None
+    for item in block_items:
+        start = int(item["hour"]) * 60 + int(item["minute"])
+        end = start + max(5, int(item.get("duration") or 5))
+        if current is None:
+            current = {**item, "_start": start, "_end": end, "slot_count": 1}
+            continue
+        if start <= int(current["_end"]):
+            current["_end"] = max(int(current["_end"]), end)
+            current["slot_count"] = int(current.get("slot_count") or 1) + 1
+            if not current.get("note") and item.get("note"):
+                current["note"] = item["note"]
+            continue
+        merged_blocks.append(current)
+        current = {**item, "_start": start, "_end": end, "slot_count": 1}
+    if current is not None:
+        merged_blocks.append(current)
+
+    block_result: list[dict[str, Any]] = []
+    for block in merged_blocks:
+        start_min = int(block["_start"])
+        end_min = int(block["_end"])
+        block["hour"] = start_min // 60
+        block["minute"] = start_min % 60
+        block["duration"] = max(5, end_min - start_min)
+        block["end_hour"] = end_min // 60
+        block["end_minute"] = end_min % 60
+        block["end_time"] = f"{int(block['end_hour']):02d}:{int(block['end_minute']):02d}"
+        block.pop("_start", None)
+        block.pop("_end", None)
+        block_result.append(block)
+
+    merged_items = sorted(
+        [*plain_items, *block_result],
+        key=lambda i: (int(i["hour"]), int(i["minute"]), 0 if i["kind_code"] == "block" else 1),
+    )
+
     return {
         "date": date.isoformat(),
-        "items": [
-            {
-                "full_name": i[0],
-                "phone": i[1],
-                "hour": int(i[2]),
-                "minute": int(i[3]),
-                "kind": i[4],
-                "kind_code": _kind_code(i[4]),
-                "telegram_id": i[5],
-                "duration": i[6],
-                "username": i[7] if len(i) > 7 else None,
-                "price_60": int(i[8] or 0) if len(i) > 8 else 0,
-                "amount": _lesson_amount_for_duration(int(i[8] or 0) if len(i) > 8 else 0, int(i[6] or 60)),
-            }
-            for i in items
-        ],
+        "items": merged_items,
     }
 
 

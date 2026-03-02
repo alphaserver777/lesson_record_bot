@@ -1206,11 +1206,15 @@ function AdminView({ token }) {
                   {schedule.map((s, idx) => (
                     <li key={`${s.hour}-${s.minute}-${idx}`} className="record-item">
                       <div className="record-main">
-                        <strong className="record-time">{String(s.hour).padStart(2, '0')}:{String(s.minute).padStart(2, '0')}</strong>
+                        <strong className="record-time">
+                          {s.kind_code === 'block' && s.end_time
+                            ? `${String(s.hour).padStart(2, '0')}:${String(s.minute).padStart(2, '0')}-${s.end_time}`
+                            : `${String(s.hour).padStart(2, '0')}:${String(s.minute).padStart(2, '0')}`}
+                        </strong>
                         <span className="record-name">{s.full_name}</span>
                       </div>
                       <div className="record-meta">
-                        <small>{s.kind} • {s.duration || 60} мин</small>
+                        <small>{s.kind} • {s.duration || 60} мин{s.kind_code === 'block' && s.slot_count ? ` • ${s.slot_count} слотов` : ''}</small>
                         {s.kind_code !== 'block' ? <small>{s.amount || 0} ₽</small> : null}
                       </div>
                       {s.telegram_id && s.kind_code !== 'block' ? (
