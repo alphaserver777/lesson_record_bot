@@ -580,7 +580,8 @@ function AdminView({ token }) {
   const [success, setSuccess] = useState('')
   const [dashboardToday, setDashboardToday] = useState([])
   const [dashboardKpi, setDashboardKpi] = useState(null)
-  const [monthActivity, setMonthActivity] = useState([])
+  const [activitySeries, setActivitySeries] = useState([])
+  const [activityTitle, setActivityTitle] = useState('Текущий месяц')
 
   const [query, setQuery] = useState('')
   const [usersPage, setUsersPage] = useState(1)
@@ -659,12 +660,78 @@ function AdminView({ token }) {
     const today = await api('/api/admin/dashboard/today', { token })
     setDashboardToday(today.agenda || [])
     setDashboardKpi(today.kpi || null)
+  }
 
-    const now = new Date()
-    const year = now.getFullYear()
-    const month = now.getMonth() + 1
-    const activity = await api(`/api/admin/stats/month/activity?year=${year}&month=${month}`, { token })
-    setMonthActivity(activity.days || [])
+  function parseIsoDate(iso) {
+    const [y, m, d] = String(iso || '').split('-').map(Number)
+    return new Date(y, (m || 1) - 1, d || 1)
+  }
+
+  function isoDate(dateObj) {
+    const y = dateObj.getFullYear()
+    const m = String(dateObj.getMonth() + 1).padStart(2, '0')
+    const d = String(dateObj.getDate()).padStart(2, '0')
+    return `${y}-${m}-${d}`
+  }
+
+  function ymKey(dateObj) {
+    return `${dateObj.getFullYear()}-${String(dateObj.getMonth() + 1).padStart(2, '0')}`
+  }
+
+  function startOfWeek(dateObj) {
+    const d = new Date(dateObj)
+    const shift = (d.getDay() + 6) % 7 // Пн=0
+    d.setDate(d.getDate() - shift)
+    return d
+  }
+
+  async function fetchMonthActivityByYm(ym) {
+    const [year, month] = ym.split('-').map(Number)
+    const data = await api(`/api/admin/stats/month/activity?year=${year}&month=${month}`, { token })
+    return data.days || []
+  }
+
+  async function loadActivityForPeriod(period = statsPeriod, anchorIso = day) {
+    const anchor = parseIsoDate(anchorIso)
+
+    if (period === 'day') {
+      const ym = ymKey(anchor)
+      const monthDays = await fetchMonthActivityByYm(ym)
+      const target = monthDays.find(d => d.date === anchorIso) || { date: anchorIso, day: anchor.getDate(), revenue: 0, lessons_done: 0 }
+      setActivitySeries([{ ...target, label: String(anchor.getDate()) }])
+      setActivityTitle(`День: ${anchorIso}`)
+      return
+    }
+
+    if (period === 'week') {
+      const from = startOfWeek(anchor)
+      const days = [...Array(7)].map((_, i) => {
+        const d = new Date(from)
+        d.setDate(from.getDate() + i)
+        return d
+      })
+      const uniqueYm = [...new Set(days.map(ymKey))]
+      const byDate = {}
+      for (const ym of uniqueYm) {
+        const arr = await fetchMonthActivityByYm(ym)
+        for (const row of arr) byDate[row.date] = row
+      }
+      const weekday = ['Пн', 'Вт', 'Ср', 'Чт', 'Пт', 'Сб', 'Вс']
+      setActivitySeries(days.map((d, idx) => {
+        const key = isoDate(d)
+        const row = byDate[key] || { date: key, day: d.getDate(), revenue: 0, lessons_done: 0 }
+        return { ...row, label: weekday[idx] }
+      }))
+      setActivityTitle(`Неделя: ${isoDate(from)} - ${isoDate(days[6])}`)
+      return
+    }
+
+    const ym = ymKey(anchor)
+    const monthDays = await fetchMonthActivityByYm(ym)
+    setActivitySeries((monthDays || []).map(d => ({ ...d, label: String(d.day) })))
+    const [y, m] = ym.split('-').map(Number)
+    const monthRu = new Date(y, m - 1, 1).toLocaleDateString('ru-RU', { month: 'long', year: 'numeric' })
+    setActivityTitle(`Месяц: ${monthRu}`)
   }
 
   async function selectUser(telegramId) {
@@ -1032,6 +1099,12 @@ function AdminView({ token }) {
     const t = setTimeout(() => setSuccess(''), 2200)
     return () => clearTimeout(t)
   }, [success])
+
+  useEffect(() => {
+    if (activeTab !== 'analytics') return
+    loadStats().catch(() => {})
+    loadActivityForPeriod(statsPeriod, day).catch(e => setError(String(e.message || e)))
+  }, [activeTab, statsPeriod, day])
 
   const filteredClients = (clientOptions || [])
     .filter(c => {
@@ -1607,7 +1680,7 @@ function AdminView({ token }) {
         ) : null}
 
         {activeTab === 'analytics' ? (
-          <div className="stack">
+          <div className="stack analytics-stack">
             <Card title="Аналитика" subtitle="KPI и графики">
               <div className="pill-row">
                 <Pill label="Доход мес." value={`${dashboardKpi?.month_income ?? 0} ₽`} tone="mint" />
@@ -1616,35 +1689,42 @@ function AdminView({ token }) {
               </div>
             </Card>
 
-            <Card title="Доход и занятия по дням" subtitle="Текущий месяц">
-              <div className="bar-chart">
-                {(monthActivity || []).map(dayItem => {
-                  const maxRevenue = Math.max(1, ...monthActivity.map(d => d.revenue || 0))
-                  const maxLessons = Math.max(1, ...monthActivity.map(d => d.lessons_done || 0))
-                  const hRevenue = Math.max(4, Math.round(((dayItem.revenue || 0) / maxRevenue) * 48))
-                  const hLessons = Math.max(4, Math.round(((dayItem.lessons_done || 0) / maxLessons) * 48))
-                  return (
-                    <div className="bar-col" key={`analytics-${dayItem.date}`} title={`${dayItem.date}: ${dayItem.revenue} ₽ / ${dayItem.lessons_done} занятий`}>
-                      <div className="bar-wrap">
-                        <span className="bar bar-revenue" style={{ height: `${hRevenue}px` }} />
-                        <span className="bar bar-lessons" style={{ height: `${hLessons}px` }} />
+            <Card title="Доход и занятия" subtitle={activityTitle}>
+              {(activitySeries || []).length ? (
+                <div className="bar-chart">
+                  {(activitySeries || []).map(dayItem => {
+                    const maxRevenue = Math.max(1, ...activitySeries.map(d => d.revenue || 0))
+                    const maxLessons = Math.max(1, ...activitySeries.map(d => d.lessons_done || 0))
+                    const hRevenue = Math.max(4, Math.round(((dayItem.revenue || 0) / maxRevenue) * 48))
+                    const hLessons = Math.max(4, Math.round(((dayItem.lessons_done || 0) / maxLessons) * 48))
+                    return (
+                      <div className="bar-col" key={`analytics-${dayItem.date}`} title={`${dayItem.date}: ${dayItem.revenue} ₽ / ${dayItem.lessons_done} занятий`}>
+                        <div className="bar-wrap">
+                          <span className="bar bar-revenue" style={{ height: `${hRevenue}px` }} />
+                          <span className="bar bar-lessons" style={{ height: `${hLessons}px` }} />
+                        </div>
+                        <small>{dayItem.label || dayItem.day}</small>
                       </div>
-                      <small>{dayItem.day}</small>
-                    </div>
-                  )
-                })}
-              </div>
+                    )
+                  })}
+                </div>
+              ) : (
+                <div className="placeholder-box">Данных по выбранному периоду пока нет.</div>
+              )}
             </Card>
 
             <Card title="Статистика" subtitle="День / неделя / месяц">
               <div className="segmented">
-                <button className={statsPeriod === 'day' ? 'seg active' : 'seg'} onClick={() => setStatsPeriod('day')}>Day</button>
-                <button className={statsPeriod === 'week' ? 'seg active' : 'seg'} onClick={() => setStatsPeriod('week')}>Week</button>
-                <button className={statsPeriod === 'month' ? 'seg active' : 'seg'} onClick={() => setStatsPeriod('month')}>Month</button>
+                <button className={statsPeriod === 'day' ? 'seg active' : 'seg'} onClick={() => setStatsPeriod('day')}>День</button>
+                <button className={statsPeriod === 'week' ? 'seg active' : 'seg'} onClick={() => setStatsPeriod('week')}>Неделя</button>
+                <button className={statsPeriod === 'month' ? 'seg active' : 'seg'} onClick={() => setStatsPeriod('month')}>Месяц</button>
               </div>
               <div className="custom-row">
                 <input type="date" className="input" value={day} onChange={e => setDay(e.target.value)} />
-                <button className="btn" onClick={() => loadStats().catch(e => setError(String(e.message || e)))}>Обновить</button>
+                <button className="btn" onClick={() => {
+                  loadStats().catch(e => setError(String(e.message || e)))
+                  loadActivityForPeriod(statsPeriod, day).catch(e => setError(String(e.message || e)))
+                }}>Обновить</button>
               </div>
               <ul className="list list-compact">
                 <li><span>Всего платежей</span><strong>{stats?.total_payments ?? 0}</strong></li>
