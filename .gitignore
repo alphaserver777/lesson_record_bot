@@ -151,3 +151,7 @@ exm.py
 database/database.db.bk
 nixos-ai-001-051cfeb5722e.json
 database_prod/database.db
+
+# Miniapp local/runtime artifacts
+miniapp/node_modules/
+miniapp/package-lock.json
