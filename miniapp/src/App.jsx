@@ -1403,14 +1403,49 @@ function AdminView({ token }) {
                         <button className="btn secondary" onClick={() => saveUserPatch({ balance_lessons_add: Number(userEdit.balance_add || 0) }, 'Баланс изменен').catch(e => setError(String(e.message || e)))}>Изменить</button>
                       </div>
                       <div className="stack">
-                        <strong>Ближайшие</strong>
-                        <ul className="list list-compact">
-                          {(selectedUserUpcoming || []).slice(0, 5).map((b, i) => <li key={`up-${i}`}><span>{b.date} {b.time}</span><small>{b.kind}</small></li>)}
-                        </ul>
-                        <strong>Архив</strong>
-                        <ul className="list list-compact">
-                          {(selectedUserArchive || []).slice(0, 5).map((b, i) => <li key={`ar-${i}`}><span>{b.date} {b.time}</span><small>{b.kind}</small></li>)}
-                        </ul>
+                        <strong>Сводка по ученику</strong>
+                        <small>
+                          Всего записей: {selectedUser.records_count ?? 0} • Регулярных слотов: {(selectedUser.regular || []).length}
+                        </small>
+                        <strong>Регулярные слоты</strong>
+                        {(selectedUser.regular || []).length ? (
+                          <ul className="list list-compact">
+                            {(selectedUser.regular || []).slice(0, 8).map((r, i) => (
+                              <li key={`reg-${i}`}>
+                                <span>{dayName(Number(r.day_of_week))} {r.time}</span>
+                                <small>{r.duration || 60} мин</small>
+                              </li>
+                            ))}
+                          </ul>
+                        ) : (
+                          <div className="placeholder-box">Регулярные занятия не настроены.</div>
+                        )}
+                        <strong>Ближайшие записи</strong>
+                        {(selectedUserUpcoming || []).length ? (
+                          <ul className="list list-compact">
+                            {(selectedUserUpcoming || []).slice(0, 8).map((b, i) => (
+                              <li key={`up-${i}`}>
+                                <span>{b.date} {b.time}</span>
+                                <small>{b.kind === 'regular' ? 'Регулярное' : 'Разовое'}</small>
+                              </li>
+                            ))}
+                          </ul>
+                        ) : (
+                          <div className="placeholder-box">Ближайших записей пока нет.</div>
+                        )}
+                        <strong>Архив занятий</strong>
+                        {(selectedUserArchive || []).length ? (
+                          <ul className="list list-compact">
+                            {(selectedUserArchive || []).slice(0, 8).map((b, i) => (
+                              <li key={`ar-${i}`}>
+                                <span>{b.date} {b.time}</span>
+                                <small>{b.kind === 'regular' ? 'Регулярное' : 'Разовое'}</small>
+                              </li>
+                            ))}
+                          </ul>
+                        ) : (
+                          <div className="placeholder-box">Архив пока пуст.</div>
+                        )}
                       </div>
                     </div>
                   </Card>
