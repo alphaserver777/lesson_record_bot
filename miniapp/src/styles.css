@@ -857,6 +857,20 @@ body {
   font-weight: 700;
 }
 
+.user-list-item {
+  display: grid !important;
+  grid-template-columns: 1fr;
+  align-items: stretch !important;
+}
+
+.inline-user-editor {
+  margin-top: 10px;
+  border-radius: 12px;
+  border: 1px solid rgba(90, 90, 96, 0.45);
+  background: rgba(20, 20, 24, 0.82);
+  padding: 12px;
+}
+
 .record-item {
   display: grid !important;
   grid-template-columns: 1fr;

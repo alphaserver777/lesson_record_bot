@@ -1478,117 +1478,116 @@ function AdminView({ token }) {
                   <small>Всего: {usersTotal}</small>
                   <ul className="list list-compact">
                     {users.map(u => (
-                      <li key={u.telegram_id}>
+                      <li key={u.telegram_id} className="user-list-item">
                         <button className="btn secondary" onClick={() => selectUser(u.telegram_id).catch(e => setError(String(e.message || e)))}>
                           {(u.full_name || u.telegram_id)} {u.blocked ? '🔒' : ''}
                         </button>
+                        {selectedUser && Number(selectedUser.telegram_id) === Number(u.telegram_id) ? (
+                          <div className="inline-user-editor">
+                            <div className="stack">
+                              {selectedUser.username ? (
+                                <a
+                                  className="username-link"
+                                  href={`https://t.me/${String(selectedUser.username).replace('@', '')}`}
+                                  target="_blank"
+                                  rel="noreferrer"
+                                >
+                                  @{String(selectedUser.username).replace('@', '')}
+                                </a>
+                              ) : null}
+                              <small>Telegram ID</small>
+                              <input
+                                className="input"
+                                value={userEdit.telegram_id}
+                                onChange={e => setUserEdit(v => ({ ...v, telegram_id: e.target.value }))}
+                                placeholder="Например: 123456789"
+                              />
+                              <small>Имя</small>
+                              <input className="input" value={userEdit.first_name} onChange={e => setUserEdit(v => ({ ...v, first_name: e.target.value }))} placeholder="Имя" />
+                              <small>Фамилия</small>
+                              <input className="input" value={userEdit.last_name} onChange={e => setUserEdit(v => ({ ...v, last_name: e.target.value }))} placeholder="Фамилия" />
+                              <small>Телефон</small>
+                              <input className="input" value={userEdit.telephone} onChange={e => setUserEdit(v => ({ ...v, telephone: e.target.value }))} placeholder="+7..." />
+                              <small>Цена за 60 мин (₽)</small>
+                              <input className="input" value={userEdit.price} onChange={e => setUserEdit(v => ({ ...v, price: e.target.value }))} placeholder="Например: 1500" />
+                              <div className="mini-actions-row">
+                                <button className="btn" onClick={() => saveUserPatch({
+                                  telegram_id_new: Number(userEdit.telegram_id || selectedUser.telegram_id),
+                                  first_name: userEdit.first_name,
+                                  last_name: userEdit.last_name,
+                                  telephone: userEdit.telephone,
+                                  price: userEdit.price === '' ? null : Number(userEdit.price),
+                                }, 'Профиль сохранен').catch(e => setError(String(e.message || e)))}>
+                                  Сохранить профиль
+                                </button>
+                                <button className="btn secondary" onClick={() => toggleUserBlock().catch(e => setError(String(e.message || e)))}>
+                                  {selectedUser.blocked ? 'Разблокировать' : 'Заблокировать'}
+                                </button>
+                                <button className="btn secondary" onClick={() => deleteSelectedUser().catch(e => setError(String(e.message || e)))}>
+                                  Удалить клиента
+                                </button>
+                              </div>
+                              <small>Баланс клиента (текущий: {selectedUser.balance_lessons ?? 0} ₽)</small>
+                              <div className="custom-row">
+                                <input className="input" value={userEdit.balance_set} onChange={e => setUserEdit(v => ({ ...v, balance_set: e.target.value }))} placeholder="Установить баланс, ₽" />
+                                <button className="btn secondary" onClick={() => saveUserPatch({ balance_lessons_set: Number(userEdit.balance_set || 0) }, 'Баланс установлен').catch(e => setError(String(e.message || e)))}>Установить</button>
+                              </div>
+                              <div className="custom-row">
+                                <input className="input" value={userEdit.balance_add} onChange={e => setUserEdit(v => ({ ...v, balance_add: e.target.value }))} placeholder="Изменить баланс, ₽ (можно -)" />
+                                <button className="btn secondary" onClick={() => saveUserPatch({ balance_lessons_add: Number(userEdit.balance_add || 0) }, 'Баланс изменен').catch(e => setError(String(e.message || e)))}>Изменить</button>
+                              </div>
+                              <div className="stack">
+                                <strong>Сводка по ученику</strong>
+                                <small>
+                                  Всего записей: {selectedUser.records_count ?? 0} • Регулярных слотов: {(selectedUser.regular || []).length}
+                                </small>
+                                <strong>Регулярные слоты</strong>
+                                {(selectedUser.regular || []).length ? (
+                                  <ul className="list list-compact">
+                                    {(selectedUser.regular || []).slice(0, 8).map((r, i) => (
+                                      <li key={`reg-${i}`}>
+                                        <span>{dayName(Number(r.day_of_week))} {r.time}</span>
+                                        <small>{r.duration || 60} мин</small>
+                                      </li>
+                                    ))}
+                                  </ul>
+                                ) : (
+                                  <div className="placeholder-box">Регулярные занятия не настроены.</div>
+                                )}
+                                <strong>Ближайшие записи</strong>
+                                {(selectedUserUpcoming || []).length ? (
+                                  <ul className="list list-compact">
+                                    {(selectedUserUpcoming || []).slice(0, 8).map((b, i) => (
+                                      <li key={`up-${i}`}>
+                                        <span>{b.date} {b.time}</span>
+                                        <small>{b.kind === 'regular' ? 'Регулярное' : 'Разовое'}</small>
+                                      </li>
+                                    ))}
+                                  </ul>
+                                ) : (
+                                  <div className="placeholder-box">Ближайших записей пока нет.</div>
+                                )}
+                                <strong>Архив занятий</strong>
+                                {(selectedUserArchive || []).length ? (
+                                  <ul className="list list-compact">
+                                    {(selectedUserArchive || []).slice(0, 8).map((b, i) => (
+                                      <li key={`ar-${i}`}>
+                                        <span>{b.date} {b.time}</span>
+                                        <small>{b.kind === 'regular' ? 'Регулярное' : 'Разовое'}</small>
+                                      </li>
+                                    ))}
+                                  </ul>
+                                ) : (
+                                  <div className="placeholder-box">Архив пока пуст.</div>
+                                )}
+                              </div>
+                            </div>
+                          </div>
+                        ) : null}
                       </li>
                     ))}
                   </ul>
                 </Card>
-
-                {selectedUser ? (
-                  <Card title={`Карточка: ${selectedUser.full_name || String(selectedUser.telegram_id)}`} subtitle={`Текущий Telegram ID: ${selectedUser.telegram_id}`}>
-                    <div className="stack">
-                      {selectedUser.username ? (
-                        <a
-                          className="username-link"
-                          href={`https://t.me/${String(selectedUser.username).replace('@', '')}`}
-                          target="_blank"
-                          rel="noreferrer"
-                        >
-                          @{String(selectedUser.username).replace('@', '')}
-                        </a>
-                      ) : null}
-                      <small>Telegram ID</small>
-                      <input
-                        className="input"
-                        value={userEdit.telegram_id}
-                        onChange={e => setUserEdit(v => ({ ...v, telegram_id: e.target.value }))}
-                        placeholder="Например: 123456789"
-                      />
-                      <small>Имя</small>
-                      <input className="input" value={userEdit.first_name} onChange={e => setUserEdit(v => ({ ...v, first_name: e.target.value }))} placeholder="Имя" />
-                      <small>Фамилия</small>
-                      <input className="input" value={userEdit.last_name} onChange={e => setUserEdit(v => ({ ...v, last_name: e.target.value }))} placeholder="Фамилия" />
-                      <small>Телефон</small>
-                      <input className="input" value={userEdit.telephone} onChange={e => setUserEdit(v => ({ ...v, telephone: e.target.value }))} placeholder="+7..." />
-                      <small>Цена за 60 мин (₽)</small>
-                      <input className="input" value={userEdit.price} onChange={e => setUserEdit(v => ({ ...v, price: e.target.value }))} placeholder="Например: 1500" />
-                      <div className="mini-actions-row">
-                        <button className="btn" onClick={() => saveUserPatch({
-                          telegram_id_new: Number(userEdit.telegram_id || selectedUser.telegram_id),
-                          first_name: userEdit.first_name,
-                          last_name: userEdit.last_name,
-                          telephone: userEdit.telephone,
-                          price: userEdit.price === '' ? null : Number(userEdit.price),
-                        }, 'Профиль сохранен').catch(e => setError(String(e.message || e)))}>
-                          Сохранить профиль
-                        </button>
-                        <button className="btn secondary" onClick={() => toggleUserBlock().catch(e => setError(String(e.message || e)))}>
-                          {selectedUser.blocked ? 'Разблокировать' : 'Заблокировать'}
-                        </button>
-                        <button className="btn secondary" onClick={() => deleteSelectedUser().catch(e => setError(String(e.message || e)))}>
-                          Удалить клиента
-                        </button>
-                      </div>
-                      <small>Баланс клиента (текущий: {selectedUser.balance_lessons ?? 0} ₽)</small>
-                      <div className="custom-row">
-                        <input className="input" value={userEdit.balance_set} onChange={e => setUserEdit(v => ({ ...v, balance_set: e.target.value }))} placeholder="Установить баланс, ₽" />
-                        <button className="btn secondary" onClick={() => saveUserPatch({ balance_lessons_set: Number(userEdit.balance_set || 0) }, 'Баланс установлен').catch(e => setError(String(e.message || e)))}>Установить</button>
-                      </div>
-                      <div className="custom-row">
-                        <input className="input" value={userEdit.balance_add} onChange={e => setUserEdit(v => ({ ...v, balance_add: e.target.value }))} placeholder="Изменить баланс, ₽ (можно -)" />
-                        <button className="btn secondary" onClick={() => saveUserPatch({ balance_lessons_add: Number(userEdit.balance_add || 0) }, 'Баланс изменен').catch(e => setError(String(e.message || e)))}>Изменить</button>
-                      </div>
-                      <div className="stack">
-                        <strong>Сводка по ученику</strong>
-                        <small>
-                          Всего записей: {selectedUser.records_count ?? 0} • Регулярных слотов: {(selectedUser.regular || []).length}
-                        </small>
-                        <strong>Регулярные слоты</strong>
-                        {(selectedUser.regular || []).length ? (
-                          <ul className="list list-compact">
-                            {(selectedUser.regular || []).slice(0, 8).map((r, i) => (
-                              <li key={`reg-${i}`}>
-                                <span>{dayName(Number(r.day_of_week))} {r.time}</span>
-                                <small>{r.duration || 60} мин</small>
-                              </li>
-                            ))}
-                          </ul>
-                        ) : (
-                          <div className="placeholder-box">Регулярные занятия не настроены.</div>
-                        )}
-                        <strong>Ближайшие записи</strong>
-                        {(selectedUserUpcoming || []).length ? (
-                          <ul className="list list-compact">
-                            {(selectedUserUpcoming || []).slice(0, 8).map((b, i) => (
-                              <li key={`up-${i}`}>
-                                <span>{b.date} {b.time}</span>
-                                <small>{b.kind === 'regular' ? 'Регулярное' : 'Разовое'}</small>
-                              </li>
-                            ))}
-                          </ul>
-                        ) : (
-                          <div className="placeholder-box">Ближайших записей пока нет.</div>
-                        )}
-                        <strong>Архив занятий</strong>
-                        {(selectedUserArchive || []).length ? (
-                          <ul className="list list-compact">
-                            {(selectedUserArchive || []).slice(0, 8).map((b, i) => (
-                              <li key={`ar-${i}`}>
-                                <span>{b.date} {b.time}</span>
-                                <small>{b.kind === 'regular' ? 'Регулярное' : 'Разовое'}</small>
-                              </li>
-                            ))}
-                          </ul>
-                        ) : (
-                          <div className="placeholder-box">Архив пока пуст.</div>
-                        )}
-                      </div>
-                    </div>
-                  </Card>
-                ) : null}
               </>
             ) : null}
 
