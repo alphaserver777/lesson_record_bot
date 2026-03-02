@@ -643,8 +643,8 @@ function AdminView({ token }) {
     ['settings', 'Настройки', '⚙'],
   ]
 
-  async function loadUsers() {
-    const path = `/api/admin/users?page=${usersPage}&page_size=20${query ? `&query=${encodeURIComponent(query)}` : ''}`
+  async function loadUsers(page = usersPage, q = query) {
+    const path = `/api/admin/users?page=${page}&page_size=20${q ? `&query=${encodeURIComponent(q)}` : ''}`
     const data = await api(path, { token })
     setUsers(data.items || [])
     setUsersTotal(data.total || 0)
@@ -1328,7 +1328,15 @@ function AdminView({ token }) {
                 <Card title="Пользователи" subtitle="Поиск и карточка клиента">
                   <div className="custom-row">
                     <input className="input" value={query} onChange={e => setQuery(e.target.value)} placeholder="Имя/телефон" />
-                    <button className="btn" onClick={() => loadUsers().catch(e => setError(String(e.message || e)))}>Поиск</button>
+                    <button
+                      className="btn"
+                      onClick={() => {
+                        setUsersPage(1)
+                        loadUsers(1, query).catch(e => setError(String(e.message || e)))
+                      }}
+                    >
+                      Поиск
+                    </button>
                   </div>
                   <div className="mini-actions-row">
                     <button className="btn secondary" disabled={usersPage <= 1} onClick={() => { setUsersPage(p => Math.max(1, p - 1)) }}>← Стр.</button>
