@@ -118,6 +118,35 @@ def _parse_time_to_minutes(hhmm: str) -> int:
     return hh * 60 + mm
 
 
+def _safe_delta_pct(now_value: int, prev_value: int) -> float:
+    if prev_value == 0:
+        return 100.0 if now_value > 0 else 0.0
+    return round(((now_value - prev_value) / prev_value) * 100.0, 2)
+
+
+def _period_bounds(anchor_date: datetime.date, mode: str) -> tuple[datetime.date, datetime.date, datetime.date, datetime.date]:
+    if mode == "week":
+        current_from = anchor_date - datetime.timedelta(days=anchor_date.weekday())
+        current_to = current_from + datetime.timedelta(days=6)
+        prev_to = current_from - datetime.timedelta(days=1)
+        prev_from = prev_to - datetime.timedelta(days=6)
+        return current_from, current_to, prev_from, prev_to
+
+    if mode == "month":
+        current_from = anchor_date.replace(day=1)
+        next_month = datetime.date(
+            current_from.year + (1 if current_from.month == 12 else 0),
+            1 if current_from.month == 12 else current_from.month + 1,
+            1,
+        )
+        current_to = next_month - datetime.timedelta(days=1)
+        prev_to = current_from - datetime.timedelta(days=1)
+        prev_from = prev_to.replace(day=1)
+        return current_from, current_to, prev_from, prev_to
+
+    raise HTTPException(status_code=422, detail={"code": "INVALID_MODE", "message": "mode must be week or month"})
+
+
 def _normalized_days_payload(days: list[Any]) -> list[dict[str, Any]]:
     by_weekday: dict[int, dict[str, Any]] = {}
     for day in days:
@@ -259,6 +288,9 @@ async def startup() -> None:
     await session.execute(text("CREATE INDEX IF NOT EXISTS idx_record_dates_date_time ON record_dates(record_date, hour, minute)"))
     await session.execute(text("CREATE INDEX IF NOT EXISTS idx_record_dates_telegram_id ON record_dates(telegram_id)"))
     await session.execute(text("CREATE INDEX IF NOT EXISTS idx_profiles_name ON student_profiles(full_name)"))
+    await session.execute(text("CREATE INDEX IF NOT EXISTS idx_payments_lesson_date_status ON payments(lesson_date, status)"))
+    await session.execute(text("CREATE INDEX IF NOT EXISTS idx_payments_tg_date ON payments(telegram_id, lesson_date)"))
+    await session.execute(text("CREATE INDEX IF NOT EXISTS idx_profiles_deleted ON student_profiles(is_deleted)"))
     await session.execute(
         text(
             "CREATE TABLE IF NOT EXISTS working_intervals ("
@@ -1447,3 +1479,140 @@ async def stats_month(year: int, month: int, _: dict[str, Any] = Depends(require
     start = datetime.date(year, month, 1)
     end = datetime.date(year + (1 if month == 12 else 0), 1 if month == 12 else month + 1, 1) - datetime.timedelta(days=1)
     return await transactions.payments_summary_for_range(start, end)
+
+
+@app.get("/api/admin/analytics/overview")
+async def analytics_overview(
+    anchor_date: datetime.date,
+    mode: str = Query(default="week", pattern=r"^(week|month)$"),
+    _: dict[str, Any] = Depends(require_admin),
+) -> dict[str, Any]:
+    current_from, current_to, prev_from, prev_to = _period_bounds(anchor_date, mode)
+
+    cur_sum = await transactions.payments_summary_for_range(current_from, current_to)
+    prev_sum = await transactions.payments_summary_for_range(prev_from, prev_to)
+
+    cur_clients = await transactions.client_activity_for_range(current_from, current_to)
+    prev_clients = await transactions.client_activity_for_range(prev_from, prev_to)
+    cur_ids = {int(i["telegram_id"]) for i in cur_clients if i.get("telegram_id") is not None}
+    prev_ids = {int(i["telegram_id"]) for i in prev_clients if i.get("telegram_id") is not None}
+    new_active_ids = cur_ids - prev_ids
+    became_inactive_ids = prev_ids - cur_ids
+
+    first_dates = await transactions.first_lesson_dates_for_clients(list(new_active_ids))
+    new_clients_with_first_lesson = sum(
+        1 for tg_id, first_date in first_dates.items() if current_from <= first_date <= current_to
+    )
+
+    paid_now = int(cur_sum.get("earned_total", 0))
+    paid_prev = int(prev_sum.get("earned_total", 0))
+    lessons_now = int(cur_sum.get("lessons_total", 0))
+    lessons_prev = int(prev_sum.get("lessons_total", 0))
+    paid_count_now = int(cur_sum.get("lessons_paid", 0))
+    paid_count_prev = int(prev_sum.get("lessons_paid", 0))
+    unpaid_count_now = max(0, lessons_now - paid_count_now)
+    unpaid_count_prev = max(0, lessons_prev - paid_count_prev)
+    unpaid_amount_now = max(0, int(cur_sum.get("billed_total", 0)) - paid_now)
+    unpaid_amount_prev = max(0, int(prev_sum.get("billed_total", 0)) - paid_prev)
+
+    avg_check_now = int(round(paid_now / paid_count_now)) if paid_count_now > 0 else 0
+    avg_check_prev = int(round(paid_prev / paid_count_prev)) if paid_count_prev > 0 else 0
+    debt_ratio_now = round((unpaid_count_now / lessons_now) * 100.0, 2) if lessons_now > 0 else 0.0
+    debt_ratio_prev = round((unpaid_count_prev / lessons_prev) * 100.0, 2) if lessons_prev > 0 else 0.0
+
+    return {
+        "period": {
+            "mode": mode,
+            "current_from": current_from.isoformat(),
+            "current_to": current_to.isoformat(),
+            "previous_from": prev_from.isoformat(),
+            "previous_to": prev_to.isoformat(),
+        },
+        "finance": {
+            "paid_now": paid_now,
+            "paid_prev": paid_prev,
+            "delta_abs": paid_now - paid_prev,
+            "delta_pct": _safe_delta_pct(paid_now, paid_prev),
+            "billed_now": int(cur_sum.get("billed_total", 0)),
+            "billed_prev": int(prev_sum.get("billed_total", 0)),
+            "unpaid_amount_now": unpaid_amount_now,
+            "unpaid_amount_prev": unpaid_amount_prev,
+        },
+        "clients": {
+            "active_now": len(cur_ids),
+            "active_prev": len(prev_ids),
+            "new_active_count": len(new_active_ids),
+            "became_inactive_count": len(became_inactive_ids),
+            "new_clients_with_first_lesson": int(new_clients_with_first_lesson),
+        },
+        "ops": {
+            "lessons_now": lessons_now,
+            "lessons_prev": lessons_prev,
+            "paid_lessons_now": paid_count_now,
+            "paid_lessons_prev": paid_count_prev,
+            "avg_check_now": avg_check_now,
+            "avg_check_prev": avg_check_prev,
+            "debt_ratio_now": debt_ratio_now,
+            "debt_ratio_prev": debt_ratio_prev,
+        },
+    }
+
+
+@app.get("/api/admin/analytics/clients-delta")
+async def analytics_clients_delta(
+    anchor_date: datetime.date,
+    mode: str = Query(default="week", pattern=r"^(week|month)$"),
+    _: dict[str, Any] = Depends(require_admin),
+) -> dict[str, Any]:
+    current_from, current_to, prev_from, prev_to = _period_bounds(anchor_date, mode)
+
+    cur_clients = await transactions.client_activity_for_range(current_from, current_to)
+    prev_clients = await transactions.client_activity_for_range(prev_from, prev_to)
+    cur_map = {int(i["telegram_id"]): i for i in cur_clients if i.get("telegram_id") is not None}
+    prev_map = {int(i["telegram_id"]): i for i in prev_clients if i.get("telegram_id") is not None}
+    new_ids = sorted(cur_map.keys() - prev_map.keys())
+    inactive_ids = sorted(prev_map.keys() - cur_map.keys())
+
+    first_dates = await transactions.first_lesson_dates_for_clients(new_ids)
+
+    new_active = []
+    for tg_id in new_ids:
+        item = cur_map[tg_id]
+        first_date = first_dates.get(tg_id)
+        new_active.append(
+            {
+                **item,
+                "is_first_lesson_in_period": bool(first_date and current_from <= first_date <= current_to),
+            }
+        )
+
+    became_inactive = [prev_map[tg_id] for tg_id in inactive_ids]
+    return {
+        "period": {
+            "mode": mode,
+            "current_from": current_from.isoformat(),
+            "current_to": current_to.isoformat(),
+            "previous_from": prev_from.isoformat(),
+            "previous_to": prev_to.isoformat(),
+        },
+        "new_active": new_active,
+        "became_inactive": became_inactive,
+    }
+
+
+@app.get("/api/admin/analytics/timeseries")
+async def analytics_timeseries(
+    anchor_date: datetime.date,
+    mode: str = Query(default="week", pattern=r"^(week|month)$"),
+    _: dict[str, Any] = Depends(require_admin),
+) -> dict[str, Any]:
+    current_from, current_to, _, _ = _period_bounds(anchor_date, mode)
+    points = await transactions.payments_timeseries_for_range(current_from, current_to)
+    return {
+        "period": {
+            "mode": mode,
+            "current_from": current_from.isoformat(),
+            "current_to": current_to.isoformat(),
+        },
+        "points": points,
+    }

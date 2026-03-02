@@ -1697,6 +1697,132 @@ async def payments_daily_breakdown(
     return result
 
 
+async def client_activity_for_range(
+    start_date: datetime.date,
+    end_date: datetime.date,
+) -> list[dict[str, Any]]:
+    """
+    Активность клиентов за период по проведенным занятиям (paid/unpaid, без canceled).
+    """
+    res = await session.execute(
+        select(
+            Payment.telegram_id,
+            func.coalesce(StudentProfile.full_name, Payment.full_name),
+            func.count(Payment.id),
+            func.sum(
+                case(
+                    (Payment.status == "paid", func.coalesce(Payment.amount, 0)),
+                    else_=0,
+                )
+            ),
+            func.sum(
+                case(
+                    (Payment.status == "unpaid", func.coalesce(Payment.amount, 0)),
+                    else_=0,
+                )
+            ),
+            func.max(Payment.lesson_date),
+            func.max(Payment.hour),
+            func.max(Payment.minute),
+        )
+        .join(StudentProfile, StudentProfile.telegram_id == Payment.telegram_id, isouter=True)
+        .where(
+            Payment.lesson_date >= start_date,
+            Payment.lesson_date <= end_date,
+            Payment.status != "canceled",
+            Payment.telegram_id.is_not(None),
+            ((StudentProfile.is_deleted.is_(None)) | (StudentProfile.is_deleted == 0) | (StudentProfile.telegram_id.is_(None))),
+        )
+        .group_by(Payment.telegram_id, func.coalesce(StudentProfile.full_name, Payment.full_name))
+        .order_by(func.count(Payment.id).desc())
+    )
+    items = []
+    for row in res.all():
+        items.append(
+            {
+                "telegram_id": int(row[0]) if row[0] is not None else None,
+                "full_name": row[1] or (str(row[0]) if row[0] is not None else "—"),
+                "lessons_count": int(row[2] or 0),
+                "paid_amount": int(row[3] or 0),
+                "unpaid_amount": int(row[4] or 0),
+                "last_lesson_date": row[5].isoformat() if row[5] and hasattr(row[5], "isoformat") else (str(row[5]) if row[5] else None),
+                "last_lesson_time": (
+                    f"{int(row[6] or 0):02d}:{int(row[7] or 0):02d}" if row[6] is not None and row[7] is not None else None
+                ),
+            }
+        )
+    return items
+
+
+async def first_lesson_dates_for_clients(client_ids: list[int]) -> dict[int, datetime.date]:
+    """
+    Первая дата проведенного занятия по каждому клиенту.
+    """
+    if not client_ids:
+        return {}
+    res = await session.execute(
+        select(
+            Payment.telegram_id,
+            func.min(Payment.lesson_date),
+        )
+        .where(
+            Payment.telegram_id.in_(client_ids),
+            Payment.status != "canceled",
+        )
+        .group_by(Payment.telegram_id)
+    )
+    out: dict[int, datetime.date] = {}
+    for tg_id, first_date in res.all():
+        if tg_id is None or first_date is None:
+            continue
+        out[int(tg_id)] = first_date
+    return out
+
+
+async def payments_timeseries_for_range(
+    start_date: datetime.date,
+    end_date: datetime.date,
+) -> list[dict[str, Any]]:
+    """
+    Дневной timeseries: оплачено, проведено занятий, активные клиенты.
+    """
+    res = await session.execute(
+        select(
+            Payment.lesson_date,
+            func.sum(case((Payment.status == "paid", func.coalesce(Payment.amount, 0)), else_=0)),
+            func.count(Payment.id),
+            func.count(func.distinct(Payment.telegram_id)),
+        )
+        .where(
+            Payment.lesson_date >= start_date,
+            Payment.lesson_date <= end_date,
+            Payment.status != "canceled",
+        )
+        .group_by(Payment.lesson_date)
+        .order_by(Payment.lesson_date)
+    )
+    by_date: dict[str, tuple[int, int, int]] = {}
+    for d, paid_amount, lessons_done, active_clients in res.all():
+        key = d.isoformat() if hasattr(d, "isoformat") else str(d)
+        by_date[key] = (int(paid_amount or 0), int(lessons_done or 0), int(active_clients or 0))
+
+    items: list[dict[str, Any]] = []
+    cursor = start_date
+    while cursor <= end_date:
+        key = cursor.isoformat()
+        paid_amount, lessons_done, active_clients = by_date.get(key, (0, 0, 0))
+        items.append(
+            {
+                "date": key,
+                "paid_amount": paid_amount,
+                "lessons_done": lessons_done,
+                "active_clients": active_clients,
+            }
+        )
+        cursor += datetime.timedelta(days=1)
+    return items
+
+
 # --- Оплаты ---
 async def add_payment(
         telegram_id: int | None,

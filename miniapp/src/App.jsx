@@ -578,10 +578,12 @@ function AdminView({ token }) {
   const [manageSection, setManageSection] = useState('clients')
   const [error, setError] = useState('')
   const [success, setSuccess] = useState('')
-  const [dashboardToday, setDashboardToday] = useState([])
-  const [dashboardKpi, setDashboardKpi] = useState(null)
-  const [activitySeries, setActivitySeries] = useState([])
-  const [activityTitle, setActivityTitle] = useState('Текущий месяц')
+  const [analyticsMode, setAnalyticsMode] = useState('week')
+  const [analyticsAnchorDate, setAnalyticsAnchorDate] = useState(() => new Date().toISOString().slice(0, 10))
+  const [analyticsOverview, setAnalyticsOverview] = useState(null)
+  const [analyticsDelta, setAnalyticsDelta] = useState({ new_active: [], became_inactive: [] })
+  const [analyticsSeries, setAnalyticsSeries] = useState([])
+  const [analyticsLoading, setAnalyticsLoading] = useState(false)
 
   const [query, setQuery] = useState('')
   const [usersPage, setUsersPage] = useState(1)
@@ -624,9 +626,6 @@ function AdminView({ token }) {
   const [broadcast, setBroadcast] = useState('')
   const [broadcastOnlyUnpaid, setBroadcastOnlyUnpaid] = useState(false)
 
-  const [statsPeriod, setStatsPeriod] = useState('day')
-  const [stats, setStats] = useState(null)
-
   const [systemHealth, setSystemHealth] = useState(null)
   const [backupStatus, setBackupStatus] = useState(null)
   const [workScheduleDays, setWorkScheduleDays] = useState([])
@@ -656,82 +655,23 @@ function AdminView({ token }) {
     setClientOptions(data.items || [])
   }
 
-  async function loadDashboard() {
-    const today = await api('/api/admin/dashboard/today', { token })
-    setDashboardToday(today.agenda || [])
-    setDashboardKpi(today.kpi || null)
-  }
-
-  function parseIsoDate(iso) {
-    const [y, m, d] = String(iso || '').split('-').map(Number)
-    return new Date(y, (m || 1) - 1, d || 1)
-  }
-
-  function isoDate(dateObj) {
-    const y = dateObj.getFullYear()
-    const m = String(dateObj.getMonth() + 1).padStart(2, '0')
-    const d = String(dateObj.getDate()).padStart(2, '0')
-    return `${y}-${m}-${d}`
-  }
-
-  function ymKey(dateObj) {
-    return `${dateObj.getFullYear()}-${String(dateObj.getMonth() + 1).padStart(2, '0')}`
-  }
-
-  function startOfWeek(dateObj) {
-    const d = new Date(dateObj)
-    const shift = (d.getDay() + 6) % 7 // Пн=0
-    d.setDate(d.getDate() - shift)
-    return d
-  }
-
-  async function fetchMonthActivityByYm(ym) {
-    const [year, month] = ym.split('-').map(Number)
-    const data = await api(`/api/admin/stats/month/activity?year=${year}&month=${month}`, { token })
-    return data.days || []
-  }
-
-  async function loadActivityForPeriod(period = statsPeriod, anchorIso = day) {
-    const anchor = parseIsoDate(anchorIso)
-
-    if (period === 'day') {
-      const ym = ymKey(anchor)
-      const monthDays = await fetchMonthActivityByYm(ym)
-      const target = monthDays.find(d => d.date === anchorIso) || { date: anchorIso, day: anchor.getDate(), revenue: 0, lessons_done: 0 }
-      setActivitySeries([{ ...target, label: String(anchor.getDate()) }])
-      setActivityTitle(`День: ${anchorIso}`)
-      return
-    }
-
-    if (period === 'week') {
-      const from = startOfWeek(anchor)
-      const days = [...Array(7)].map((_, i) => {
-        const d = new Date(from)
-        d.setDate(from.getDate() + i)
-        return d
+  async function loadAnalyticsV2(mode = analyticsMode, anchorDate = analyticsAnchorDate) {
+    setAnalyticsLoading(true)
+    try {
+      const [overview, delta, series] = await Promise.all([
+        api(`/api/admin/analytics/overview?anchor_date=${anchorDate}&mode=${mode}`, { token }),
+        api(`/api/admin/analytics/clients-delta?anchor_date=${anchorDate}&mode=${mode}`, { token }),
+        api(`/api/admin/analytics/timeseries?anchor_date=${anchorDate}&mode=${mode}`, { token }),
+      ])
+      setAnalyticsOverview(overview || null)
+      setAnalyticsDelta({
+        new_active: Array.isArray(delta?.new_active) ? delta.new_active : [],
+        became_inactive: Array.isArray(delta?.became_inactive) ? delta.became_inactive : [],
       })
-      const uniqueYm = [...new Set(days.map(ymKey))]
-      const byDate = {}
-      for (const ym of uniqueYm) {
-        const arr = await fetchMonthActivityByYm(ym)
-        for (const row of arr) byDate[row.date] = row
-      }
-      const weekday = ['Пн', 'Вт', 'Ср', 'Чт', 'Пт', 'Сб', 'Вс']
-      setActivitySeries(days.map((d, idx) => {
-        const key = isoDate(d)
-        const row = byDate[key] || { date: key, day: d.getDate(), revenue: 0, lessons_done: 0 }
-        return { ...row, label: weekday[idx] }
-      }))
-      setActivityTitle(`Неделя: ${isoDate(from)} - ${isoDate(days[6])}`)
-      return
+      setAnalyticsSeries(Array.isArray(series?.points) ? series.points : [])
+    } finally {
+      setAnalyticsLoading(false)
     }
-
-    const ym = ymKey(anchor)
-    const monthDays = await fetchMonthActivityByYm(ym)
-    setActivitySeries((monthDays || []).map(d => ({ ...d, label: String(d.day) })))
-    const [y, m] = ym.split('-').map(Number)
-    const monthRu = new Date(y, m - 1, 1).toLocaleDateString('ru-RU', { month: 'long', year: 'numeric' })
-    setActivityTitle(`Месяц: ${monthRu}`)
   }
 
   async function selectUser(telegramId) {
@@ -881,7 +821,6 @@ function AdminView({ token }) {
       method: 'POST',
     })
     await loadDebtors().catch(() => {})
-    await loadStats().catch(() => {})
   }
 
   async function loadUnclosedLessons() {
@@ -941,19 +880,6 @@ function AdminView({ token }) {
       body: { message: broadcast, only_unpaid: broadcastOnlyUnpaid },
     })
     setBroadcast('')
-  }
-
-  async function loadStats() {
-    if (statsPeriod === 'day') {
-      setStats(await api(`/api/admin/stats/day?date=${day}`, { token }))
-      return
-    }
-    if (statsPeriod === 'week') {
-      setStats(await api(`/api/admin/stats/week?date=${day}`, { token }))
-      return
-    }
-    const [y, m] = day.split('-')
-    setStats(await api(`/api/admin/stats/month?year=${Number(y)}&month=${Number(m)}`, { token }))
   }
 
   async function loadSystem() {
@@ -1054,12 +980,10 @@ function AdminView({ token }) {
 
   useEffect(() => {
     ;(async () => {
-      await loadDashboard().catch(() => {})
       await loadUsers().catch(e => setError(String(e.message || e)))
       await loadClientOptions().catch(() => {})
       await loadSchedule().catch(() => {})
       await loadScheduleMonth().catch(() => {})
-      await loadStats().catch(() => {})
       await loadApprovals().catch(() => {})
       await loadDebtors().catch(() => {})
       await loadUnclosedLessons().catch(() => {})
@@ -1102,9 +1026,8 @@ function AdminView({ token }) {
 
   useEffect(() => {
     if (activeTab !== 'analytics') return
-    loadStats().catch(() => {})
-    loadActivityForPeriod(statsPeriod, day).catch(e => setError(String(e.message || e)))
-  }, [activeTab, statsPeriod, day])
+    loadAnalyticsV2().catch(e => setError(normalizeErrorMessage(e.message || e)))
+  }, [activeTab, analyticsMode, analyticsAnchorDate])
 
   const filteredClients = (clientOptions || [])
     .filter(c => {
@@ -1688,57 +1611,185 @@ function AdminView({ token }) {
 
         {activeTab === 'analytics' ? (
           <div className="stack analytics-stack">
-            <Card title="Аналитика" subtitle="KPI и графики">
-              <div className="pill-row">
-                <Pill label="Доход мес." value={`${dashboardKpi?.month_income ?? 0} ₽`} tone="mint" />
-                <Pill label="Доход дня" value={`${dashboardKpi?.today_income ?? 0} ₽`} tone="blue" />
-                <Pill label="Заявок" value={dashboardKpi?.pending_approvals ?? 0} tone="violet" />
+            <Card title="Аналитика" subtitle="Клиенты, финансы и динамика">
+              <div className="segmented">
+                <button className={analyticsMode === 'week' ? 'seg active' : 'seg'} onClick={() => setAnalyticsMode('week')}>Неделя</button>
+                <button className={analyticsMode === 'month' ? 'seg active' : 'seg'} onClick={() => setAnalyticsMode('month')}>Месяц</button>
               </div>
+              <div className="custom-row">
+                <input type="date" className="input" value={analyticsAnchorDate} onChange={e => setAnalyticsAnchorDate(e.target.value)} />
+                <button className="btn" onClick={() => {
+                  loadAnalyticsV2().catch(e => setError(normalizeErrorMessage(e.message || e)))
+                }}>Обновить</button>
+              </div>
+              {analyticsLoading ? <div className="loading">Загружаем аналитику...</div> : null}
+              {analyticsOverview ? (
+                <div className="pill-row">
+                  <Pill
+                    label={`Доход (${analyticsMode === 'week' ? 'неделя' : 'месяц'})`}
+                    value={`${analyticsOverview.finance?.paid_now ?? 0} ₽`}
+                    tone="mint"
+                  />
+                  <Pill
+                    label="Активные ученики"
+                    value={analyticsOverview.clients?.active_now ?? 0}
+                    tone="blue"
+                  />
+                  <Pill
+                    label="Занятия"
+                    value={analyticsOverview.ops?.lessons_now ?? 0}
+                    tone="violet"
+                  />
+                  <Pill
+                    label="Средний чек"
+                    value={`${analyticsOverview.ops?.avg_check_now ?? 0} ₽`}
+                    tone="blue"
+                  />
+                  <Pill
+                    label="Новых активных"
+                    value={analyticsOverview.clients?.new_active_count ?? 0}
+                    tone="mint"
+                  />
+                  <Pill
+                    label="Стали неактивны"
+                    value={analyticsOverview.clients?.became_inactive_count ?? 0}
+                    tone="violet"
+                  />
+                </div>
+              ) : null}
             </Card>
 
-            <Card title="Доход и занятия" subtitle={activityTitle}>
-              {(activitySeries || []).length ? (
+            <Card
+              title="Сравнение с прошлым периодом"
+              subtitle={
+                analyticsOverview?.period
+                  ? `${analyticsOverview.period.current_from} → ${analyticsOverview.period.current_to}`
+                  : 'Неделя/месяц'
+              }
+            >
+              {analyticsOverview ? (
+                <ul className="list list-compact">
+                  <li>
+                    <span>Доход</span>
+                    <strong>
+                      {analyticsOverview.finance?.delta_abs >= 0 ? '+' : ''}
+                      {analyticsOverview.finance?.delta_abs ?? 0} ₽ ({analyticsOverview.finance?.delta_pct ?? 0}%)
+                    </strong>
+                  </li>
+                  <li>
+                    <span>Активные ученики</span>
+                    <strong>
+                      {(analyticsOverview.clients?.active_now ?? 0) - (analyticsOverview.clients?.active_prev ?? 0) >= 0 ? '+' : ''}
+                      {(analyticsOverview.clients?.active_now ?? 0) - (analyticsOverview.clients?.active_prev ?? 0)}
+                    </strong>
+                  </li>
+                  <li>
+                    <span>Проведенные занятия</span>
+                    <strong>
+                      {(analyticsOverview.ops?.lessons_now ?? 0) - (analyticsOverview.ops?.lessons_prev ?? 0) >= 0 ? '+' : ''}
+                      {(analyticsOverview.ops?.lessons_now ?? 0) - (analyticsOverview.ops?.lessons_prev ?? 0)}
+                    </strong>
+                  </li>
+                  <li>
+                    <span>Доля долгов</span>
+                    <strong>{analyticsOverview.ops?.debt_ratio_now ?? 0}%</strong>
+                  </li>
+                </ul>
+              ) : (
+                <div className="placeholder-box">Выберите период и нажмите «Обновить».</div>
+              )}
+            </Card>
+
+            <Card title="Доход и занятия по дням" subtitle={analyticsMode === 'week' ? 'Текущая неделя' : 'Текущий месяц'}>
+              {(analyticsSeries || []).length ? (
                 <div className="bar-chart">
-                  {(activitySeries || []).map(dayItem => {
-                    const maxRevenue = Math.max(1, ...activitySeries.map(d => d.revenue || 0))
-                    const maxLessons = Math.max(1, ...activitySeries.map(d => d.lessons_done || 0))
-                    const hRevenue = Math.max(4, Math.round(((dayItem.revenue || 0) / maxRevenue) * 48))
-                    const hLessons = Math.max(4, Math.round(((dayItem.lessons_done || 0) / maxLessons) * 48))
+                  {(analyticsSeries || []).map(point => {
+                    const maxRevenue = Math.max(1, ...analyticsSeries.map(d => d.paid_amount || 0))
+                    const maxLessons = Math.max(1, ...analyticsSeries.map(d => d.lessons_done || 0))
+                    const hRevenue = Math.max(4, Math.round(((point.paid_amount || 0) / maxRevenue) * 48))
+                    const hLessons = Math.max(4, Math.round(((point.lessons_done || 0) / maxLessons) * 48))
                     return (
-                      <div className="bar-col" key={`analytics-${dayItem.date}`} title={`${dayItem.date}: ${dayItem.revenue} ₽ / ${dayItem.lessons_done} занятий`}>
+                      <div
+                        className="bar-col"
+                        key={`analytics-${point.date}`}
+                        title={`${point.date}: ${point.paid_amount} ₽ / ${point.lessons_done} занятий / ${point.active_clients} учеников`}
+                      >
                         <div className="bar-wrap">
                           <span className="bar bar-revenue" style={{ height: `${hRevenue}px` }} />
                           <span className="bar bar-lessons" style={{ height: `${hLessons}px` }} />
                         </div>
-                        <small>{dayItem.label || dayItem.day}</small>
+                        <small>{Number(String(point.date).slice(8))}</small>
                       </div>
                     )
                   })}
                 </div>
               ) : (
-                <div className="placeholder-box">Данных по выбранному периоду пока нет.</div>
+                <div className="placeholder-box">По выбранному периоду данных пока нет.</div>
               )}
             </Card>
 
-            <Card title="Статистика" subtitle="День / неделя / месяц">
-              <div className="segmented">
-                <button className={statsPeriod === 'day' ? 'seg active' : 'seg'} onClick={() => setStatsPeriod('day')}>День</button>
-                <button className={statsPeriod === 'week' ? 'seg active' : 'seg'} onClick={() => setStatsPeriod('week')}>Неделя</button>
-                <button className={statsPeriod === 'month' ? 'seg active' : 'seg'} onClick={() => setStatsPeriod('month')}>Месяц</button>
+            <Card title="Активность клиентов" subtitle="Кто пришел и кто выпал из периода">
+              <div className="analytics-columns">
+                <div className="analytics-col">
+                  <h4>Новые активные ({analyticsDelta.new_active.length})</h4>
+                  {analyticsDelta.new_active.length ? (
+                    <ul className="list list-compact">
+                      {analyticsDelta.new_active.slice(0, 8).map(item => (
+                        <li key={`new-${item.telegram_id}`}>
+                          <span>{item.full_name || item.telegram_id}</span>
+                          <small>{item.lessons_count} зан. • {item.paid_amount || 0} ₽</small>
+                        </li>
+                      ))}
+                    </ul>
+                  ) : (
+                    <div className="placeholder-box">Нет новых активных клиентов.</div>
+                  )}
+                </div>
+                <div className="analytics-col">
+                  <h4>Стали неактивны ({analyticsDelta.became_inactive.length})</h4>
+                  {analyticsDelta.became_inactive.length ? (
+                    <ul className="list list-compact">
+                      {analyticsDelta.became_inactive.slice(0, 8).map(item => (
+                        <li key={`inactive-${item.telegram_id}`}>
+                          <span>{item.full_name || item.telegram_id}</span>
+                          <small>Последнее: {item.last_lesson_date || '—'}</small>
+                        </li>
+                      ))}
+                    </ul>
+                  ) : (
+                    <div className="placeholder-box">Потерь по активности нет.</div>
+                  )}
+                </div>
               </div>
-              <div className="custom-row">
-                <input type="date" className="input" value={day} onChange={e => setDay(e.target.value)} />
-                <button className="btn" onClick={() => {
-                  loadStats().catch(e => setError(String(e.message || e)))
-                  loadActivityForPeriod(statsPeriod, day).catch(e => setError(String(e.message || e)))
-                }}>Обновить</button>
-              </div>
-              <ul className="list list-compact">
-                <li><span>Всего платежей</span><strong>{stats?.total_payments ?? 0}</strong></li>
-                <li><span>Оплачено</span><strong>{stats?.paid_count ?? 0}</strong></li>
-                <li><span>Выручка</span><strong>{stats?.earned_total ?? 0} ₽</strong></li>
-                <li><span>Начислено</span><strong>{stats?.amount_total ?? 0} ₽</strong></li>
-              </ul>
+            </Card>
+
+            <Card title="Сводка для решений" subtitle="Коротко по бизнес-ситуации">
+              {analyticsOverview ? (
+                <ul className="list list-compact">
+                  <li>
+                    <span>Сигнал по выручке</span>
+                    <strong>
+                      {Number(analyticsOverview.finance?.delta_abs || 0) >= 0 ? 'Рост' : 'Снижение'}
+                    </strong>
+                  </li>
+                  <li>
+                    <span>Сигнал по базе клиентов</span>
+                    <strong>
+                      {(analyticsOverview.clients?.new_active_count || 0) >= (analyticsOverview.clients?.became_inactive_count || 0)
+                        ? 'База растет'
+                        : 'База сжимается'}
+                    </strong>
+                  </li>
+                  <li>
+                    <span>Риск по долгам</span>
+                    <strong>
+                      {(analyticsOverview.ops?.debt_ratio_now || 0) > 25 ? 'Высокий' : 'Контролируемый'}
+                    </strong>
+                  </li>
+                </ul>
+              ) : (
+                <div className="placeholder-box">Сводка появится после загрузки аналитики.</div>
+              )}
             </Card>
           </div>
         ) : null}
