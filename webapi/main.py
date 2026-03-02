@@ -866,7 +866,7 @@ async def admin_del_lesson(
         return {"status": "ok", "scope": scope}
 
     # Для регулярки удаляем только конкретный день и оставляем серию.
-    slot_kind = await transactions.detect_slot_kind(telegram_id, date, hh, mm)
+    slot_kind = await transactions.get_lesson_kind(date, hh, mm, telegram_id)
     if slot_kind == "regular":
         await transactions.cancel_regular_slot_with_allow(date, hh, mm, note="Отменено администратором")
         await _audit(
