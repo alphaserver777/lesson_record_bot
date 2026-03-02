@@ -774,11 +774,17 @@ function AdminView({ token }) {
   async function deleteScheduleItem(item, scope = 'single') {
     if (!item?.telegram_id) return
     const time = `${String(item.hour).padStart(2, '0')}:${String(item.minute).padStart(2, '0')}`
+    const userLabel = item.full_name || String(item.telegram_id)
+    const question = scope === 'all_regular'
+      ? `Удалить все регулярные занятия клиента ${userLabel} в ${time} (день недели будет очищен)?`
+      : `Удалить занятие клиента ${userLabel} на ${day} ${time}?`
+    if (!window.confirm(question)) return
     await api(
       `/api/admin/lessons/0?date=${day}&time=${time}&telegram_id=${item.telegram_id}&scope=${scope}`,
       { token, method: 'DELETE' },
     )
     await loadSchedule()
+    setSuccess(scope === 'all_regular' ? 'Регулярная серия удалена' : 'Занятие удалено')
   }
 
   async function addManualPayment() {
