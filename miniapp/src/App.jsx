@@ -686,6 +686,9 @@ function AdminView({ token }) {
   const [scheduleMonthDays, setScheduleMonthDays] = useState([])
   const [schedule, setSchedule] = useState([])
   const [freeSlots, setFreeSlots] = useState([])
+  const [extraAvailability, setExtraAvailability] = useState([])
+  const [showExtraAvailabilityForm, setShowExtraAvailabilityForm] = useState(false)
+  const [extraAvailabilityForm, setExtraAvailabilityForm] = useState({ start_time: '12:00', end_time: '14:00', note: '' })
   const [selectedFreeTime, setSelectedFreeTime] = useState('')
   const [dayBlocks, setDayBlocks] = useState([])
   const [blockPreview, setBlockPreview] = useState(null)
@@ -846,6 +849,11 @@ function AdminView({ token }) {
     setSelectedFreeTime('')
   }
 
+  async function loadExtraAvailability(targetDay = day) {
+    const data = await api(`/api/admin/schedule/extra?date=${targetDay}`, { token })
+    setExtraAvailability(data.items || [])
+  }
+
   async function loadBlocks(targetDay = day) {
     const data = await api(`/api/admin/blocks?date=${targetDay}`, { token })
     setDayBlocks(data.blocks || [])
@@ -930,6 +938,33 @@ function AdminView({ token }) {
     await loadSchedule().catch(() => {})
     await loadFreeSlots().catch(() => {})
     setSuccess('Все брони на день удалены')
+  }
+
+  async function createExtraAvailability() {
+    const data = await api('/api/admin/schedule/extra', {
+      token,
+      method: 'POST',
+      body: {
+        date: day,
+        start_time: extraAvailabilityForm.start_time,
+        end_time: extraAvailabilityForm.end_time,
+        note: extraAvailabilityForm.note || '',
+      },
+    })
+    setExtraAvailability(data.items || [])
+    await loadFreeSlots().catch(() => {})
+    setShowExtraAvailabilityForm(false)
+    setSuccess('Временные слоты добавлены')
+  }
+
+  async function deleteExtraAvailability(itemId) {
+    const data = await api(`/api/admin/schedule/extra/${itemId}?date=${day}`, {
+      token,
+      method: 'DELETE',
+    })
+    setExtraAvailability(data.items || [])
+    await loadFreeSlots().catch(() => {})
+    setSuccess('Временные слоты удалены')
   }
 
   async function deleteScheduleItem(item, scope = 'single') {
@@ -1139,6 +1174,7 @@ function AdminView({ token }) {
       await loadSchedule().catch(() => {})
       await loadScheduleMonth().catch(() => {})
       await loadBlocks().catch(() => {})
+      await loadExtraAvailability().catch(() => {})
       await loadDebtors().catch(() => {})
       await loadUnclosedLessons().catch(() => {})
       await loadSystem().catch(() => {})
@@ -1160,6 +1196,7 @@ function AdminView({ token }) {
       loadSchedule().catch(() => {})
     } else if (scheduleMode === 'free') {
       loadFreeSlots().catch(() => {})
+      loadExtraAvailability().catch(() => {})
     } else {
       loadBlocks().catch(() => {})
     }
@@ -1529,7 +1566,7 @@ function AdminView({ token }) {
             ) : null}
 
             {scheduleMode === 'free' ? (
-              <Card title={`Свободные слоты на ${day}`} subtitle="Выберите слот и назначьте клиента">
+              <Card title={`Свободные слоты на ${day}`} subtitle="Выберите слот, назначьте клиента или откройте временные окна">
                 <input className="input" value={clientSearch} onChange={e => setClientSearch(e.target.value)} placeholder="Поиск клиента: имя / телефон / id" />
                 <select
                   className="input"
@@ -1552,7 +1589,60 @@ function AdminView({ token }) {
                   <button className={scheduleDuration === 90 ? 'seg active' : 'seg'} onClick={() => setScheduleDuration(90)}>90 мин</button>
                   <button className={scheduleDuration === 120 ? 'seg active' : 'seg'} onClick={() => setScheduleDuration(120)}>120 мин</button>
                 </div>
-                <button className="btn secondary" onClick={() => loadFreeSlots().catch(e => setError(String(e.message || e)))}>Обновить слоты</button>
+                <div className="record-actions">
+                  <button className="btn secondary" onClick={() => loadFreeSlots().catch(e => setError(String(e.message || e)))}>Обновить слоты</button>
+                  <button className="btn secondary" onClick={() => setShowExtraAvailabilityForm(v => !v)}>
+                    {showExtraAvailabilityForm ? 'Скрыть форму' : 'Добавить временные слоты'}
+                  </button>
+                </div>
+                {showExtraAvailabilityForm ? (
+                  <div className="stack">
+                    <small>Дата берётся из выбранного дня: {day}</small>
+                    <div className="record-actions">
+                      <input
+                        className="input"
+                        value={extraAvailabilityForm.start_time}
+                        onChange={e => setExtraAvailabilityForm(v => ({ ...v, start_time: e.target.value }))}
+                        placeholder="С"
+                      />
+                      <input
+                        className="input"
+                        value={extraAvailabilityForm.end_time}
+                        onChange={e => setExtraAvailabilityForm(v => ({ ...v, end_time: e.target.value }))}
+                        placeholder="По"
+                      />
+                    </div>
+                    <input
+                      className="input"
+                      value={extraAvailabilityForm.note}
+                      onChange={e => setExtraAvailabilityForm(v => ({ ...v, note: e.target.value }))}
+                      placeholder="Комментарий"
+                    />
+                    <button className="btn" onClick={() => createExtraAvailability().catch(e => setError(String(e.message || e)))}>
+                      Сохранить временные слоты
+                    </button>
+                  </div>
+                ) : null}
+                {extraAvailability.length ? (
+                  <div className="stack">
+                    <small>Открытые временные окна</small>
+                    <ul className="list list-compact">
+                      {extraAvailability.map(item => (
+                        <li key={`extra-${item.id}`} className="record-item">
+                          <div className="record-main">
+                            <strong className="record-time">{item.start_time}-{item.end_time}</strong>
+                            <span className="record-name">{item.note || 'Временные слоты'}</span>
+                          </div>
+                          <div className="record-actions">
+                            <button className="btn secondary compact" onClick={() => deleteExtraAvailability(item.id).catch(e => setError(String(e.message || e)))}>
+                              Удалить
+                            </button>
+                          </div>
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                ) : null}
                 <div className="slots-hours">
                   {groupedFreeHourKeys.map(hour => (
                     <div key={`free-hour-${hour}`} className="slots-hour-block">

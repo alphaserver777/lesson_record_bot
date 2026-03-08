@@ -6,7 +6,7 @@ from typing import Any
 from sqlalchemy import case, delete, func, select, text, update
 
 from database.connect import Base, engine, session
-from database.models import Payment, RecordDate, RegularLesson, RegularLessonException, StudentProfile
+from database.models import DateAvailabilityOverride, Payment, RecordDate, RegularLesson, RegularLessonException, StudentProfile
 from utils.calendar_backend import (
     CalendarBackendError,
     create_booking,
@@ -58,6 +58,7 @@ async def init_db() -> None:
     await _ensure_presence_columns()
     await _ensure_regular_lessons_columns()
     await _ensure_regular_lesson_exceptions_table()
+    await _ensure_date_availability_overrides_table()
     await _ensure_student_profiles_columns()
     await _ensure_payments_columns()
     await _ensure_booking_status_columns()
@@ -303,6 +304,18 @@ async def _ensure_regular_lessons_columns() -> None:
 async def _ensure_regular_lesson_exceptions_table() -> None:
     async with engine.begin() as conn:
         await conn.run_sync(RegularLessonException.__table__.create, checkfirst=True)
+
+
+async def _ensure_date_availability_overrides_table() -> None:
+    async with engine.begin() as conn:
+        await conn.run_sync(DateAvailabilityOverride.__table__.create, checkfirst=True)
+    await session.execute(
+        text(
+            "CREATE INDEX IF NOT EXISTS idx_date_availability_overrides_target_date "
+            "ON date_availability_overrides(target_date, mode, start_minute, end_minute)"
+        )
+    )
+    await session.commit()
 
 
 async def _ensure_student_profiles_columns() -> None:
@@ -1860,6 +1873,63 @@ async def reserve_day(
     await migrate_legacy_full_day_block(date)
     created = await create_block_slots(date, segments, note=note)
     return 1 if created >= 0 else 0
+
+
+async def list_date_availability_overrides(target_date: datetime.date) -> list[dict[str, Any]]:
+    rows = await session.execute(
+        select(DateAvailabilityOverride).where(
+            DateAvailabilityOverride.target_date == target_date,
+            DateAvailabilityOverride.mode == "extra_open",
+        ).order_by(DateAvailabilityOverride.start_minute, DateAvailabilityOverride.end_minute)
+    )
+    items: list[dict[str, Any]] = []
+    for row in rows.scalars().all():
+        items.append(
+            {
+                "id": int(row.id),
+                "date": target_date.isoformat(),
+                "start_time": f"{int(row.start_minute) // 60:02d}:{int(row.start_minute) % 60:02d}",
+                "end_time": f"{int(row.end_minute) // 60:02d}:{int(row.end_minute) % 60:02d}",
+                "note": row.note or "",
+                "mode": row.mode,
+            }
+        )
+    return items
+
+
+async def create_date_availability_override(
+    target_date: datetime.date,
+    start_minute: int,
+    end_minute: int,
+    note: str | None = None,
+) -> dict[str, Any]:
+    item = DateAvailabilityOverride(
+        target_date=target_date,
+        start_minute=start_minute,
+        end_minute=end_minute,
+        mode="extra_open",
+        note=(note or "").strip() or None,
+        created_at=datetime.datetime.now().isoformat(),
+    )
+    session.add(item)
+    await session.commit()
+    return {
+        "id": int(item.id),
+        "date": target_date.isoformat(),
+        "start_time": f"{start_minute // 60:02d}:{start_minute % 60:02d}",
+        "end_time": f"{end_minute // 60:02d}:{end_minute % 60:02d}",
+        "note": item.note or "",
+        "mode": item.mode,
+    }
+
+
+async def delete_date_availability_override(item_id: int) -> bool:
+    item = await session.get(DateAvailabilityOverride, item_id)
+    if not item:
+        return False
+    await session.delete(item)
+    await session.commit()
+    return True
 
 
 async def mailing_for_day(date: datetime) -> list[Any]:

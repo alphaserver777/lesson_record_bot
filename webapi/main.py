@@ -25,6 +25,7 @@ from webapi.auth import issue_session_token, verify_init_data, verify_session_to
 from webapi.schemas import (
     AdminBlockCreateIn,
     AdminBlockDeleteIn,
+    AdminExtraAvailabilityIn,
     AdminBlockPreviewIn,
     AdminUserPatchIn,
     AuthIn,
@@ -1392,6 +1393,67 @@ async def admin_schedule_free(
     slots = await _available_slots_for_date(date, duration)
     free = [s["time"] for s in slots if s.get("available")]
     return {"date": date.isoformat(), "duration": duration, "slots": free}
+
+
+@app.get("/api/admin/schedule/extra")
+async def admin_schedule_extra(date: datetime.date, _: dict[str, Any] = Depends(require_admin)) -> dict[str, Any]:
+    items = await transactions.list_date_availability_overrides(date)
+    return {"date": date.isoformat(), "items": items}
+
+
+@app.post("/api/admin/schedule/extra")
+async def admin_create_schedule_extra(
+    payload: AdminExtraAvailabilityIn,
+    admin: dict[str, Any] = Depends(require_admin),
+) -> dict[str, Any]:
+    start_minute = _parse_time_to_minutes(payload.start_time)
+    end_minute = _parse_time_to_minutes(payload.end_time)
+    if end_minute <= start_minute:
+        raise HTTPException(status_code=422, detail="INVALID_TIME_RANGE")
+
+    item = await transactions.create_date_availability_override(
+        target_date=payload.date,
+        start_minute=start_minute,
+        end_minute=end_minute,
+        note=payload.note,
+    )
+    await _audit(
+        int(admin["sub"]),
+        "create",
+        "extra_availability",
+        {"date": payload.date.isoformat(), "start_time": payload.start_time, "end_time": payload.end_time, "note": payload.note or ""},
+    )
+    return {
+        "status": "ok",
+        "date": payload.date.isoformat(),
+        "item": item,
+        "items": await transactions.list_date_availability_overrides(payload.date),
+        "slots": [s["time"] for s in await _available_slots_for_date(payload.date) if s.get("available")],
+    }
+
+
+@app.delete("/api/admin/schedule/extra/{item_id}")
+async def admin_delete_schedule_extra(
+    item_id: int,
+    date: datetime.date,
+    admin: dict[str, Any] = Depends(require_admin),
+) -> dict[str, Any]:
+    deleted = await transactions.delete_date_availability_override(item_id)
+    if not deleted:
+        raise HTTPException(status_code=404, detail="EXTRA_AVAILABILITY_NOT_FOUND")
+    await _audit(
+        int(admin["sub"]),
+        "delete",
+        "extra_availability",
+        {"item_id": item_id, "date": date.isoformat()},
+    )
+    return {
+        "status": "ok",
+        "date": date.isoformat(),
+        "deleted": True,
+        "items": await transactions.list_date_availability_overrides(date),
+        "slots": [s["time"] for s in await _available_slots_for_date(date) if s.get("available")],
+    }
 
 
 @app.get("/api/admin/schedule/month")

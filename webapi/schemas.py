@@ -143,3 +143,10 @@ class AdminBlockDeleteIn(BaseModel):
     all_day: bool = False
     start_time: str | None = Field(default=None, pattern=r"^\d{2}:\d{2}$")
     end_time: str | None = Field(default=None, pattern=r"^\d{2}:\d{2}$")
+
+
+class AdminExtraAvailabilityIn(BaseModel):
+    date: date
+    start_time: str = Field(pattern=r"^\d{2}:\d{2}$")
+    end_time: str = Field(pattern=r"^\d{2}:\d{2}$")
+    note: str | None = None

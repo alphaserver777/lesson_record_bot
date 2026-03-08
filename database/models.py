@@ -54,6 +54,19 @@ class RegularLessonException(Base):
     created_at = Column(String(50), nullable=True)
 
 
+class DateAvailabilityOverride(Base):
+    __tablename__ = "date_availability_overrides"
+    __table_args__ = {'extend_existing': True}
+
+    id = Column(Integer, primary_key=True)
+    target_date = Column(Date, nullable=False)
+    start_minute = Column(Integer, nullable=False)
+    end_minute = Column(Integer, nullable=False)
+    mode = Column(String(20), nullable=False, default="extra_open")
+    note = Column(String(255), nullable=True)
+    created_at = Column(String(50), nullable=True)
+
+
 class StudentProfile(Base):
     __tablename__ = "student_profiles"
     __table_args__ = {"extend_existing": True}
