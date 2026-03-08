@@ -1298,7 +1298,17 @@ async def admin_create_blocks(
     if payload.strategy == "block_and_cancel_notify":
         for item in preview["conflicts"]:
             hh, mm = _parse_hhmm(item["time"])
-            if item["source"] == "record":
+            if item["kind"] == "regular":
+                canceled_now = await transactions.cancel_regular_occurrence(
+                    int(item["telegram_id"]),
+                    payload.date,
+                    hh,
+                    mm,
+                    note=f"Отменено из-за брони администратора: {reason}",
+                )
+                if not canceled_now and item["source"] == "record":
+                    await transactions.delete_single_slot(int(item["telegram_id"]), payload.date, hh, mm)
+            elif item["source"] == "record":
                 await transactions.delete_single_slot(int(item["telegram_id"]), payload.date, hh, mm)
             canceled += 1
             try:

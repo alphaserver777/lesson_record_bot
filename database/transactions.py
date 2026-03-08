@@ -1165,6 +1165,43 @@ async def cancel_regular_occurrence(
     return True
 
 
+async def last_lesson_before_slot(
+    telegram_id: int,
+    date: datetime.date,
+    hour: int,
+    minute: int,
+) -> tuple[datetime.date, int, int] | None:
+    result = await session.execute(
+        select(
+            RecordDate.record_date,
+            RecordDate.hour,
+            RecordDate.minute,
+        ).where(
+            RecordDate.telegram_id == telegram_id,
+            RecordDate.kind.not_in(["block", "allow"]),
+            ((RecordDate.booking_status.is_(None)) | (RecordDate.booking_status == "approved")),
+            (
+                (RecordDate.record_date < date)
+                | (
+                    (RecordDate.record_date == date)
+                    & (
+                        (RecordDate.hour < hour)
+                        | ((RecordDate.hour == hour) & (RecordDate.minute < minute))
+                    )
+                )
+            ),
+        ).order_by(
+            RecordDate.record_date.desc(),
+            RecordDate.hour.desc(),
+            RecordDate.minute.desc(),
+        )
+    )
+    row = result.first()
+    if row is None:
+        return None
+    return (row.record_date, int(row.hour), int(row.minute))
+
+
 async def del_record_all_day(date: datetime) -> None:
     res = await session.execute(select(RecordDate).where(RecordDate.record_date == date))
     res = res.all()
@@ -2100,13 +2137,22 @@ async def reschedule_single_slot(
     return True
 
 
-async def records_starting_at(date: datetime.date, hour: int, minute: int) -> list[Any]:
-    # Сначала берём записи из record_dates (разовые и развёрнутые регулярки)
+async def records_starting_at_details(date: datetime.date, hour: int, minute: int) -> list[dict[str, Any]]:
+    result: list[dict[str, Any]] = []
+    blocked_rows = await session.execute(
+        select(RecordDate.hour, RecordDate.minute).where(
+            RecordDate.record_date == date,
+            RecordDate.kind == "block",
+        )
+    )
+    blocked_times = {(int(row.hour), int(row.minute)) for row in blocked_rows}
+
     res = await session.execute(
         select(
             StudentProfile.telegram_id,
             StudentProfile.full_name,
             StudentProfile.telephone,
+            StudentProfile.price,
             RecordDate.hour,
             RecordDate.minute,
             RecordDate.duration_minutes,
@@ -2117,13 +2163,33 @@ async def records_starting_at(date: datetime.date, hour: int, minute: int) -> li
             RecordDate.record_date == date,
             RecordDate.hour == hour,
             RecordDate.minute == minute,
-            RecordDate.kind != "block",
+            RecordDate.kind.not_in(["block", "allow"]),
+            ((RecordDate.booking_status.is_(None)) | (RecordDate.booking_status == "approved")),
         )
     )
-    result = res.all()
-    seen = {(row.telegram_id, row.hour, row.minute) for row in result}
+    seen = set()
+    for row in res.all():
+        tg_id = int(row.telegram_id)
+        key = (tg_id, int(row.hour), int(row.minute))
+        seen.add(key)
+        last_lesson = await last_lesson_before_slot(tg_id, date, hour, minute)
+        duration_val = int(row.duration_minutes or SLOT_DURATION_MINUTES)
+        price_60 = int(row.price or 0)
+        result.append(
+            {
+                "telegram_id": tg_id,
+                "full_name": row.full_name,
+                "telephone": row.telephone,
+                "hour": int(row.hour),
+                "minute": int(row.minute),
+                "duration_minutes": duration_val,
+                "kind": "regular" if (row.kind or "single") == "regular" else "single",
+                "price_60": price_60,
+                "amount": max(0, int(round(price_60 * (duration_val / 60.0)))),
+                "last_lesson": last_lesson,
+            }
+        )
 
-    # Добавляем регулярки, если для слота нет записи
     weekday = date.weekday()
     skipped_ids = await skipped_regular_lesson_ids_for_date(date)
     allow_times = await legacy_allow_times_for_date(date)
@@ -2136,10 +2202,12 @@ async def records_starting_at(date: datetime.date, hour: int, minute: int) -> li
             RegularLesson.duration_minutes,
             StudentProfile.full_name,
             StudentProfile.telephone,
+            StudentProfile.price,
         )
         .join(StudentProfile, StudentProfile.telegram_id == RegularLesson.telegram_id, isouter=True)
         .where(
             RegularLesson.day_of_week == weekday,
+            RegularLesson.telegram_id.is_not(None),
             RegularLesson.hour == hour,
             RegularLesson.minute == minute,
         )
@@ -2147,24 +2215,47 @@ async def records_starting_at(date: datetime.date, hour: int, minute: int) -> li
     for row in regs:
         if int(row.id) in skipped_ids:
             continue
-        if (int(row.hour or 0), int(row.minute or 0)) in allow_times:
+        time_key = (int(row.hour or 0), int(row.minute or 0))
+        if time_key in allow_times or time_key in blocked_times:
             continue
-        key = (row.telegram_id, row.hour, row.minute)
+        tg_id = int(row.telegram_id)
+        key = (tg_id, int(row.hour or 0), int(row.minute or 0))
         if key in seen:
             continue
+        last_lesson = await last_lesson_before_slot(tg_id, date, hour, minute)
+        duration_val = int(row.duration_minutes or SLOT_DURATION_MINUTES)
+        price_60 = int(row.price or 0)
         result.append(
-            (
-                row.telegram_id,
-                row.full_name,
-                row.telephone,
-                row.hour,
-                row.minute,
-                row.duration_minutes or SLOT_DURATION_MINUTES,
-                "regular",
-            )
+            {
+                "telegram_id": tg_id,
+                "full_name": row.full_name,
+                "telephone": row.telephone,
+                "hour": int(row.hour or 0),
+                "minute": int(row.minute or 0),
+                "duration_minutes": duration_val,
+                "kind": "regular",
+                "price_60": price_60,
+                "amount": max(0, int(round(price_60 * (duration_val / 60.0)))),
+                "last_lesson": last_lesson,
+            }
         )
-
     return result
+
+
+async def records_starting_at(date: datetime.date, hour: int, minute: int) -> list[Any]:
+    details = await records_starting_at_details(date, hour, minute)
+    return [
+        (
+            item["telegram_id"],
+            item["full_name"],
+            item["telephone"],
+            item["hour"],
+            item["minute"],
+            item["duration_minutes"],
+            item["kind"],
+        )
+        for item in details
+    ]
 
 
 async def lessons_for_date(date: datetime.date) -> list[Any]:

@@ -12,6 +12,35 @@ from utils.calendar_backend import get_calendar_tz
 
 logger = logging.getLogger(__name__)
 
+
+def _format_last_lesson(last_lesson: tuple[datetime.date, int, int] | None) -> str:
+    if not last_lesson:
+        return "неизвестно"
+    lesson_date, hour, minute = last_lesson
+    return f"{lesson_date.strftime('%d-%m-%Y')} {hour:02d}:{minute:02d}"
+
+
+def _admin_reminder_text(item: dict, target_datetime: datetime.datetime, lead_text: str) -> str:
+    telegram_id = int(item["telegram_id"])
+    full_name = item.get("full_name") or str(telegram_id)
+    duration = int(item.get("duration_minutes") or SLOT_DURATION_MINUTES)
+    kind = "Регулярное" if item.get("kind") == "regular" else "Разовое"
+    price_60 = int(item.get("price_60") or 0)
+    amount = int(item.get("amount") or 0)
+    phone = item.get("telephone") or "не указан"
+    last_lesson = _format_last_lesson(item.get("last_lesson"))
+    return (
+        f"{lead_text}: {full_name} в {target_datetime.strftime('%H:%M')}\n"
+        f"Тип: {kind}\n"
+        f"Длительность: {duration} мин\n"
+        f"Цена: {amount} ₽"
+        + (f" ({price_60} ₽ / 60 мин)" if price_60 else "")
+        + "\n"
+        f"Телефон: {phone}\n"
+        f"Крайнее занятие: {last_lesson}\n"
+        f"<a href=\"tg://user?id={telegram_id}\">Написать клиенту</a>"
+    )
+
 async def reminder(date: datetime) -> None:
     """
     Функция reminder. Напоминания о записи. Запрашивает всех пользователей на сегодня.
@@ -23,15 +52,15 @@ async def reminder_before_start(target_datetime: datetime.datetime) -> None:
     """
     Напоминание за 10 минут до начала слота: клиенту и админам.
     """
-    res = await transactions.records_starting_at(
+    res = await transactions.records_starting_at_details(
         target_datetime.date(), target_datetime.hour, target_datetime.minute
     )
     if not res:
         return
 
     time_text = target_datetime.strftime("%H:%M")
-    for user in res:
-        telegram_id, full_name, telephone, hour, minute = user
+    for item in res:
+        telegram_id = int(item["telegram_id"])
         try:
             await bot.send_message(
                 chat_id=telegram_id,
@@ -41,11 +70,7 @@ async def reminder_before_start(target_datetime: datetime.datetime) -> None:
             # Пользователь может быть недоступен/заблокировал бота — не останавливаем цикл.
             pass
 
-        admin_text = (
-            f"Скоро встреча: {full_name or telegram_id} в {time_text}."
-            f" Телефон: {telephone or 'не указан'}."
-            f" <a href=\"tg://user?id={telegram_id}\">Написать клиенту</a>"
-        )
+        admin_text = _admin_reminder_text(item, target_datetime, "Через 10 минут")
         for admin_id in ADMINS_TELEGRAM_ID:
             await bot.send_message(chat_id=admin_id, text=admin_text, parse_mode="HTML")
 
@@ -54,7 +79,7 @@ async def reminder_before_delta(target_datetime: datetime.datetime, delta_minute
     """
     Универсальное напоминание за delta_minutes до начала слота.
     """
-    res = await transactions.records_starting_at(
+    res = await transactions.records_starting_at_details(
         target_datetime.date(), target_datetime.hour, target_datetime.minute
     )
     if not res:
@@ -62,8 +87,8 @@ async def reminder_before_delta(target_datetime: datetime.datetime, delta_minute
 
     time_text = target_datetime.strftime("%H:%M")
     lead_text = f"Через {delta_minutes} минут" if delta_minutes < 60 else f"Через {delta_minutes // 60} час(а)"
-    for user in res:
-        telegram_id, full_name, telephone, hour, minute = user
+    for item in res:
+        telegram_id = int(item["telegram_id"])
         try:
             await bot.send_message(
                 chat_id=telegram_id,
@@ -73,11 +98,7 @@ async def reminder_before_delta(target_datetime: datetime.datetime, delta_minute
         except Exception as exc:
             logger.warning("Не удалось отправить напоминание пользователю %s: %s", telegram_id, exc)
 
-        admin_text = (
-            f"{lead_text}: {full_name or telegram_id} в {time_text}."
-            f" Телефон: {telephone or 'не указан'}."
-            f" <a href=\"tg://user?id={telegram_id}\">Написать клиенту</a>"
-        )
+        admin_text = _admin_reminder_text(item, target_datetime, lead_text)
         for admin_id in ADMINS_TELEGRAM_ID:
             try:
                 await bot.send_message(chat_id=admin_id, text=admin_text, parse_mode="HTML")
