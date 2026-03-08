@@ -21,6 +21,16 @@
 
 Подтверждение было получено через `docker ps` на `Germany2`.
 
+Production checkout расположен в:
+
+- `/root/bot_service_appointment`
+
+Production stack должен подниматься через:
+
+- `docker-compose.prod.yml`
+
+Ручной запуск production-контейнеров через отдельные `docker run` больше не является основным способом деплоя.
+
 ## Модули
 
 ### Telegram-бот

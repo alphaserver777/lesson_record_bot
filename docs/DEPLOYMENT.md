@@ -1,0 +1,75 @@
+# Production Deployment
+
+## Сервер
+
+- production server: `Germany2.play2go.cloud`
+- checkout path: `/root/bot_service_appointment`
+
+## Контейнеры
+
+- `bot_service_appointment_prod` — основной Telegram-бот
+- `bot_service_appointment_miniapi_prod` — FastAPI backend для Mini App
+- `bot_service_appointment_miniapp_front_prod` — React/Vite frontend Mini App
+
+## Источник истины для продового запуска
+
+Production stack должен подниматься через:
+
+- `docker-compose.prod.yml`
+
+Ручные `docker run` не должны быть основным способом выката.
+
+## Подготовка перед выкатом
+
+1. Убедиться, что актуальный код закоммичен.
+2. На сервере сохранить backup текущего checkout.
+3. Синхронизировать код в `/root/bot_service_appointment`.
+
+## Deploy
+
+На `Germany2`:
+
+```bash
+cd /root/bot_service_appointment
+docker compose -f docker-compose.prod.yml up -d --build
+```
+
+## Проверка
+
+Проверить контейнеры:
+
+```bash
+docker ps --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}" | grep bot_service_appointment
+```
+
+Проверить Mini App API:
+
+```bash
+curl -I http://127.0.0.1:28000/docs
+```
+
+Проверить логи:
+
+```bash
+docker logs --tail 50 bot_service_appointment_prod
+docker logs --tail 50 bot_service_appointment_miniapi_prod
+docker logs --tail 50 bot_service_appointment_miniapp_front_prod
+```
+
+## Важные детали
+
+- `miniapi` должен стартовать через `main_webapi.py`
+- Mini App frontend использует `VITE_API_BASE=https://axtar-b2b.ru/miniapi`
+- bot и miniapi используют production volumes:
+  - `./database_prod:/app/data/`
+  - `./logs_prod:/app/logs/`
+
+## Rollback
+
+1. Остановить текущие контейнеры.
+2. Вернуть backup checkout в `/root/bot_service_appointment`.
+3. Повторно выполнить:
+
+```bash
+docker compose -f docker-compose.prod.yml up -d --build
+```

@@ -13,6 +13,7 @@
 
 ## Основные документы
 
+- `DEPLOYMENT.md` описывает production deployment и rollback
 - `constitution.md` фиксирует правила проекта
 - `architecture.md` описывает текущее устройство системы
 - `devplan.md` хранит среднесрочные этапы развития
