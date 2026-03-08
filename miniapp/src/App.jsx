@@ -40,6 +40,53 @@ function Card({ title, subtitle, children, actions, ...props }) {
   )
 }
 
+function ToastViewport({ items, onDismiss }) {
+  if (!items.length) return null
+  return (
+    <div className="toast-viewport" aria-live="polite" aria-atomic="true">
+      {items.map(item => (
+        <button
+          key={item.id}
+          type="button"
+          className={`floating-toast ${item.type}`}
+          onClick={() => onDismiss?.(item.id)}
+        >
+          <span className={`floating-toast-icon ${item.type}`}>{item.type === 'success' ? '✓' : item.type === 'error' ? '!' : 'i'}</span>
+          <span className="floating-toast-copy">
+            {item.title ? <strong>{item.title}</strong> : null}
+            <span>{item.message}</span>
+          </span>
+        </button>
+      ))}
+    </div>
+  )
+}
+
+function useFloatingToasts({ success, error, onClearSuccess, onClearError, normalizeError = v => String(v || '') }) {
+  const normalizedError = normalizeError(error)
+
+  useEffect(() => {
+    if (!success) return
+    const t = setTimeout(() => onClearSuccess?.(), 2200)
+    return () => clearTimeout(t)
+  }, [success, onClearSuccess])
+
+  useEffect(() => {
+    if (!normalizedError) return
+    const t = setTimeout(() => onClearError?.(), 4200)
+    return () => clearTimeout(t)
+  }, [normalizedError, onClearError])
+
+  const items = []
+  if (success) {
+    items.push({ id: 'success', type: 'success', title: 'Готово', message: success })
+  }
+  if (normalizedError) {
+    items.push({ id: 'error', type: 'error', title: 'Что-то пошло не так', message: normalizedError })
+  }
+  return items
+}
+
 function Pill({ label, value, tone = 'default' }) {
   return (
     <div className={`pill ${tone}`}>
@@ -138,6 +185,13 @@ function UserView({ token, appUser, tgUser }) {
   const [bookingsReady, setBookingsReady] = useState(false)
   const [bookingsRetryTick, setBookingsRetryTick] = useState(0)
   const calendarReqRef = useRef(0)
+  const toastItems = useFloatingToasts({
+    success,
+    error,
+    onClearSuccess: () => setSuccess(''),
+    onClearError: () => setError(''),
+    normalizeError: normalizeErrorMessage,
+  })
 
   async function loadCalendar() {
     const reqId = ++calendarReqRef.current
@@ -630,8 +684,13 @@ function UserView({ token, appUser, tgUser }) {
           </div>
         ) : null}
 
-        {!!success && <div className="toast success">{success}</div>}
-        {!!normalizeErrorMessage(error) && <div className="toast error">{normalizeErrorMessage(error)}</div>}
+        <ToastViewport
+          items={toastItems}
+          onDismiss={id => {
+            if (id === 'success') setSuccess('')
+            if (id === 'error') setError('')
+          }}
+        />
       </div>
 
       <nav className="bottom-nav bottom-nav-two">
@@ -726,6 +785,13 @@ function AdminView({ token }) {
   const [workImpactRange, setWorkImpactRange] = useState({
     date_from: new Date().toISOString().slice(0, 10),
     date_to: new Date(Date.now() + 1000 * 60 * 60 * 24 * 30).toISOString().slice(0, 10),
+  })
+  const toastItems = useFloatingToasts({
+    success,
+    error,
+    onClearSuccess: () => setSuccess(''),
+    onClearError: () => setError(''),
+    normalizeError: normalizeErrorMessage,
   })
 
   const adminTabs = [
@@ -1208,12 +1274,6 @@ function AdminView({ token }) {
       loadDebtors().catch(() => {})
     }
   }, [activeTab, manageSection, unclosedDaysBack])
-
-  useEffect(() => {
-    if (!success) return
-    const t = setTimeout(() => setSuccess(''), 2200)
-    return () => clearTimeout(t)
-  }, [success])
 
   useEffect(() => {
     if (activeTab !== 'analytics') return
@@ -2214,8 +2274,13 @@ function AdminView({ token }) {
           </div>
         ) : null}
 
-        {!!success && <div className="toast success">{success}</div>}
-        {!!normalizeErrorMessage(error) && <div className="toast error">{normalizeErrorMessage(error)}</div>}
+        <ToastViewport
+          items={toastItems}
+          onDismiss={id => {
+            if (id === 'success') setSuccess('')
+            if (id === 'error') setError('')
+          }}
+        />
       </div>
 
       <nav className="bottom-nav bottom-nav-five">
@@ -2233,6 +2298,13 @@ export default function App() {
   const [token, setToken] = useState('')
   const [user, setUser] = useState(null)
   const [error, setError] = useState('')
+  const toastItems = useFloatingToasts({
+    success: '',
+    error,
+    onClearSuccess: undefined,
+    onClearError: () => setError(''),
+    normalizeError: value => String(value || ''),
+  })
 
   useEffect(() => {
     const tg = window.Telegram?.WebApp
@@ -2253,7 +2325,7 @@ export default function App() {
 
   return (
     <main className="app">
-      {error ? <div className="toast error">{error}</div> : null}
+      <ToastViewport items={toastItems} onDismiss={() => setError('')} />
       {!token ? <div className="loading">Подключаем Mini App...</div> : null}
       {token && user?.role === 'admin' ? (
         <ViewErrorBoundary>

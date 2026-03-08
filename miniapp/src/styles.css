@@ -974,6 +974,107 @@ body {
   color: #ffb3c5;
 }
 
+.toast-viewport {
+  position: fixed;
+  top: calc(14px + env(safe-area-inset-top, 0px));
+  left: 50%;
+  transform: translateX(-50%);
+  width: min(390px, calc(100vw - 24px));
+  display: grid;
+  gap: 10px;
+  z-index: 1200;
+  pointer-events: none;
+}
+
+.floating-toast {
+  pointer-events: auto;
+  width: 100%;
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 12px;
+  align-items: center;
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  border-radius: 20px;
+  padding: 13px 14px;
+  background: linear-gradient(145deg, rgba(29, 30, 36, 0.94), rgba(18, 19, 24, 0.92));
+  box-shadow: 0 18px 42px rgba(0, 0, 0, 0.38);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  text-align: left;
+  color: #f3f4f6;
+  animation: toast-slide-in 220ms ease;
+}
+
+.floating-toast.success {
+  border-color: rgba(76, 218, 130, 0.32);
+  background: linear-gradient(145deg, rgba(21, 42, 30, 0.96), rgba(15, 28, 22, 0.94));
+}
+
+.floating-toast.error {
+  border-color: rgba(255, 120, 148, 0.34);
+  background: linear-gradient(145deg, rgba(54, 22, 31, 0.96), rgba(36, 17, 23, 0.94));
+}
+
+.floating-toast.info {
+  border-color: rgba(117, 172, 255, 0.3);
+  background: linear-gradient(145deg, rgba(23, 32, 52, 0.96), rgba(17, 24, 39, 0.94));
+}
+
+.floating-toast-icon {
+  width: 32px;
+  height: 32px;
+  border-radius: 11px;
+  display: grid;
+  place-items: center;
+  font-size: 16px;
+  font-weight: 900;
+  background: rgba(255, 255, 255, 0.08);
+  color: #fff;
+}
+
+.floating-toast-icon.success {
+  background: rgba(78, 222, 130, 0.16);
+  color: #66f09d;
+}
+
+.floating-toast-icon.error {
+  background: rgba(255, 120, 148, 0.16);
+  color: #ff90ad;
+}
+
+.floating-toast-icon.info {
+  background: rgba(117, 172, 255, 0.16);
+  color: #8dbbff;
+}
+
+.floating-toast-copy {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.floating-toast-copy strong {
+  font-size: 13px;
+  line-height: 1;
+}
+
+.floating-toast-copy span {
+  color: rgba(242, 243, 246, 0.9);
+  font-size: 12px;
+  line-height: 1.35;
+}
+
+@keyframes toast-slide-in {
+  from {
+    opacity: 0;
+    transform: translateY(-10px) scale(0.985);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
 @media (max-width: 780px) {
   .pill-row {
     grid-template-columns: 1fr;
@@ -1000,4 +1101,9 @@ body {
   }
 
   .mini-cover { height: 88px; }
+
+  .toast-viewport {
+    width: calc(100vw - 20px);
+    top: calc(10px + env(safe-area-inset-top, 0px));
+  }
 }
