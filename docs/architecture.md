@@ -53,6 +53,18 @@ Production stack должен подниматься через:
 - Стек: React + Vite
 - Основная роль: пользовательский интерфейс внутри Telegram Mini App
 - В production развёрнут на сервере `Germany2.play2go.cloud`
+- `miniapp/src/App.jsx` теперь используется как тонкий composition-root:
+  - Telegram auth
+  - выбор admin/user view
+  - верхний error/toast layer
+- Основные feature-экраны вынесены в отдельные модули:
+  - `miniapp/src/features/user/UserView.jsx`
+  - `miniapp/src/features/admin/AdminView.jsx`
+- Общие frontend boundaries вынесены в shared-слой:
+  - `miniapp/src/shared/ui/`
+  - `miniapp/src/shared/hooks/`
+  - `miniapp/src/shared/lib/`
+- Это не финальная модульность frontend, но уже устраняет главный монолитный anti-pattern “весь Mini App живёт в одном App.jsx”
 
 ### Хранение данных и доменная логика
 
