@@ -82,6 +82,8 @@ class StudentProfile(Base):
     goal = Column(String(255), nullable=True)
     notes = Column(String(255), nullable=True)
     telephone = Column(String(20), nullable=True)
+    miniapp_entry_chat_id = Column(Integer, nullable=True)
+    miniapp_entry_message_id = Column(Integer, nullable=True)
     blocked = Column(Boolean, default=False)
     is_deleted = Column(Boolean, default=False)
     last_visit_date = Column(String(50), nullable=True)

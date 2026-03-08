@@ -41,6 +41,10 @@ Production stack должен подниматься через:
 - Инициализация бота: `loader.py`
 - Регистрация handlers: `handlers/routers.py`
 - Основная роль: пользовательские и административные взаимодействия внутри Telegram, callbacks, уведомления
+- В notification-only режиме бот также держит закрепляемую точку входа в Mini App:
+  - один bot entry-message
+  - только Telegram `web_app` кнопка
+  - без браузерной ссылки
 
 ### API Mini App
 

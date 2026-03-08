@@ -324,6 +324,12 @@ async def _ensure_student_profiles_columns() -> None:
     if "telephone" not in column_names:
         await session.execute(text("ALTER TABLE student_profiles ADD COLUMN telephone VARCHAR(20)"))
         await session.commit()
+    if "miniapp_entry_chat_id" not in column_names:
+        await session.execute(text("ALTER TABLE student_profiles ADD COLUMN miniapp_entry_chat_id INTEGER"))
+        await session.commit()
+    if "miniapp_entry_message_id" not in column_names:
+        await session.execute(text("ALTER TABLE student_profiles ADD COLUMN miniapp_entry_message_id INTEGER"))
+        await session.commit()
     if "blocked" not in column_names:
         await session.execute(text("ALTER TABLE student_profiles ADD COLUMN blocked BOOLEAN DEFAULT 0"))
         await session.commit()
@@ -590,6 +596,25 @@ async def update_phone(telegram_id: int, phone_number: str) -> None:
 
 async def get_student_profile(telegram_id: int) -> StudentProfile | None:
     return await session.get(StudentProfile, telegram_id)
+
+
+async def get_miniapp_entry_message(telegram_id: int) -> tuple[int | None, int | None]:
+    profile = await session.get(StudentProfile, telegram_id)
+    if not profile:
+        return None, None
+    chat_id = int(profile.miniapp_entry_chat_id) if profile.miniapp_entry_chat_id is not None else None
+    message_id = int(profile.miniapp_entry_message_id) if profile.miniapp_entry_message_id is not None else None
+    return chat_id, message_id
+
+
+async def set_miniapp_entry_message(telegram_id: int, chat_id: int | None, message_id: int | None) -> None:
+    profile = await session.get(StudentProfile, telegram_id)
+    if profile is None:
+        profile = StudentProfile(telegram_id=telegram_id)
+        session.add(profile)
+    profile.miniapp_entry_chat_id = chat_id
+    profile.miniapp_entry_message_id = message_id
+    await session.commit()
 
 
 async def list_student_profiles() -> list[Any]:
