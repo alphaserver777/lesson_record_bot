@@ -9,17 +9,15 @@ from database.connect import Base, engine, session
 from database.models import Payment, RecordDate, RegularLesson, StudentProfile
 from utils.calendar_backend import (
     CalendarBackendError,
-    create_block_event,
     create_booking,
     create_simple_event,
-    create_full_day_block_event,
     delete_events,
     delete_events_in_range,
     get_busy_intervals,
     get_calendar_tz,
 )
 from utils.sync_calendar import push_db_events_to_calendar
-from utils.schedule import SLOT_DURATION_MINUTES, slots_for_date
+from utils.schedule import SLOT_DURATION_MINUTES, SLOT_STEP_MINUTES, get_working_intervals_for_weekday, slots_for_date
 
 logger = logging.getLogger(__name__)
 
@@ -1058,6 +1056,349 @@ async def ensure_allow_slot(
     await session.commit()
 
 
+def _hhmm_to_minutes(value: str) -> int:
+    hour_s, minute_s = value.split(":")
+    return int(hour_s) * 60 + int(minute_s)
+
+
+def _minutes_to_hhmm(total_minutes: int) -> str:
+    return f"{total_minutes // 60:02d}:{total_minutes % 60:02d}"
+
+
+def working_minute_ranges_for_date(date: datetime.date) -> list[tuple[int, int]]:
+    ranges: list[tuple[int, int]] = []
+    for start, end in get_working_intervals_for_weekday(date.weekday()):
+        start_min = _hhmm_to_minutes(start)
+        end_min = _hhmm_to_minutes(end)
+        if end_min > start_min:
+            ranges.append((start_min, end_min))
+    return ranges
+
+
+def block_segments_for_date(
+    date: datetime.date,
+    all_day: bool,
+    start_minute: int | None = None,
+    end_minute: int | None = None,
+) -> list[tuple[int, int]]:
+    working_ranges = working_minute_ranges_for_date(date)
+    if not working_ranges:
+        return []
+    if all_day:
+        return working_ranges
+    if start_minute is None or end_minute is None or end_minute <= start_minute:
+        return []
+
+    segments: list[tuple[int, int]] = []
+    for work_start, work_end in working_ranges:
+        seg_start = max(work_start, start_minute)
+        seg_end = min(work_end, end_minute)
+        if seg_end > seg_start:
+            segments.append((seg_start, seg_end))
+    return segments
+
+
+async def migrate_legacy_full_day_block(date: datetime.date) -> int:
+    legacy_rows = await session.execute(
+        select(RecordDate).where(
+            RecordDate.record_date == date,
+            RecordDate.kind == "block",
+            RecordDate.hour == 0,
+            RecordDate.minute == 0,
+            RecordDate.telegram_id.is_not(None),
+        )
+    )
+    legacy_blocks = legacy_rows.scalars().all()
+    if not legacy_blocks:
+        return 0
+
+    segments = block_segments_for_date(date, all_day=True)
+    if not segments:
+        return 0
+
+    created = 0
+    note = next(((row.note or "").strip() for row in legacy_blocks if (row.note or "").strip()), "Резерв администратора")
+    for row in legacy_blocks:
+        await session.delete(row)
+    await session.commit()
+    created = await create_block_slots(date, segments, note=note)
+    return created
+
+
+async def create_block_slots(
+    date: datetime.date,
+    segments: list[tuple[int, int]],
+    note: str = "Резерв администратора",
+) -> int:
+    created = 0
+    changed = False
+    normalized_note = (note or "Резерв администратора").strip() or "Резерв администратора"
+    for seg_start, seg_end in segments:
+        minute_cursor = seg_start
+        while minute_cursor < seg_end:
+            hh = minute_cursor // 60
+            mm = minute_cursor % 60
+            exists_block = await session.execute(
+                select(RecordDate).where(
+                    RecordDate.record_date == date,
+                    RecordDate.hour == hh,
+                    RecordDate.minute == mm,
+                    RecordDate.kind == "block",
+                    RecordDate.telegram_id.is_(None),
+                )
+            )
+            block = exists_block.scalar_one_or_none()
+            if block:
+                if normalized_note and not (block.note or "").strip():
+                    block.note = normalized_note
+                    changed = True
+                minute_cursor += SLOT_STEP_MINUTES
+                continue
+
+            allow = await session.execute(
+                select(RecordDate.id).where(
+                    RecordDate.record_date == date,
+                    RecordDate.hour == hh,
+                    RecordDate.minute == mm,
+                    RecordDate.kind == "allow",
+                )
+            )
+            if allow.first():
+                minute_cursor += SLOT_STEP_MINUTES
+                continue
+
+            session.add(
+                RecordDate(
+                    telegram_id=None,
+                    record_date=date,
+                    hour=hh,
+                    minute=mm,
+                    duration_minutes=SLOT_STEP_MINUTES,
+                    kind="block",
+                    note=normalized_note,
+                    event_id=None,
+                )
+            )
+            created += 1
+            changed = True
+            minute_cursor += SLOT_STEP_MINUTES
+    if changed:
+        await session.commit()
+    return created
+
+
+async def list_blocks_for_date(date: datetime.date) -> list[dict[str, Any]]:
+    await migrate_legacy_full_day_block(date)
+    rows = await session.execute(
+        select(RecordDate).where(
+            RecordDate.record_date == date,
+            RecordDate.kind == "block",
+            RecordDate.telegram_id.is_(None),
+        ).order_by(RecordDate.hour.asc(), RecordDate.minute.asc(), RecordDate.id.asc())
+    )
+    items = []
+    for row in rows.scalars():
+        start_min = int(row.hour) * 60 + int(row.minute)
+        end_min = start_min + max(SLOT_STEP_MINUTES, int(row.duration_minutes or SLOT_STEP_MINUTES))
+        items.append(
+            {
+                "record_id": int(row.id),
+                "start_minute": start_min,
+                "end_minute": end_min,
+                "note": (row.note or "").strip() or None,
+            }
+        )
+    return items
+
+
+def merge_block_items(block_items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    merged: list[dict[str, Any]] = []
+    current: dict[str, Any] | None = None
+    for item in sorted(block_items, key=lambda x: (int(x["start_minute"]), int(x["end_minute"]))):
+        start_min = int(item["start_minute"])
+        end_min = int(item["end_minute"])
+        if current is None:
+            current = {
+                "start_minute": start_min,
+                "end_minute": end_min,
+                "note": item.get("note"),
+            }
+            continue
+        if start_min <= int(current["end_minute"]):
+            current["end_minute"] = max(int(current["end_minute"]), end_min)
+            if not current.get("note") and item.get("note"):
+                current["note"] = item["note"]
+            continue
+        merged.append(current)
+        current = {
+            "start_minute": start_min,
+            "end_minute": end_min,
+            "note": item.get("note"),
+        }
+    if current is not None:
+        merged.append(current)
+
+    result: list[dict[str, Any]] = []
+    for idx, item in enumerate(merged, start=1):
+        start_min = int(item["start_minute"])
+        end_min = int(item["end_minute"])
+        result.append(
+            {
+                "block_id": idx,
+                "start_time": _minutes_to_hhmm(start_min),
+                "end_time": _minutes_to_hhmm(end_min),
+                "start_minute": start_min,
+                "end_minute": end_min,
+                "duration": max(SLOT_STEP_MINUTES, end_min - start_min),
+                "note": item.get("note"),
+            }
+        )
+    return result
+
+
+async def list_block_ranges_for_date(date: datetime.date) -> list[dict[str, Any]]:
+    items = await list_blocks_for_date(date)
+    return merge_block_items(items)
+
+
+async def delete_blocks_in_segments(date: datetime.date, segments: list[tuple[int, int]]) -> int:
+    if not segments:
+        return 0
+    await migrate_legacy_full_day_block(date)
+    rows = await session.execute(
+        select(RecordDate).where(
+            RecordDate.record_date == date,
+            RecordDate.kind == "block",
+            RecordDate.telegram_id.is_(None),
+        )
+    )
+    to_delete = []
+    for row in rows.scalars():
+        start_min = int(row.hour) * 60 + int(row.minute)
+        end_min = start_min + max(SLOT_STEP_MINUTES, int(row.duration_minutes or SLOT_STEP_MINUTES))
+        for seg_start, seg_end in segments:
+            if start_min < seg_end and end_min > seg_start:
+                to_delete.append(row)
+                break
+    for row in to_delete:
+        await session.delete(row)
+    if to_delete:
+        await session.commit()
+    return len(to_delete)
+
+
+async def find_conflicting_lessons(
+    date: datetime.date,
+    segments: list[tuple[int, int]],
+) -> list[dict[str, Any]]:
+    if not segments:
+        return []
+
+    def _intersects(start_min: int, end_min: int) -> bool:
+        for seg_start, seg_end in segments:
+            if start_min < seg_end and end_min > seg_start:
+                return True
+        return False
+
+    records_rows = await session.execute(
+        select(
+            RecordDate.id,
+            RecordDate.telegram_id,
+            RecordDate.record_date,
+            RecordDate.hour,
+            RecordDate.minute,
+            RecordDate.duration_minutes,
+            RecordDate.kind,
+            RecordDate.booking_status,
+            StudentProfile.full_name,
+            StudentProfile.telephone,
+        )
+        .join(StudentProfile, StudentProfile.telegram_id == RecordDate.telegram_id, isouter=True)
+        .where(
+            RecordDate.record_date == date,
+            RecordDate.telegram_id.is_not(None),
+            RecordDate.kind.not_in(["block", "allow"]),
+            ((RecordDate.booking_status.is_(None)) | (RecordDate.booking_status.in_(["pending", "approved"]))),
+        )
+    )
+
+    conflicts: list[dict[str, Any]] = []
+    seen_slots: set[tuple[int | None, int, int]] = set()
+    blocked_or_allowed_rows = await session.execute(
+        select(RecordDate.hour, RecordDate.minute).where(
+            RecordDate.record_date == date,
+            RecordDate.kind.in_(["block", "allow"]),
+        )
+    )
+    suppressed_times = {(int(row.hour), int(row.minute)) for row in blocked_or_allowed_rows}
+
+    for row in records_rows:
+        start_min = int(row.hour) * 60 + int(row.minute)
+        end_min = start_min + int(row.duration_minutes or SLOT_DURATION_MINUTES)
+        if not _intersects(start_min, end_min):
+            continue
+        seen_slots.add((int(row.telegram_id), int(row.hour), int(row.minute)))
+        kind_value = (row.kind or "single").lower()
+        conflicts.append(
+            {
+                "source": "record",
+                "record_id": int(row.id),
+                "telegram_id": int(row.telegram_id),
+                "date": row.record_date.isoformat(),
+                "time": f"{int(row.hour):02d}:{int(row.minute):02d}",
+                "end_time": _minutes_to_hhmm(end_min),
+                "duration": int(row.duration_minutes or SLOT_DURATION_MINUTES),
+                "kind": "regular" if kind_value == "regular" else "single",
+                "full_name": row.full_name,
+                "phone": row.telephone,
+                "booking_status": row.booking_status or "approved",
+            }
+        )
+
+    weekday = date.weekday()
+    regular_rows = await session.execute(
+        select(
+            RegularLesson.telegram_id,
+            RegularLesson.hour,
+            RegularLesson.minute,
+            RegularLesson.duration_minutes,
+            StudentProfile.full_name,
+            StudentProfile.telephone,
+        )
+        .join(StudentProfile, StudentProfile.telegram_id == RegularLesson.telegram_id, isouter=True)
+        .where(
+            RegularLesson.day_of_week == weekday,
+            RegularLesson.telegram_id.is_not(None),
+        )
+    )
+    for row in regular_rows:
+        slot_key = (int(row.telegram_id), int(row.hour or 0), int(row.minute or 0))
+        time_key = (int(row.hour or 0), int(row.minute or 0))
+        if slot_key in seen_slots or time_key in suppressed_times:
+            continue
+        start_min = int(row.hour or 0) * 60 + int(row.minute or 0)
+        end_min = start_min + int(row.duration_minutes or SLOT_DURATION_MINUTES)
+        if not _intersects(start_min, end_min):
+            continue
+        conflicts.append(
+            {
+                "source": "regular_template",
+                "record_id": None,
+                "telegram_id": int(row.telegram_id),
+                "date": date.isoformat(),
+                "time": f"{int(row.hour or 0):02d}:{int(row.minute or 0):02d}",
+                "end_time": _minutes_to_hhmm(end_min),
+                "duration": int(row.duration_minutes or SLOT_DURATION_MINUTES),
+                "kind": "regular",
+                "full_name": row.full_name,
+                "phone": row.telephone,
+                "booking_status": "approved",
+            }
+        )
+
+    return sorted(conflicts, key=lambda item: (item["time"], item["telegram_id"]))
+
+
 async def view_clients() -> list[Any]:
     res = await session.execute(
         select(StudentProfile).where((StudentProfile.is_deleted.is_(None)) | (StudentProfile.is_deleted == 0))
@@ -1244,36 +1585,13 @@ async def soft_delete_user(telegram_id: int) -> bool:
 async def reserve_day(
         telegram_id: int, date: datetime, beginning_working_day: int, end_working_day: int, note: str = "Резерв администратора"
 ) -> int:
-    # Проверяем, не создан ли уже блок на этот день
-    exists = await session.execute(
-        select(RecordDate.id).where(
-            RecordDate.record_date == date,
-            RecordDate.kind == "block",
-            RecordDate.hour == 0,
-            RecordDate.minute == 0,
-        )
-    )
-    if exists.first():
-        return 1
-
-    try:
-        event_id = await create_full_day_block_event(date, note)
-    except CalendarBackendError:
+    _ = (telegram_id, beginning_working_day, end_working_day)
+    segments = block_segments_for_date(date, all_day=True)
+    if not segments:
         return 0
-
-    record = RecordDate(
-        telegram_id=telegram_id,
-        record_date=date,
-        hour=0,
-        minute=0,
-        duration_minutes=SLOT_DURATION_MINUTES,
-        kind="block",
-        note=note,
-        event_id=event_id,
-    )
-    session.add(record)
-    await session.commit()
-    return 1
+    await migrate_legacy_full_day_block(date)
+    created = await create_block_slots(date, segments, note=note)
+    return 1 if created >= 0 else 0
 
 
 async def mailing_for_day(date: datetime) -> list[Any]:

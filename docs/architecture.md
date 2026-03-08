@@ -9,6 +9,18 @@
 3. frontend Mini App
 4. слой хранения данных и доменная логика
 
+## Размещение
+
+Текущее production-размещение Mini App подтверждено на сервере `Germany2.play2go.cloud`.
+
+На этом сервере запущены как минимум следующие контейнеры проекта:
+
+- `bot_service_appointment_prod` — основной Telegram-бот
+- `bot_service_appointment_miniapi_prod` — backend Mini App
+- `bot_service_appointment_miniapp_front_prod` — frontend Mini App
+
+Подтверждение было получено через `docker ps` на `Germany2`.
+
 ## Модули
 
 ### Telegram-бот
@@ -22,12 +34,14 @@
 
 - Точка входа: `webapi/main.py`
 - Основная роль: backend для Telegram Mini App, booking/admin endpoints, операции с расписанием
+- В production развёрнут на сервере `Germany2.play2go.cloud`
 
 ### Frontend Mini App
 
 - Расположение: `miniapp/`
 - Стек: React + Vite
 - Основная роль: пользовательский интерфейс внутри Telegram Mini App
+- В production развёрнут на сервере `Germany2.play2go.cloud`
 
 ### Хранение данных и доменная логика
 

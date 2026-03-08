@@ -687,11 +687,19 @@ function AdminView({ token }) {
   const [schedule, setSchedule] = useState([])
   const [freeSlots, setFreeSlots] = useState([])
   const [selectedFreeTime, setSelectedFreeTime] = useState('')
+  const [dayBlocks, setDayBlocks] = useState([])
+  const [blockPreview, setBlockPreview] = useState(null)
+  const [blockForm, setBlockForm] = useState({
+    mode: 'period',
+    start_time: '18:30',
+    end_time: '19:30',
+    note: '',
+    strategy: 'block_only',
+    notify_reason_template: 'illness',
+    notify_reason_custom: '',
+  })
 
   const [lessonForm, setLessonForm] = useState({ telegram_id: '' })
-
-  const [approvals, setApprovals] = useState([])
-  const [selectedApproval, setSelectedApproval] = useState(null)
 
   const [manualPay, setManualPay] = useState({
     telegram_id: '',
@@ -822,8 +830,8 @@ function AdminView({ token }) {
     setSuccess('Клиент удален')
   }
 
-  async function loadSchedule() {
-    const data = await api(`/api/admin/schedule/day?date=${day}`, { token })
+  async function loadSchedule(targetDay = day) {
+    const data = await api(`/api/admin/schedule/day?date=${targetDay}`, { token })
     setSchedule(data.items || [])
   }
 
@@ -832,33 +840,96 @@ function AdminView({ token }) {
     setScheduleMonthDays(data.days || [])
   }
 
-  async function loadFreeSlots() {
-    const data = await api(`/api/admin/schedule/free?date=${day}&duration=${scheduleDuration}`, { token })
+  async function loadFreeSlots(targetDay = day) {
+    const data = await api(`/api/admin/schedule/free?date=${targetDay}&duration=${scheduleDuration}`, { token })
     setFreeSlots(data.slots || [])
     setSelectedFreeTime('')
   }
 
-  async function loadApprovals() {
-    const data = await api('/api/admin/approvals?status=pending&page=1&page_size=50', { token })
-    setApprovals(data.items || [])
-    if (!data.items?.length) {
-      setSelectedApproval(null)
-      return
-    }
-    if (!selectedApproval) {
-      await openApproval(data.items[0].record_id)
+  async function loadBlocks(targetDay = day) {
+    const data = await api(`/api/admin/blocks?date=${targetDay}`, { token })
+    setDayBlocks(data.blocks || [])
+  }
+
+  function buildBlockPayload() {
+    return {
+      date: day,
+      all_day: blockForm.mode === 'all_day',
+      start_time: blockForm.mode === 'period' ? blockForm.start_time : null,
+      end_time: blockForm.mode === 'period' ? blockForm.end_time : null,
+      note: blockForm.note || '',
     }
   }
 
-  async function openApproval(recordId) {
-    const data = await api(`/api/admin/approvals/${recordId}`, { token })
-    setSelectedApproval(data)
+  async function previewBlock() {
+    const data = await api('/api/admin/blocks/preview', {
+      token,
+      method: 'POST',
+      body: buildBlockPayload(),
+    })
+    setBlockPreview(data)
   }
 
-  async function decideApproval(recordId, action) {
-    await api(`/api/admin/approvals/${recordId}/${action}`, { token, method: 'POST' })
-    await loadApprovals()
-    setSelectedApproval(null)
+  async function createBlock() {
+    const data = await api('/api/admin/blocks', {
+      token,
+      method: 'POST',
+      body: {
+        ...buildBlockPayload(),
+        strategy: blockForm.strategy,
+        notify_reason_template: blockForm.strategy === 'block_and_cancel_notify' ? blockForm.notify_reason_template : null,
+        notify_reason_custom: blockForm.strategy === 'block_and_cancel_notify' ? blockForm.notify_reason_custom : null,
+      },
+    })
+    setDayBlocks(data.blocks || [])
+    setBlockPreview(null)
+    await loadScheduleMonth().catch(() => {})
+    await loadSchedule().catch(() => {})
+    await loadFreeSlots().catch(() => {})
+    setSuccess(
+      data.strategy === 'block_and_cancel_notify'
+        ? `Бронь создана, отменено занятий: ${data.canceled}, уведомлений: ${data.notified}`
+        : 'Бронь создана'
+    )
+  }
+
+  async function deleteBlockRange(item) {
+    const label = item?.start_time && item?.end_time ? `${item.start_time}-${item.end_time}` : 'весь день'
+    if (!window.confirm(`Удалить бронь ${label} на ${day}?`)) return
+    const data = await api('/api/admin/blocks', {
+      token,
+      method: 'DELETE',
+      body: {
+        date: day,
+        all_day: false,
+        start_time: item.start_time,
+        end_time: item.end_time,
+      },
+    })
+    setDayBlocks(data.blocks || [])
+    setBlockPreview(null)
+    await loadScheduleMonth().catch(() => {})
+    await loadSchedule().catch(() => {})
+    await loadFreeSlots().catch(() => {})
+    setSuccess('Бронь удалена')
+  }
+
+  async function deleteAllBlocksForDay() {
+    if (!window.confirm(`Удалить все брони на ${day}?`)) return
+    const data = await api('/api/admin/blocks', {
+      token,
+      method: 'DELETE',
+      body: {
+        date: day,
+        all_day: true,
+      },
+    })
+    setDayBlocks(data.blocks || [])
+    setBlockPreview(null)
+    await loadScheduleMonth().catch(() => {})
+    await loadSchedule().catch(() => {})
+    await loadFreeSlots().catch(() => {})
+    setSuccess('Все брони на день удалены')
   }
 
   async function deleteScheduleItem(item, scope = 'single') {
@@ -1067,7 +1138,7 @@ function AdminView({ token }) {
       await loadClientOptions().catch(() => {})
       await loadSchedule().catch(() => {})
       await loadScheduleMonth().catch(() => {})
-      await loadApprovals().catch(() => {})
+      await loadBlocks().catch(() => {})
       await loadDebtors().catch(() => {})
       await loadUnclosedLessons().catch(() => {})
       await loadSystem().catch(() => {})
@@ -1090,7 +1161,7 @@ function AdminView({ token }) {
     } else if (scheduleMode === 'free') {
       loadFreeSlots().catch(() => {})
     } else {
-      loadApprovals().catch(() => {})
+      loadBlocks().catch(() => {})
     }
   }, [activeTab, scheduleMode, day, scheduleDuration])
 
@@ -1192,7 +1263,7 @@ function AdminView({ token }) {
       <div className="mini-body">
         {activeTab === 'records' ? (
           <div className="stack">
-            <Card title="Календарь расписания" subtitle={scheduleMode === 'booked' ? 'Просмотр записанных клиентов' : scheduleMode === 'free' ? 'Свободные слоты для назначения' : 'Заявки на согласование'}>
+            <Card title="Календарь расписания" subtitle={scheduleMode === 'booked' ? 'Просмотр записанных клиентов' : scheduleMode === 'free' ? 'Свободные слоты для назначения' : 'Бронь недоступного времени'}>
               <div className="segmented">
                 <button
                   className={scheduleMode === 'booked' ? 'seg active' : 'seg'}
@@ -1207,10 +1278,10 @@ function AdminView({ token }) {
                   Свободные слоты
                 </button>
                 <button
-                  className={scheduleMode === 'requests' ? 'seg active' : 'seg'}
-                  onClick={() => { setScheduleMode('requests'); loadApprovals().catch(() => {}) }}
+                  className={scheduleMode === 'block' ? 'seg active' : 'seg'}
+                  onClick={() => { setScheduleMode('block'); loadBlocks().catch(() => {}) }}
                 >
-                  Заявки
+                  Бронь
                 </button>
               </div>
               <div className="month-switch">
@@ -1230,12 +1301,20 @@ function AdminView({ token }) {
                       onClick={async () => {
                         setDay(cell.date)
                         if (scheduleMode === 'booked') {
-                          await loadSchedule().catch(() => {})
+                          await loadSchedule(cell.date).catch(() => {})
                         } else if (scheduleMode === 'free') {
-                          await loadFreeSlots().catch(() => {})
+                          await loadFreeSlots(cell.date).catch(() => {})
+                        } else {
+                          await loadBlocks(cell.date).catch(() => {})
                         }
                       }}
-                      title={scheduleMode === 'booked' ? `Записей: ${cell.booked_count}` : `Свободно: ${cell.free_count}`}
+                      title={
+                        scheduleMode === 'booked'
+                          ? `Записей: ${cell.booked_count}`
+                          : scheduleMode === 'free'
+                            ? `Свободно: ${cell.free_count}`
+                            : `Дата: ${cell.date}`
+                      }
                     >
                       <span>{Number(cell.date.slice(8))}</span>
                     </button>
@@ -1246,41 +1325,165 @@ function AdminView({ token }) {
               </div>
             </Card>
 
-            {scheduleMode === 'requests' ? (
-              <>
-                <Card title="Заявки на занятие" subtitle="Ожидают согласования">
-                  <button className="btn secondary" onClick={() => loadApprovals().catch(e => setError(String(e.message || e)))}>Обновить заявки</button>
-                  <ul className="list list-compact">
-                    {approvals.map(a => (
-                      <li key={a.record_id}>
-                        <button className="btn secondary" onClick={() => openApproval(a.record_id).catch(e => setError(String(e.message || e)))}>
-                          {a.date} {a.time} • {a.full_name || a.telegram_id}
-                        </button>
-                      </li>
-                    ))}
-                  </ul>
-                </Card>
-                {selectedApproval ? (
-                  <Card title={`Заявка #${selectedApproval.record_id}`} subtitle={`${selectedApproval.date} ${selectedApproval.time} • ${selectedApproval.duration} мин`}>
+            {scheduleMode === 'block' ? (
+              <Card title={`Бронь на ${day}`} subtitle="Закрывайте день целиком или только нужный период">
+                <div className="stack">
+                  <div className="segmented">
+                    <button
+                      className={blockForm.mode === 'all_day' ? 'seg active' : 'seg'}
+                      onClick={() => {
+                        setBlockForm(prev => ({ ...prev, mode: 'all_day' }))
+                        setBlockPreview(null)
+                      }}
+                    >
+                      Весь день
+                    </button>
+                    <button
+                      className={blockForm.mode === 'period' ? 'seg active' : 'seg'}
+                      onClick={() => {
+                        setBlockForm(prev => ({ ...prev, mode: 'period' }))
+                        setBlockPreview(null)
+                      }}
+                    >
+                      Период
+                    </button>
+                  </div>
+
+                  {blockForm.mode === 'period' ? (
+                    <div className="custom-row">
+                      <input
+                        className="input"
+                        value={blockForm.start_time}
+                        onChange={e => {
+                          setBlockForm(prev => ({ ...prev, start_time: e.target.value }))
+                          setBlockPreview(null)
+                        }}
+                        placeholder="18:30"
+                      />
+                      <input
+                        className="input"
+                        value={blockForm.end_time}
+                        onChange={e => {
+                          setBlockForm(prev => ({ ...prev, end_time: e.target.value }))
+                          setBlockPreview(null)
+                        }}
+                        placeholder="20:00"
+                      />
+                    </div>
+                  ) : null}
+
+                  <input
+                    className="input"
+                    value={blockForm.note}
+                    onChange={e => {
+                      setBlockForm(prev => ({ ...prev, note: e.target.value }))
+                      setBlockPreview(null)
+                    }}
+                    placeholder="Причина брони для себя"
+                  />
+
+                  <div className="mini-actions-row">
+                    <button className="btn secondary" onClick={() => loadBlocks().catch(e => setError(String(e.message || e)))}>Обновить брони</button>
+                    <button className="btn" onClick={() => previewBlock().catch(e => setError(String(e.message || e)))}>Проверить бронь</button>
+                    {dayBlocks.length ? (
+                      <button className="btn secondary" onClick={() => deleteAllBlocksForDay().catch(e => setError(String(e.message || e)))}>
+                        Очистить день
+                      </button>
+                    ) : null}
+                  </div>
+
+                  <div className="stack">
+                    <strong>Текущие блоки</strong>
+                    {dayBlocks.length ? (
+                      <ul className="list list-compact">
+                        {dayBlocks.map(item => (
+                          <li key={`block-${item.block_id}`}>
+                            <div className="record-main">
+                              <strong className="record-time">{item.start_time}-{item.end_time}</strong>
+                              <span className="record-name">{item.note || 'Без комментария'}</span>
+                            </div>
+                            <div className="record-actions">
+                              <button className="btn secondary compact" onClick={() => deleteBlockRange(item).catch(e => setError(String(e.message || e)))}>
+                                Удалить
+                              </button>
+                            </div>
+                          </li>
+                        ))}
+                      </ul>
+                    ) : (
+                      <div className="empty">На выбранный день броней нет.</div>
+                    )}
+                  </div>
+
+                  {blockPreview ? (
                     <div className="stack">
-                      <div><strong>Клиент:</strong> {selectedApproval.full_name || selectedApproval.telegram_id}</div>
-                      <div><strong>Тип:</strong> {selectedApproval.kind}</div>
-                      <div><strong>До:</strong></div>
-                      <ul className="list list-compact">
-                        {(selectedApproval.neighbors_before || []).map((n, i) => <li key={`b-${i}`}><span>{n.time}</span><small>{n.full_name || n.kind}</small></li>)}
-                      </ul>
-                      <div><strong>После:</strong></div>
-                      <ul className="list list-compact">
-                        {(selectedApproval.neighbors_after || []).map((n, i) => <li key={`a-${i}`}><span>{n.time}</span><small>{n.full_name || n.kind}</small></li>)}
-                      </ul>
+                      <strong>Подтверждение брони</strong>
+                      <small>
+                        Диапазон: {blockPreview.start_time} - {blockPreview.end_time}
+                      </small>
+                      <small>Пересечений с занятиями: {blockPreview.conflicts_total || 0}</small>
+
+                      {(blockPreview.conflicts || []).length ? (
+                        <>
+                          <ul className="list list-compact">
+                            {blockPreview.conflicts.map((item, idx) => (
+                              <li key={`block-conflict-${idx}`}>
+                                <span>{item.time}-{item.end_time}</span>
+                                <small>{item.full_name || item.telegram_id} • {item.kind}</small>
+                              </li>
+                            ))}
+                          </ul>
+
+                          <div className="segmented">
+                            <button
+                              className={blockForm.strategy === 'block_only' ? 'seg active' : 'seg'}
+                              onClick={() => setBlockForm(prev => ({ ...prev, strategy: 'block_only' }))}
+                            >
+                              Только блок
+                            </button>
+                            <button
+                              className={blockForm.strategy === 'block_and_cancel_notify' ? 'seg active' : 'seg'}
+                              onClick={() => setBlockForm(prev => ({ ...prev, strategy: 'block_and_cancel_notify' }))}
+                            >
+                              Блок и отмена
+                            </button>
+                          </div>
+
+                          {blockForm.strategy === 'block_and_cancel_notify' ? (
+                            <div className="stack">
+                              <select
+                                className="input"
+                                value={blockForm.notify_reason_template}
+                                onChange={e => setBlockForm(prev => ({ ...prev, notify_reason_template: e.target.value }))}
+                              >
+                                <option value="illness">Заболел</option>
+                                <option value="business_trip">Срочная командировка</option>
+                                <option value="force_majeure">Форс-мажор</option>
+                              </select>
+                              <textarea
+                                className="input"
+                                value={blockForm.notify_reason_custom}
+                                onChange={e => setBlockForm(prev => ({ ...prev, notify_reason_custom: e.target.value }))}
+                                placeholder="Или введите свою причину вручную"
+                                rows={3}
+                              />
+                            </div>
+                          ) : null}
+                        </>
+                      ) : (
+                        <div className="empty">Пересечений с занятиями нет.</div>
+                      )}
+
                       <div className="mini-actions-row">
-                        <button className="btn" onClick={() => decideApproval(selectedApproval.record_id, 'approve').catch(e => setError(String(e.message || e)))}>Approve</button>
-                        <button className="btn secondary" onClick={() => decideApproval(selectedApproval.record_id, 'reject').catch(e => setError(String(e.message || e)))}>Reject</button>
+                        <button className="btn secondary" onClick={() => setBlockPreview(null)}>Сбросить</button>
+                        <button className="btn" onClick={() => createBlock().catch(e => setError(String(e.message || e)))}>
+                          Подтвердить бронь
+                        </button>
                       </div>
                     </div>
-                  </Card>
-                ) : null}
-              </>
+                  ) : null}
+                </div>
+              </Card>
             ) : null}
 
             {scheduleMode === 'booked' ? (

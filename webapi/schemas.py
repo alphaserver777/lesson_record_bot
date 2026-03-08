@@ -122,3 +122,24 @@ class WorkScheduleApplyIn(BaseModel):
     affected_ids: list[int]
     notify_users: bool = True
     reason: str | None = None
+
+
+class AdminBlockPreviewIn(BaseModel):
+    date: date
+    all_day: bool = False
+    start_time: str | None = Field(default=None, pattern=r"^\d{2}:\d{2}$")
+    end_time: str | None = Field(default=None, pattern=r"^\d{2}:\d{2}$")
+    note: str | None = None
+
+
+class AdminBlockCreateIn(AdminBlockPreviewIn):
+    strategy: str = Field(default="block_only", pattern=r"^(block_only|block_and_cancel_notify)$")
+    notify_reason_template: str | None = Field(default=None, pattern=r"^(illness|business_trip|force_majeure)$")
+    notify_reason_custom: str | None = None
+
+
+class AdminBlockDeleteIn(BaseModel):
+    date: date
+    all_day: bool = False
+    start_time: str | None = Field(default=None, pattern=r"^\d{2}:\d{2}$")
+    end_time: str | None = Field(default=None, pattern=r"^\d{2}:\d{2}$")

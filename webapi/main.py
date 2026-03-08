@@ -23,6 +23,9 @@ from utils.calendar_backend import get_busy_intervals, get_calendar_tz
 from utils.schedule import WEEK_SCHEDULE, is_time_in_schedule, slots_for_date
 from webapi.auth import issue_session_token, verify_init_data, verify_session_token
 from webapi.schemas import (
+    AdminBlockCreateIn,
+    AdminBlockDeleteIn,
+    AdminBlockPreviewIn,
     AdminUserPatchIn,
     AuthIn,
     BookIn,
@@ -127,6 +130,73 @@ def _lesson_amount_for_duration(base_price: int | None, duration: int) -> int:
 def _parse_time_to_minutes(hhmm: str) -> int:
     hh, mm = _parse_hhmm(hhmm)
     return hh * 60 + mm
+
+
+def _minutes_to_hhmm(total_minutes: int) -> str:
+    return f"{total_minutes // 60:02d}:{total_minutes % 60:02d}"
+
+
+def _block_reason_from_template(template: str | None, custom: str | None) -> str:
+    custom_text = (custom or "").strip()
+    if custom_text:
+        return custom_text
+    mapping = {
+        "illness": "Заболел",
+        "business_trip": "Срочная командировка",
+        "force_majeure": "Форс-мажор",
+    }
+    return mapping.get((template or "").strip(), "изменение расписания")
+
+
+def _normalize_block_payload(
+    date_value: datetime.date,
+    all_day: bool,
+    start_time: str | None,
+    end_time: str | None,
+) -> dict[str, Any]:
+    if all_day:
+        segments = transactions.block_segments_for_date(date_value, all_day=True)
+        if not segments:
+            raise HTTPException(status_code=422, detail={"code": "NO_WORKING_INTERVALS"})
+        first_start = min(seg[0] for seg in segments)
+        last_end = max(seg[1] for seg in segments)
+        return {
+            "all_day": True,
+            "segments": segments,
+            "start_minute": first_start,
+            "end_minute": last_end,
+            "start_time": _minutes_to_hhmm(first_start),
+            "end_time": _minutes_to_hhmm(last_end),
+        }
+
+    if not start_time or not end_time:
+        raise HTTPException(status_code=422, detail={"code": "TIME_RANGE_REQUIRED"})
+    start_minute = _parse_time_to_minutes(start_time)
+    end_minute = _parse_time_to_minutes(end_time)
+    if end_minute <= start_minute:
+        raise HTTPException(status_code=422, detail={"code": "INVALID_INTERVAL_RANGE"})
+    if start_minute % 5 or end_minute % 5:
+        raise HTTPException(status_code=422, detail={"code": "INVALID_TIME_STEP"})
+
+    segments = transactions.block_segments_for_date(
+        date_value,
+        all_day=False,
+        start_minute=start_minute,
+        end_minute=end_minute,
+    )
+    if not segments:
+        raise HTTPException(status_code=422, detail={"code": "OUTSIDE_WORKING_HOURS"})
+    covered = sum(max(0, seg_end - seg_start) for seg_start, seg_end in segments)
+    if covered != (end_minute - start_minute):
+        raise HTTPException(status_code=422, detail={"code": "OUTSIDE_WORKING_HOURS"})
+    return {
+        "all_day": False,
+        "segments": segments,
+        "start_minute": start_minute,
+        "end_minute": end_minute,
+        "start_time": _minutes_to_hhmm(start_minute),
+        "end_time": _minutes_to_hhmm(end_minute),
+    }
 
 
 def _safe_delta_pct(now_value: int, prev_value: int) -> float:
@@ -1176,6 +1246,128 @@ async def admin_schedule_day(date: datetime.date, _: dict[str, Any] = Depends(re
     return {
         "date": date.isoformat(),
         "items": merged_items,
+    }
+
+
+async def _admin_block_preview(payload: AdminBlockPreviewIn) -> dict[str, Any]:
+    normalized = _normalize_block_payload(payload.date, bool(payload.all_day), payload.start_time, payload.end_time)
+    current_blocks = await transactions.list_block_ranges_for_date(payload.date)
+    conflicts = await transactions.find_conflicting_lessons(payload.date, normalized["segments"])
+    return {
+        "date": payload.date.isoformat(),
+        "all_day": bool(normalized["all_day"]),
+        "start_time": normalized["start_time"],
+        "end_time": normalized["end_time"],
+        "segments": normalized["segments"],
+        "current_blocks": current_blocks,
+        "conflicts": conflicts,
+        "conflicts_total": len(conflicts),
+    }
+
+
+@app.get("/api/admin/blocks")
+async def admin_get_blocks(date: datetime.date, _: dict[str, Any] = Depends(require_admin)) -> dict[str, Any]:
+    blocks = await transactions.list_block_ranges_for_date(date)
+    return {"date": date.isoformat(), "blocks": blocks}
+
+
+@app.post("/api/admin/blocks/preview")
+async def admin_preview_blocks(
+    payload: AdminBlockPreviewIn,
+    _: dict[str, Any] = Depends(require_admin),
+) -> dict[str, Any]:
+    preview = await _admin_block_preview(payload)
+    preview.pop("segments", None)
+    return preview
+
+
+@app.post("/api/admin/blocks")
+async def admin_create_blocks(
+    payload: AdminBlockCreateIn,
+    admin: dict[str, Any] = Depends(require_admin),
+) -> dict[str, Any]:
+    preview = await _admin_block_preview(payload)
+    segments = preview.pop("segments", [])
+    reason = _block_reason_from_template(payload.notify_reason_template, payload.notify_reason_custom)
+    note = (payload.note or "").strip() or "Резерв администратора"
+    canceled = 0
+    notified = 0
+
+    if payload.strategy == "block_and_cancel_notify":
+        for item in preview["conflicts"]:
+            hh, mm = _parse_hhmm(item["time"])
+            if item["source"] == "record":
+                await transactions.delete_single_slot(int(item["telegram_id"]), payload.date, hh, mm)
+            canceled += 1
+            try:
+                await bot.send_message(
+                    chat_id=int(item["telegram_id"]),
+                    text=(
+                        "❗Занятие отменено администратором\n"
+                        f"Дата: {payload.date.isoformat()}\n"
+                        f"Время: {item['time']}\n"
+                        f"Причина: {reason}\n"
+                        "Пожалуйста, выберите новый слот в Mini App."
+                    ),
+                )
+                notified += 1
+            except Exception as exc:  # pylint: disable=broad-except
+                logger.warning("failed to notify canceled lesson for block telegram_id=%s: %s", item["telegram_id"], exc)
+
+    created = await transactions.create_block_slots(payload.date, segments, note=note)
+    blocks = await transactions.list_block_ranges_for_date(payload.date)
+    await _audit(
+        int(admin["sub"]),
+        "create",
+        "block",
+        {
+            "date": payload.date.isoformat(),
+            "all_day": payload.all_day,
+            "start_time": preview["start_time"],
+            "end_time": preview["end_time"],
+            "strategy": payload.strategy,
+            "created": created,
+            "canceled": canceled,
+            "notified": notified,
+        },
+    )
+    return {
+        "status": "ok",
+        "date": payload.date.isoformat(),
+        "created": created,
+        "canceled": canceled,
+        "notified": notified,
+        "strategy": payload.strategy,
+        "reason": reason if payload.strategy == "block_and_cancel_notify" else None,
+        "blocks": blocks,
+    }
+
+
+@app.delete("/api/admin/blocks")
+async def admin_delete_blocks(
+    payload: AdminBlockDeleteIn,
+    admin: dict[str, Any] = Depends(require_admin),
+) -> dict[str, Any]:
+    normalized = _normalize_block_payload(payload.date, bool(payload.all_day), payload.start_time, payload.end_time)
+    deleted = await transactions.delete_blocks_in_segments(payload.date, normalized["segments"])
+    blocks = await transactions.list_block_ranges_for_date(payload.date)
+    await _audit(
+        int(admin["sub"]),
+        "delete",
+        "block",
+        {
+            "date": payload.date.isoformat(),
+            "all_day": payload.all_day,
+            "start_time": normalized["start_time"],
+            "end_time": normalized["end_time"],
+            "deleted": deleted,
+        },
+    )
+    return {
+        "status": "ok",
+        "date": payload.date.isoformat(),
+        "deleted": deleted,
+        "blocks": blocks,
     }
 
 
