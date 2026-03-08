@@ -23,7 +23,9 @@ Production stack должен подниматься через:
 
 1. Убедиться, что актуальный код закоммичен.
 2. На сервере сохранить backup текущего checkout.
-3. Синхронизировать код в `/root/bot_service_appointment`.
+3. Если изменение затрагивает схему или данные БД, сохранить production БД локально в игнорируемую папку:
+   `backups/production-db/`
+4. Синхронизировать код в `/root/bot_service_appointment`.
 
 ## Deploy
 
@@ -68,7 +70,8 @@ docker logs --tail 50 bot_service_appointment_miniapp_front_prod
 
 1. Остановить текущие контейнеры.
 2. Вернуть backup checkout в `/root/bot_service_appointment`.
-3. Повторно выполнить:
+3. Если изменение затрагивало БД, восстановить нужный локальный backup production БД.
+4. Повторно выполнить:
 
 ```bash
 docker compose -f docker-compose.prod.yml up -d --build

@@ -42,6 +42,18 @@ class RegularLesson(Base):
     duration_minutes = Column(Integer, nullable=False, default=60)
 
 
+class RegularLessonException(Base):
+    __tablename__ = "regular_lesson_exceptions"
+    __table_args__ = {'extend_existing': True}
+
+    id = Column(Integer, primary_key=True)
+    regular_lesson_id = Column(Integer, ForeignKey("regular_lessons.id", ondelete="CASCADE"), nullable=False)
+    exception_date = Column(Date, nullable=False)
+    action = Column(String(20), nullable=False, default="skip")
+    note = Column(String(255), nullable=True)
+    created_at = Column(String(50), nullable=True)
+
+
 class StudentProfile(Base):
     __tablename__ = "student_profiles"
     __table_args__ = {"extend_existing": True}

@@ -6,7 +6,7 @@ from typing import Any
 from sqlalchemy import case, delete, func, select, text, update
 
 from database.connect import Base, engine, session
-from database.models import Payment, RecordDate, RegularLesson, StudentProfile
+from database.models import Payment, RecordDate, RegularLesson, RegularLessonException, StudentProfile
 from utils.calendar_backend import (
     CalendarBackendError,
     create_booking,
@@ -57,6 +57,7 @@ async def init_db() -> None:
     await _ensure_record_note_column()
     await _ensure_presence_columns()
     await _ensure_regular_lessons_columns()
+    await _ensure_regular_lesson_exceptions_table()
     await _ensure_student_profiles_columns()
     await _ensure_payments_columns()
     await _ensure_booking_status_columns()
@@ -191,11 +192,13 @@ async def pending_presence_for_date(date: datetime.date) -> list[Any]:
     )
     records = res.all()
     seen_slots = {(row[1], row[3], row[4]) for row in records}
+    skipped_ids = await skipped_regular_lesson_ids_for_date(target_date)
 
     # Добавляем регулярки на этот день, если слота нет в record_dates, и создаём запись для хранения статуса
     weekday = target_date.weekday()
     regulars = await session.execute(
         select(
+            RegularLesson.id,
             RegularLesson.telegram_id,
             RegularLesson.hour,
             RegularLesson.minute,
@@ -208,6 +211,8 @@ async def pending_presence_for_date(date: datetime.date) -> list[Any]:
     new_records: list[tuple] = []
     for lesson in regulars:
         key = (lesson.telegram_id, lesson.hour, lesson.minute)
+        if int(lesson.id) in skipped_ids:
+            continue
         if key in seen_slots:
             continue
         if (lesson.hour, lesson.minute) in blocked_times:
@@ -295,6 +300,11 @@ async def _ensure_regular_lessons_columns() -> None:
         await session.commit()
 
 
+async def _ensure_regular_lesson_exceptions_table() -> None:
+    async with engine.begin() as conn:
+        await conn.run_sync(RegularLessonException.__table__.create, checkfirst=True)
+
+
 async def _ensure_student_profiles_columns() -> None:
     columns = await session.execute(text("PRAGMA table_info('student_profiles')"))
     column_names = {row[1] for row in columns}
@@ -352,6 +362,86 @@ async def _ensure_payments_columns() -> None:
     if "source" not in column_names:
         await session.execute(text("ALTER TABLE payments ADD COLUMN source VARCHAR(50)"))
         await session.commit()
+
+
+async def legacy_allow_times_for_date(date: datetime.date) -> set[tuple[int, int]]:
+    res = await session.execute(
+        select(RecordDate.hour, RecordDate.minute).where(
+            RecordDate.record_date == date,
+            RecordDate.kind == "allow",
+        )
+    )
+    return {(int(row.hour), int(row.minute)) for row in res}
+
+
+async def skipped_regular_lesson_ids_for_date(date: datetime.date) -> set[int]:
+    res = await session.execute(
+        select(RegularLessonException.regular_lesson_id).where(
+            RegularLessonException.exception_date == date,
+            RegularLessonException.action == "skip",
+        )
+    )
+    return {int(row[0]) for row in res.all() if row[0] is not None}
+
+
+async def is_regular_lesson_skipped(lesson_id: int, date: datetime.date) -> bool:
+    res = await session.execute(
+        select(RegularLessonException.id).where(
+            RegularLessonException.regular_lesson_id == lesson_id,
+            RegularLessonException.exception_date == date,
+            RegularLessonException.action == "skip",
+        )
+    )
+    return res.first() is not None
+
+
+async def create_regular_skip_exception(
+    regular_lesson_id: int,
+    exception_date: datetime.date,
+    note: str | None = None,
+) -> RegularLessonException:
+    exists = await session.execute(
+        select(RegularLessonException).where(
+            RegularLessonException.regular_lesson_id == regular_lesson_id,
+            RegularLessonException.exception_date == exception_date,
+            RegularLessonException.action == "skip",
+        )
+    )
+    item = exists.scalars().first()
+    if item:
+        if note is not None:
+            item.note = note
+        await session.commit()
+        return item
+
+    item = RegularLessonException(
+        regular_lesson_id=regular_lesson_id,
+        exception_date=exception_date,
+        action="skip",
+        note=note,
+        created_at=datetime.datetime.now().isoformat(),
+    )
+    session.add(item)
+    await session.commit()
+    return item
+
+
+async def find_regular_lesson_for_occurrence(
+    telegram_id: int,
+    date: datetime.date,
+    hour: int,
+    minute: int,
+) -> RegularLesson | None:
+    weekday = date.weekday()
+    res = await session.execute(
+        select(RegularLesson).where(
+            RegularLesson.telegram_id == telegram_id,
+            RegularLesson.day_of_week == weekday,
+            RegularLesson.hour == hour,
+            RegularLesson.minute == minute,
+        )
+    )
+    return res.scalars().first()
 
 
 async def deleting_records_older_7_days() -> None:
@@ -544,6 +634,8 @@ async def is_slot_overlapping_local(
 ) -> bool:
     start = datetime.datetime.combine(date, datetime.time(hour, minute))
     end = start + datetime.timedelta(minutes=duration_minutes)
+    skipped_ids = await skipped_regular_lesson_ids_for_date(date)
+    allow_times = await legacy_allow_times_for_date(date)
 
     recs = await session.execute(
         select(RecordDate.id, RecordDate.hour, RecordDate.minute, RecordDate.duration_minutes).where(
@@ -562,12 +654,16 @@ async def is_slot_overlapping_local(
 
     weekday = date.weekday()
     regs = await session.execute(
-        select(RegularLesson.hour, RegularLesson.minute, RegularLesson.duration_minutes).where(
+        select(RegularLesson.id, RegularLesson.hour, RegularLesson.minute, RegularLesson.duration_minutes).where(
             RegularLesson.day_of_week == weekday,
             RegularLesson.telegram_id.is_not(None),
         )
     )
     for reg in regs:
+        if int(reg.id) in skipped_ids:
+            continue
+        if (int(reg.hour or 0), int(reg.minute or 0)) in allow_times:
+            continue
         reg_start = datetime.datetime.combine(date, datetime.time(reg.hour or 0, reg.minute or 0))
         reg_end = reg_start + datetime.timedelta(minutes=reg.duration_minutes or SLOT_DURATION_MINUTES)
         if _overlaps(start, end, reg_start, reg_end):
@@ -837,8 +933,17 @@ async def delete_regular_slot(
             RegularLesson.minute == minute,
         )
     )
+    lesson_ids: list[int] = []
     for lesson in lessons.scalars():
+        lesson_ids.append(int(lesson.id))
         await session.delete(lesson)
+
+    if lesson_ids:
+        await session.execute(
+            delete(RegularLessonException).where(
+                RegularLessonException.regular_lesson_id.in_(lesson_ids)
+            )
+        )
 
     if delete_future_single:
         today = datetime.date.today()
@@ -936,6 +1041,22 @@ async def cancel_regular_slot_with_allow(date: datetime.date, hour: int, minute:
         await ensure_allow_slot(date, hour, minute, duration, note=note)
     else:
         await ensure_allow_slot(date, hour, minute, SLOT_DURATION_MINUTES, note=note)
+
+
+async def cancel_regular_occurrence(
+    telegram_id: int,
+    date: datetime.date,
+    hour: int,
+    minute: int,
+    note: str | None = None,
+) -> bool:
+    lesson = await find_regular_lesson_for_occurrence(telegram_id, date, hour, minute)
+    if lesson is None:
+        return False
+
+    await create_regular_skip_exception(int(lesson.id), date, note=note)
+    await delete_single_slot(telegram_id, date, hour, minute)
+    return True
 
 
 async def del_record_all_day(date: datetime) -> None:
@@ -1356,8 +1477,10 @@ async def find_conflicting_lessons(
         )
 
     weekday = date.weekday()
+    skipped_ids = await skipped_regular_lesson_ids_for_date(date)
     regular_rows = await session.execute(
         select(
+            RegularLesson.id,
             RegularLesson.telegram_id,
             RegularLesson.hour,
             RegularLesson.minute,
@@ -1372,6 +1495,8 @@ async def find_conflicting_lessons(
         )
     )
     for row in regular_rows:
+        if int(row.id) in skipped_ids:
+            continue
         slot_key = (int(row.telegram_id), int(row.hour or 0), int(row.minute or 0))
         time_key = (int(row.hour or 0), int(row.minute or 0))
         if slot_key in seen_slots or time_key in suppressed_times:
@@ -1626,6 +1751,7 @@ async def viewing_recordings_day_db(date: datetime, show_blocks: bool = False) -
         )
     )
     blocked_times = {(row.hour, row.minute): row.note for row in blocks}
+    skipped_ids = await skipped_regular_lesson_ids_for_date(target_date)
 
     singles = await session.execute(
         select(
@@ -1670,6 +1796,7 @@ async def viewing_recordings_day_db(date: datetime, show_blocks: bool = False) -
     weekday = target_date.weekday()
     regulars = await session.execute(
         select(
+            RegularLesson.id,
             StudentProfile.full_name,
             StudentProfile.telephone,
             StudentProfile.telegram_username,
@@ -1685,6 +1812,8 @@ async def viewing_recordings_day_db(date: datetime, show_blocks: bool = False) -
 
     seen_reg_slots: set[tuple[int | None, int, int]] = set()
     for row in regulars:
+        if int(row.id) in skipped_ids:
+            continue
         if (row.hour, row.minute) in blocked_times:
             continue
         key = (row.telegram_id, row.hour, row.minute)
@@ -1741,17 +1870,22 @@ async def get_info_user(date: datetime, hour: int, minute: int) -> Any:
         return (picked[1], picked[2] or "single")
 
     # Если нет записи, ищем регулярку на этот день/время
+    target_date = date if isinstance(date, datetime.date) else None
     weekday = date.weekday() if isinstance(date, datetime.date) else date
+    allow_times = await legacy_allow_times_for_date(target_date) if target_date else set()
+    if target_date and (hour, minute) in allow_times:
+        return None
+    skipped_ids = await skipped_regular_lesson_ids_for_date(target_date) if target_date else set()
     reg = await session.execute(
-        select(RegularLesson.telegram_id, RegularLesson.day_of_week).where(
+        select(RegularLesson.id, RegularLesson.telegram_id, RegularLesson.day_of_week).where(
             RegularLesson.day_of_week == weekday,
             RegularLesson.hour == hour,
             RegularLesson.minute == minute,
         )
     )
-    reg_row = reg.one_or_none()
+    reg_row = next((row for row in reg.all() if int(row[0]) not in skipped_ids), None)
     if reg_row:
-        return (reg_row[0], "regular")
+        return (reg_row[1], "regular")
     return None
 
 
@@ -1781,17 +1915,21 @@ async def get_record_slot_info(
         return (kind, duration)
 
     weekday = date.weekday()
+    allow_times = await legacy_allow_times_for_date(date)
+    if (hour, minute) in allow_times:
+        return None
+    skipped_ids = await skipped_regular_lesson_ids_for_date(date)
     reg = await session.execute(
-        select(RegularLesson.duration_minutes).where(
+        select(RegularLesson.id, RegularLesson.duration_minutes).where(
             RegularLesson.telegram_id == telegram_id,
             RegularLesson.day_of_week == weekday,
             RegularLesson.hour == hour,
             RegularLesson.minute == minute,
         )
     )
-    reg_row = reg.scalar_one_or_none()
+    reg_row = next((row for row in reg.all() if int(row[0]) not in skipped_ids), None)
     if reg_row is not None:
-        return ("regular", reg_row or SLOT_DURATION_MINUTES)
+        return ("regular", reg_row[1] or SLOT_DURATION_MINUTES)
     return None
 
 
@@ -1881,8 +2019,11 @@ async def records_starting_at(date: datetime.date, hour: int, minute: int) -> li
 
     # Добавляем регулярки, если для слота нет записи
     weekday = date.weekday()
+    skipped_ids = await skipped_regular_lesson_ids_for_date(date)
+    allow_times = await legacy_allow_times_for_date(date)
     regs = await session.execute(
         select(
+            RegularLesson.id,
             RegularLesson.telegram_id,
             RegularLesson.hour,
             RegularLesson.minute,
@@ -1898,6 +2039,10 @@ async def records_starting_at(date: datetime.date, hour: int, minute: int) -> li
         )
     )
     for row in regs:
+        if int(row.id) in skipped_ids:
+            continue
+        if (int(row.hour or 0), int(row.minute or 0)) in allow_times:
+            continue
         key = (row.telegram_id, row.hour, row.minute)
         if key in seen:
             continue
@@ -1943,8 +2088,11 @@ async def lessons_for_date(date: datetime.date) -> list[Any]:
         ))
 
     weekday = date.weekday()
+    skipped_ids = await skipped_regular_lesson_ids_for_date(date)
+    allow_times = await legacy_allow_times_for_date(date)
     regular = await session.execute(
         select(
+            RegularLesson.id,
             RegularLesson.telegram_id,
             RegularLesson.hour,
             RegularLesson.minute,
@@ -1952,6 +2100,10 @@ async def lessons_for_date(date: datetime.date) -> list[Any]:
         ).where(RegularLesson.day_of_week == weekday)
     )
     for row in regular:
+        if int(row.id) in skipped_ids:
+            continue
+        if (int(row.hour or 0), int(row.minute or 0)) in allow_times:
+            continue
         key = (row.telegram_id, row.hour, row.minute)
         if key in seen_slots:
             continue
@@ -1992,6 +2144,9 @@ async def get_lesson_kind(date: datetime.date, hour: int, minute: int, telegram_
         return "single"
 
     weekday = date.weekday()
+    if (hour, minute) in await legacy_allow_times_for_date(date):
+        return None
+    skipped_ids = await skipped_regular_lesson_ids_for_date(date)
     reg = await session.execute(
         select(RegularLesson.id).where(
             RegularLesson.day_of_week == weekday,
@@ -2000,7 +2155,7 @@ async def get_lesson_kind(date: datetime.date, hour: int, minute: int, telegram_
             RegularLesson.telegram_id == telegram_id,
         )
     )
-    if reg.first():
+    if next((row for row in reg.all() if int(row[0]) not in skipped_ids), None):
         return "regular"
     return None
 

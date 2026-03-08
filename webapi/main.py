@@ -1026,7 +1026,9 @@ async def admin_del_lesson(
     # Для регулярки удаляем только конкретный день и оставляем серию.
     slot_kind = await transactions.get_lesson_kind(date, hh, mm, telegram_id)
     if slot_kind == "regular":
-        await transactions.cancel_regular_slot_with_allow(date, hh, mm, note="Отменено администратором")
+        canceled = await transactions.cancel_regular_occurrence(telegram_id, date, hh, mm, note="Отменено администратором")
+        if not canceled:
+            await transactions.cancel_regular_slot_with_allow(date, hh, mm, note="Отменено администратором")
         await _audit(
             int(admin["sub"]),
             "delete",

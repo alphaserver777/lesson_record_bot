@@ -146,9 +146,13 @@ async def edit_record_day_4(message: types.Message, state: FSMContext) -> None:
     ok = False
     try:
         if kind == "regular":
-            await transactions.cancel_regular_slot_with_allow(
-                old_date, old_hour, old_minute, note="Перенос занятия"
+            canceled = await transactions.cancel_regular_occurrence(
+                telegram_id, old_date, old_hour, old_minute, note="Перенос занятия"
             )
+            if not canceled:
+                await transactions.cancel_regular_slot_with_allow(
+                    old_date, old_hour, old_minute, note="Перенос занятия"
+                )
             ok = await transactions.add_single_slot(
                 telegram_id,
                 new_date,
