@@ -27,6 +27,11 @@ Production stack должен подниматься через:
    `backups/production-db/`
 4. Синхронизировать код в `/root/bot_service_appointment`.
 
+Последние локальные backup production БД:
+
+- `backups/production-db/germany2-database_prod-20260308-123933.db`
+- `backups/production-db/germany2-database_prod-20260308-130339.db`
+
 ## Deploy
 
 На `Germany2`:
@@ -76,3 +81,8 @@ docker logs --tail 50 bot_service_appointment_miniapp_front_prod
 ```bash
 docker compose -f docker-compose.prod.yml up -d --build
 ```
+
+## Data Fix Notes
+
+- Для regular booking из Mini App source of truth серии остаётся `regular_lessons`.
+- Если в production обнаружены approved `record_dates.kind="regular"` без шаблона в `regular_lessons`, сначала делается локальный backup БД, затем выполняется точечный backfill шаблонов, и только после этого выкатывается код.

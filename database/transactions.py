@@ -838,6 +838,17 @@ async def approve_pending_booking(record_id: int, admin_id: int) -> tuple[str, R
     except CalendarBackendError:
         return ("calendar_error", rec)
 
+    if rec.kind == "regular":
+        await ensure_regular_lesson_template(
+            telegram_id=rec.telegram_id,
+            date=rec.record_date,
+            hour=rec.hour,
+            minute=rec.minute,
+            duration_minutes=rec.duration_minutes or SLOT_DURATION_MINUTES,
+            full_name=profile.full_name if profile else None,
+            commit=False,
+        )
+
     rec.booking_status = "approved"
     rec.approval_admin_id = admin_id
     rec.approval_updated_at = datetime.datetime.now().isoformat()
@@ -870,27 +881,122 @@ async def add_regular_slot(
     duration_minutes: int = SLOT_DURATION_MINUTES,
     full_name: str | None = None,
 ) -> None:
-    profile = await session.get(StudentProfile, telegram_id) if telegram_id else None
-    lesson_title = full_name or (profile.full_name if profile else None) or "Регулярное занятие"
-    lesson = RegularLesson(
+    await ensure_regular_lesson_template(
         telegram_id=telegram_id,
-        full_name=lesson_title,
-        username=None,
-        cost=None,
-        day_of_week=day_of_week,
-        lesson_date=None,
+        weekday=day_of_week,
         hour=hour,
         minute=minute,
         duration_minutes=duration_minutes,
+        full_name=full_name,
     )
-    session.add(lesson)
-    await session.commit()
 
     # Выгружаем новые регулярки в календарь сразу, чтобы слоты были забронированы
     try:
         await push_db_events_to_calendar(days_ahead=30)
     except Exception as exc:  # pylint: disable=broad-except
         logger.warning("Не удалось синхронизировать регулярку в календарь: %s", exc)
+
+
+async def find_regular_lesson_template(
+    telegram_id: int | None,
+    weekday: int,
+    hour: int,
+    minute: int,
+    duration_minutes: int = SLOT_DURATION_MINUTES,
+) -> RegularLesson | None:
+    if telegram_id is None:
+        return None
+    result = await session.execute(
+        select(RegularLesson).where(
+            RegularLesson.telegram_id == telegram_id,
+            RegularLesson.day_of_week == weekday,
+            RegularLesson.hour == hour,
+            RegularLesson.minute == minute,
+            RegularLesson.duration_minutes == duration_minutes,
+        )
+    )
+    return result.scalars().first()
+
+
+async def ensure_regular_lesson_template(
+    telegram_id: int | None,
+    hour: int,
+    minute: int,
+    duration_minutes: int = SLOT_DURATION_MINUTES,
+    weekday: int | None = None,
+    date: datetime.date | None = None,
+    full_name: str | None = None,
+    commit: bool = True,
+) -> RegularLesson | None:
+    if telegram_id is None:
+        return None
+
+    if weekday is None:
+        if date is None:
+            raise ValueError("weekday or date is required to materialize regular lesson template")
+        weekday = date.weekday()
+
+    existing = await find_regular_lesson_template(
+        telegram_id=telegram_id,
+        weekday=weekday,
+        hour=hour,
+        minute=minute,
+        duration_minutes=duration_minutes,
+    )
+    if existing:
+        return existing
+
+    profile = await session.get(StudentProfile, telegram_id)
+    lesson_title = full_name or (profile.full_name if profile else None) or "Регулярное занятие"
+    lesson = RegularLesson(
+        telegram_id=telegram_id,
+        full_name=lesson_title,
+        username=None,
+        cost=profile.price if profile else None,
+        day_of_week=weekday,
+        lesson_date=None,
+        hour=hour,
+        minute=minute,
+        duration_minutes=duration_minutes,
+    )
+    session.add(lesson)
+    if commit:
+        await session.commit()
+    else:
+        await session.flush()
+    return lesson
+
+
+async def backfill_missing_regular_templates() -> int:
+    await _reset_transaction_snapshot()
+    rows = await session.execute(
+        select(RecordDate).where(
+            RecordDate.telegram_id.is_not(None),
+            RecordDate.kind == "regular",
+            ((RecordDate.booking_status.is_(None)) | (RecordDate.booking_status == "approved")),
+        ).order_by(RecordDate.record_date, RecordDate.hour, RecordDate.minute)
+    )
+    created = 0
+    for rec in rows.scalars().all():
+        existing = await find_regular_lesson_template(
+            telegram_id=rec.telegram_id,
+            weekday=rec.record_date.weekday(),
+            hour=rec.hour,
+            minute=rec.minute,
+            duration_minutes=rec.duration_minutes or SLOT_DURATION_MINUTES,
+        )
+        if existing:
+            continue
+        lesson = await ensure_regular_lesson_template(
+            telegram_id=rec.telegram_id,
+            date=rec.record_date,
+            hour=rec.hour,
+            minute=rec.minute,
+            duration_minutes=rec.duration_minutes or SLOT_DURATION_MINUTES,
+        )
+        if lesson:
+            created += 1
+    return created
 
 
 async def delete_single_slot(
