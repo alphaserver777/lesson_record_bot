@@ -2377,6 +2377,17 @@ async def lessons_for_date(date: datetime.date) -> list[Any]:
     weekday = date.weekday()
     skipped_ids = await skipped_regular_lesson_ids_for_date(date)
     allow_times = await legacy_allow_times_for_date(date)
+    block_rows = await session.execute(
+        select(RecordDate.hour, RecordDate.minute).where(
+            RecordDate.record_date == date,
+            RecordDate.telegram_id.is_(None),
+            (
+                (RecordDate.kind.in_(["block", "allow"]))
+                | ((RecordDate.kind.is_(None)) & (RecordDate.event_id.is_(None)))
+            ),
+        )
+    )
+    blocked_times = {(int(row.hour or 0), int(row.minute or 0)) for row in block_rows}
     regular = await session.execute(
         select(
             RegularLesson.id,
@@ -2388,6 +2399,8 @@ async def lessons_for_date(date: datetime.date) -> list[Any]:
     )
     for row in regular:
         if int(row.id) in skipped_ids:
+            continue
+        if (int(row.hour or 0), int(row.minute or 0)) in blocked_times:
             continue
         if (int(row.hour or 0), int(row.minute or 0)) in allow_times:
             continue
