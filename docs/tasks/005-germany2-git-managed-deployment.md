@@ -16,7 +16,7 @@
 
 ## Status
 
-Proposed
+Done
 
 ## Контекст
 
@@ -133,3 +133,15 @@ Rollback должен делаться через:
 
 - Это переход к version discipline в production, но ещё не полноценный CI/CD.
 - Следующим шагом после этой задачи может стать deploy script или GitHub Actions pipeline.
+- Production checkout на `Germany2` переведён на git-managed flow.
+- Активный checkout:
+  - path: `/root/bot_service_appointment`
+  - branch: `dev`
+  - commit: `f7fa038273592f7c0760b1be6f6371e3c04ce75e`
+- Backup предыдущего checkout:
+  - `/root/backups/lesson_record_bot_checkout_prev_20260308-102605`
+- Backup кода checkout без production data directories:
+  - `/root/backups/lesson_record_bot_checkout_code_20260308-102605.tar.gz`
+- Допустимые server-local untracked файлы после миграции:
+  - `.env.prod.docker`
+  - `.env.prod.bak.*`

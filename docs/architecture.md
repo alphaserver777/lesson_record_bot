@@ -24,6 +24,7 @@
 Production checkout расположен в:
 
 - `/root/bot_service_appointment`
+- это git-managed checkout, который должен соответствовать конкретному commit из `origin/dev`
 
 Production stack должен подниматься через:
 
