@@ -366,6 +366,26 @@ async def _ensure_student_profiles_columns() -> None:
     if changed:
         await session.commit()
 
+    await _normalize_student_profile_full_names()
+
+
+async def _normalize_student_profile_full_names() -> None:
+    """Делает full_name производным полем от first_name/last_name для legacy-профилей."""
+    rows = await session.execute(
+        select(StudentProfile).where(
+            ((StudentProfile.first_name.is_not(None)) & (StudentProfile.first_name != ""))
+            | ((StudentProfile.last_name.is_not(None)) & (StudentProfile.last_name != ""))
+        )
+    )
+    changed = False
+    for (profile,) in rows.all():
+        canonical = _compose_full_name(profile.first_name, profile.last_name)
+        if canonical and (profile.full_name or "").strip() != canonical:
+            profile.full_name = canonical
+            changed = True
+    if changed:
+        await session.commit()
+
 
 async def _ensure_payments_columns() -> None:
     async with engine.begin() as conn:

@@ -111,3 +111,4 @@ docker compose -f docker-compose.prod.yml up -d --build
 
 - Для regular booking из Mini App source of truth серии остаётся `regular_lessons`.
 - Если в production обнаружены approved `record_dates.kind="regular"` без шаблона в `regular_lessons`, сначала делается локальный backup БД, затем выполняется точечный backfill шаблонов, и только после этого выкатывается код.
+- Если rollout меняет производные поля профилей (`student_profiles.full_name`), сначала делается локальный backup production БД, затем выкатывается commit, который выполняет мягкий backfill при startup.
