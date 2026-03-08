@@ -500,6 +500,10 @@ body {
   margin-top: 12px;
 }
 
+.mini-actions-row-wrap {
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+}
+
 .bottom-nav {
   position: fixed;
   left: 50%;

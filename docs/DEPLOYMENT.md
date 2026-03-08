@@ -91,6 +91,7 @@ docker logs --tail 50 bot_service_appointment_miniapp_front_prod
 
 - `miniapi` должен стартовать через `main_webapi.py`
 - Mini App frontend использует `VITE_API_BASE=https://axtar-b2b.ru/miniapi`
+- production calendar timezone для `app` и `miniapi` должна быть явно зафиксирована как `CALENDAR_TIMEZONE=Europe/Moscow`
 - bot и miniapi используют production volumes:
   - `./database_prod:/app/data/`
   - `./logs_prod:/app/logs/`

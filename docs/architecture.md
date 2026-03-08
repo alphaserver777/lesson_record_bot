@@ -29,6 +29,7 @@ Production checkout расположен в:
 Production stack должен подниматься через:
 
 - `docker-compose.prod.yml`
+- production timezone для calendar/schedule/finance flows должна быть зафиксирована как `Europe/Moscow`
 
 Ручной запуск production-контейнеров через отдельные `docker run` больше не является основным способом деплоя.
 
@@ -46,6 +47,7 @@ Production stack должен подниматься через:
 - Точка входа: `webapi/main.py`
 - Основная роль: backend для Telegram Mini App, booking/admin endpoints, операции с расписанием
 - В production развёрнут на сервере `Germany2.play2go.cloud`
+- Для production time-based flow используется `CALENDAR_TIMEZONE=Europe/Moscow`
 
 ### Frontend Mini App
 

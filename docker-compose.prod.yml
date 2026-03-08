@@ -7,6 +7,7 @@ services:
     environment:
       - DB_PATH=/app/data/database.db
       - TZ=Europe/Moscow
+      - CALENDAR_TIMEZONE=Europe/Moscow
     volumes:
       - ./database_prod:/app/data/
       - ./logs_prod:/app/logs/
@@ -27,6 +28,7 @@ services:
       - DB_PATH=/app/data/database.db
       - WEBAPI_PORT=8000
       - TZ=Europe/Moscow
+      - CALENDAR_TIMEZONE=Europe/Moscow
     volumes:
       - ./database_prod:/app/data/
       - ./logs_prod:/app/logs/

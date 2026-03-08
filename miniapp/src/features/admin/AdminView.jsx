@@ -1257,7 +1257,7 @@ export function AdminView({ token }) {
                     </select>
                     <button className="btn secondary" onClick={() => loadUnclosedLessons().catch(e => setError(String(e.message || e)))}>Обновить</button>
                   </div>
-                  <div className="mini-actions-row">
+                  <div className="mini-actions-row mini-actions-row-wrap">
                     <button
                       className="btn secondary"
                       onClick={() => setSelectedUnclosedKeys((unclosedLessons || []).map((item, idx) => unclosedKey(item, idx)))}
@@ -1270,6 +1270,9 @@ export function AdminView({ token }) {
                     </button>
                     <button className="btn secondary" disabled={!selectedUnclosedKeys.length} onClick={() => closeSelectedUnclosed('unpaid').catch(e => setError(String(e.message || e)))}>
                       Массово: В долг
+                    </button>
+                    <button className="btn secondary" disabled={!selectedUnclosedKeys.length} onClick={() => closeSelectedUnclosed('canceled').catch(e => setError(String(e.message || e)))}>
+                      Массово: Отмена
                     </button>
                   </div>
                   <ul className="list list-compact">
