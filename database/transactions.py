@@ -2875,6 +2875,82 @@ async def payments_timeseries_for_range(
     return items
 
 
+async def client_revenue_share_for_range(
+    start_date: datetime.date,
+    end_date: datetime.date,
+    limit: int = 6,
+) -> dict[str, Any]:
+    res = await session.execute(
+        select(
+            Payment.telegram_id,
+            func.coalesce(StudentProfile.full_name, Payment.full_name),
+            func.sum(
+                case(
+                    (Payment.status == "paid", func.coalesce(Payment.amount, 0)),
+                    else_=0,
+                )
+            ),
+            func.count(Payment.id),
+        )
+        .join(StudentProfile, StudentProfile.telegram_id == Payment.telegram_id, isouter=True)
+        .where(
+            Payment.lesson_date >= start_date,
+            Payment.lesson_date <= end_date,
+            Payment.status != "canceled",
+            Payment.telegram_id.is_not(None),
+            ((StudentProfile.is_deleted.is_(None)) | (StudentProfile.is_deleted == 0) | (StudentProfile.telegram_id.is_(None))),
+        )
+        .group_by(Payment.telegram_id, func.coalesce(StudentProfile.full_name, Payment.full_name))
+        .order_by(
+            func.sum(
+                case(
+                    (Payment.status == "paid", func.coalesce(Payment.amount, 0)),
+                    else_=0,
+                )
+            ).desc(),
+            func.count(Payment.id).desc(),
+        )
+    )
+
+    rows = res.all()
+    total_paid = sum(int(row[2] or 0) for row in rows)
+    if total_paid <= 0:
+        return {"total_paid": 0, "items": []}
+
+    top_rows = rows[:max(1, limit)]
+    items: list[dict[str, Any]] = []
+    for row in top_rows:
+        paid_amount = int(row[2] or 0)
+        if paid_amount <= 0:
+            continue
+        items.append(
+            {
+                "telegram_id": int(row[0]) if row[0] is not None else None,
+                "full_name": row[1] or (str(row[0]) if row[0] is not None else "—"),
+                "paid_amount": paid_amount,
+                "lessons_count": int(row[3] or 0),
+                "share_pct": round((paid_amount / total_paid) * 100.0, 2),
+            }
+        )
+
+    others_amount = max(0, total_paid - sum(int(item["paid_amount"]) for item in items))
+    if others_amount > 0:
+        items.append(
+            {
+                "telegram_id": None,
+                "full_name": "Остальные",
+                "paid_amount": others_amount,
+                "lessons_count": sum(int(row[3] or 0) for row in rows[len(top_rows):]),
+                "share_pct": round((others_amount / total_paid) * 100.0, 2),
+            }
+        )
+
+    return {
+        "total_paid": total_paid,
+        "items": items,
+    }
+
+
 async def last_lessons_for_clients(client_ids: list[int]) -> dict[int, dict[str, Any]]:
     """
     Последнее проведенное занятие (по payments, без canceled) для списка клиентов.

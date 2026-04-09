@@ -217,6 +217,24 @@ def _safe_delta_pct(now_value: int, prev_value: int) -> float:
     return round(((now_value - prev_value) / prev_value) * 100.0, 2)
 
 
+def _trend_name(delta: int) -> str:
+    if delta > 0:
+        return "progress"
+    if delta < 0:
+        return "regress"
+    return "stagnation"
+
+
+def _combined_signal(revenue_delta: int, lessons_delta: int) -> str:
+    if revenue_delta == 0 and lessons_delta == 0:
+        return "stagnation"
+    if revenue_delta >= 0 and lessons_delta >= 0 and (revenue_delta > 0 or lessons_delta > 0):
+        return "progress"
+    if revenue_delta <= 0 and lessons_delta <= 0 and (revenue_delta < 0 or lessons_delta < 0):
+        return "regress"
+    return "mixed"
+
+
 def _period_bounds(anchor_date: datetime.date, mode: str) -> tuple[datetime.date, datetime.date, datetime.date, datetime.date]:
     if mode == "week":
         current_from = anchor_date - datetime.timedelta(days=anchor_date.weekday())
@@ -1988,13 +2006,65 @@ async def analytics_timeseries(
     mode: str = Query(default="week", pattern=r"^(week|month)$"),
     _: dict[str, Any] = Depends(require_admin),
 ) -> dict[str, Any]:
+    current_from, current_to, prev_from, prev_to = _period_bounds(anchor_date, mode)
+    current_points = await transactions.payments_timeseries_for_range(current_from, current_to)
+    previous_points = await transactions.payments_timeseries_for_range(prev_from, prev_to)
+
+    points: list[dict[str, Any]] = []
+    signal_counts = {
+        "progress": 0,
+        "regress": 0,
+        "stagnation": 0,
+        "mixed": 0,
+    }
+    for idx, point in enumerate(current_points):
+        prev_point = previous_points[idx] if idx < len(previous_points) else None
+        previous_paid = int(prev_point.get("paid_amount", 0)) if prev_point else 0
+        previous_lessons = int(prev_point.get("lessons_done", 0)) if prev_point else 0
+        revenue_delta = int(point.get("paid_amount", 0)) - previous_paid
+        lessons_delta = int(point.get("lessons_done", 0)) - previous_lessons
+        signal = _combined_signal(revenue_delta, lessons_delta)
+        signal_counts[signal] += 1
+        points.append(
+            {
+                **point,
+                "previous_date": prev_point.get("date") if prev_point else None,
+                "previous_paid_amount": previous_paid,
+                "previous_lessons_done": previous_lessons,
+                "revenue_delta_abs": revenue_delta,
+                "lessons_delta_abs": lessons_delta,
+                "revenue_trend": _trend_name(revenue_delta),
+                "lessons_trend": _trend_name(lessons_delta),
+                "signal": signal,
+            }
+        )
+
+    return {
+        "period": {
+            "mode": mode,
+            "current_from": current_from.isoformat(),
+            "current_to": current_to.isoformat(),
+            "previous_from": prev_from.isoformat(),
+            "previous_to": prev_to.isoformat(),
+        },
+        "points": points,
+        "summary": signal_counts,
+    }
+
+
+@app.get("/api/admin/analytics/revenue-share")
+async def analytics_revenue_share(
+    anchor_date: datetime.date,
+    mode: str = Query(default="week", pattern=r"^(week|month)$"),
+    _: dict[str, Any] = Depends(require_admin),
+) -> dict[str, Any]:
     current_from, current_to, _, _ = _period_bounds(anchor_date, mode)
-    points = await transactions.payments_timeseries_for_range(current_from, current_to)
+    share = await transactions.client_revenue_share_for_range(current_from, current_to)
     return {
         "period": {
             "mode": mode,
             "current_from": current_from.isoformat(),
             "current_to": current_to.isoformat(),
         },
-        "points": points,
+        **share,
     }

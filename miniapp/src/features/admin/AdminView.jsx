@@ -6,6 +6,51 @@ import { Card } from '../../shared/ui/Card'
 import { Pill } from '../../shared/ui/Pill'
 import { ToastViewport } from '../../shared/ui/ToastViewport'
 
+const ANALYTICS_SHARE_COLORS = ['#67e8a5', '#7aa8ff', '#f6b95a', '#ff8ba7', '#91f1ff', '#c29bff', '#868b98']
+
+function formatMoneyShort(value) {
+  return `${Number(value || 0).toLocaleString('ru-RU')} ₽`
+}
+
+function analyticsDayLabel(isoDate, mode) {
+  try {
+    const dt = new Date(`${isoDate}T00:00:00`)
+    if (mode === 'week') {
+      return dt.toLocaleDateString('ru-RU', { weekday: 'short' }).replace('.', '')
+    }
+    return String(dt.getDate())
+  } catch {
+    return String(isoDate || '')
+  }
+}
+
+function signalLabel(signal) {
+  if (signal === 'progress') return 'Прогресс'
+  if (signal === 'regress') return 'Регресс'
+  if (signal === 'stagnation') return 'Стагнация'
+  return 'Смешано'
+}
+
+function signalClass(signal) {
+  return signal === 'progress' ? 'good' : signal === 'regress' ? 'bad' : signal === 'stagnation' ? 'neutral' : 'mixed'
+}
+
+function buildRevenueDonut(items) {
+  if (!items?.length) return 'conic-gradient(#2a2b31 0deg 360deg)'
+  let cursor = 0
+  const segments = items.map((item, idx) => {
+    const degrees = Math.max(3, (Number(item.share_pct || 0) / 100) * 360)
+    const start = cursor
+    const end = Math.min(360, cursor + degrees)
+    cursor = end
+    return `${ANALYTICS_SHARE_COLORS[idx % ANALYTICS_SHARE_COLORS.length]} ${start}deg ${end}deg`
+  })
+  if (cursor < 360) {
+    segments.push(`#2a2b31 ${cursor}deg 360deg`)
+  }
+  return `conic-gradient(${segments.join(', ')})`
+}
+
 export function AdminView({ token }) {
   const [activeTab, setActiveTab] = useState('records')
   const [manageSection, setManageSection] = useState('clients')
@@ -16,6 +61,8 @@ export function AdminView({ token }) {
   const [analyticsOverview, setAnalyticsOverview] = useState(null)
   const [analyticsDelta, setAnalyticsDelta] = useState({ new_active: [], became_inactive: [] })
   const [analyticsSeries, setAnalyticsSeries] = useState([])
+  const [analyticsSeriesSummary, setAnalyticsSeriesSummary] = useState(null)
+  const [analyticsRevenueShare, setAnalyticsRevenueShare] = useState({ total_paid: 0, items: [] })
   const [analyticsLoading, setAnalyticsLoading] = useState(false)
   const [query, setQuery] = useState('')
   const [usersPage, setUsersPage] = useState(1)
@@ -118,10 +165,11 @@ export function AdminView({ token }) {
   async function loadAnalyticsV2(mode = analyticsMode, anchorDate = analyticsAnchorDate) {
     setAnalyticsLoading(true)
     try {
-      const [overview, delta, series] = await Promise.all([
+      const [overview, delta, series, revenueShare] = await Promise.all([
         api(`/api/admin/analytics/overview?anchor_date=${anchorDate}&mode=${mode}`, { token }),
         api(`/api/admin/analytics/clients-delta?anchor_date=${anchorDate}&mode=${mode}`, { token }),
         api(`/api/admin/analytics/timeseries?anchor_date=${anchorDate}&mode=${mode}`, { token }),
+        api(`/api/admin/analytics/revenue-share?anchor_date=${anchorDate}&mode=${mode}`, { token }),
       ])
       setAnalyticsOverview(overview || null)
       setAnalyticsDelta({
@@ -129,6 +177,11 @@ export function AdminView({ token }) {
         became_inactive: Array.isArray(delta?.became_inactive) ? delta.became_inactive : [],
       })
       setAnalyticsSeries(Array.isArray(series?.points) ? series.points : [])
+      setAnalyticsSeriesSummary(series?.summary || null)
+      setAnalyticsRevenueShare({
+        total_paid: Number(revenueShare?.total_paid || 0),
+        items: Array.isArray(revenueShare?.items) ? revenueShare.items : [],
+      })
     } finally {
       setAnalyticsLoading(false)
     }
@@ -670,6 +723,9 @@ export function AdminView({ token }) {
   const adminCalendarCells = [...Array(adminLeadingEmpty).fill(null), ...(scheduleMonthDays || [])]
   const weekDays = ['Пн', 'Вт', 'Ср', 'Чт', 'Пт', 'Сб', 'Вс']
   const analyticsPeriodClosed = Boolean(analyticsOverview?.period?.closed)
+  const analyticsRevenueDonut = buildRevenueDonut(analyticsRevenueShare?.items || [])
+  const analyticsRevenueMax = Math.max(1, ...(analyticsSeries || []).map(point => Math.max(Number(point.paid_amount || 0), Number(point.previous_paid_amount || 0))))
+  const analyticsLessonsMax = Math.max(1, ...(analyticsSeries || []).map(point => Math.max(Number(point.lessons_done || 0), Number(point.previous_lessons_done || 0))))
   const adminCalendarRefreshing = scheduleMonthLoading && scheduleMonthDays.length > 0
   const adminCalendarBusy = scheduleMonthLoading && scheduleMonthDays.length === 0
   const adminScheduleTitle = day
@@ -1516,58 +1572,120 @@ export function AdminView({ token }) {
               subtitle={analyticsOverview?.period ? `${analyticsOverview.period.current_from} → ${analyticsOverview.period.current_to}` : 'Неделя/месяц'}
             >
               {analyticsOverview ? (
-                <ul className="list list-compact">
-                  <li>
+                <div className="analytics-kpi-grid">
+                  <div className="analytics-kpi-card">
                     <span>Доход</span>
-                    <strong>{analyticsOverview.finance?.delta_abs >= 0 ? '+' : ''}{analyticsOverview.finance?.delta_abs ?? 0} ₽ ({analyticsOverview.finance?.delta_pct ?? 0}%)</strong>
-                  </li>
-                  <li>
+                    <strong>{analyticsOverview.finance?.delta_abs >= 0 ? '+' : ''}{formatMoneyShort(analyticsOverview.finance?.delta_abs ?? 0)}</strong>
+                    <small>{analyticsOverview.finance?.delta_pct ?? 0}% к прошлому периоду</small>
+                  </div>
+                  <div className="analytics-kpi-card">
                     <span>Активные ученики</span>
                     <strong>
-                      {analyticsPeriodClosed ? (
-                        <>
-                          {(analyticsOverview.clients?.active_now ?? 0) - (analyticsOverview.clients?.active_prev ?? 0) >= 0 ? '+' : ''}
-                          {(analyticsOverview.clients?.active_now ?? 0) - (analyticsOverview.clients?.active_prev ?? 0)}
-                        </>
-                      ) : '—'}
+                      {analyticsPeriodClosed
+                        ? `${(analyticsOverview.clients?.active_now ?? 0) - (analyticsOverview.clients?.active_prev ?? 0) >= 0 ? '+' : ''}${(analyticsOverview.clients?.active_now ?? 0) - (analyticsOverview.clients?.active_prev ?? 0)}`
+                        : '—'}
                     </strong>
-                  </li>
-                  <li>
+                    <small>{analyticsPeriodClosed ? 'закрытый период' : 'период еще не закрыт'}</small>
+                  </div>
+                  <div className="analytics-kpi-card">
                     <span>Проведенные занятия</span>
                     <strong>{(analyticsOverview.ops?.lessons_now ?? 0) - (analyticsOverview.ops?.lessons_prev ?? 0) >= 0 ? '+' : ''}{(analyticsOverview.ops?.lessons_now ?? 0) - (analyticsOverview.ops?.lessons_prev ?? 0)}</strong>
-                  </li>
-                  <li>
+                    <small>сравнение с предыдущим окном</small>
+                  </div>
+                  <div className="analytics-kpi-card">
                     <span>Доля долгов</span>
                     <strong>{analyticsOverview.ops?.debt_ratio_now ?? 0}%</strong>
-                  </li>
-                </ul>
+                    <small>было {analyticsOverview.ops?.debt_ratio_prev ?? 0}%</small>
+                  </div>
+                </div>
               ) : (
                 <div className="placeholder-box">Выберите период и нажмите «Обновить».</div>
               )}
             </Card>
 
-            <Card title="Доход и занятия по дням" subtitle={analyticsMode === 'week' ? 'Текущая неделя' : 'Текущий месяц'}>
-              {(analyticsSeries || []).length ? (
-                <div className="bar-chart">
-                  {(analyticsSeries || []).map(point => {
-                    const maxRevenue = Math.max(1, ...analyticsSeries.map(d => d.paid_amount || 0))
-                    const maxLessons = Math.max(1, ...analyticsSeries.map(d => d.lessons_done || 0))
-                    const hRevenue = Math.max(4, Math.round(((point.paid_amount || 0) / maxRevenue) * 48))
-                    const hLessons = Math.max(4, Math.round(((point.lessons_done || 0) / maxLessons) * 48))
-                    return (
-                      <div
-                        className="bar-col"
-                        key={`analytics-${point.date}`}
-                        title={`${point.date}: ${point.paid_amount} ₽ / ${point.lessons_done} занятий / ${point.active_clients} учеников`}
-                      >
-                        <div className="bar-wrap">
-                          <span className="bar bar-revenue" style={{ height: `${hRevenue}px` }} />
-                          <span className="bar bar-lessons" style={{ height: `${hLessons}px` }} />
-                        </div>
-                        <small>{Number(String(point.date).slice(8))}</small>
+            <Card title="Кто приносит кэш" subtitle="Доля оплаченной выручки по ученикам">
+              {analyticsRevenueShare?.items?.length ? (
+                <div className="analytics-share-layout">
+                  <div className="analytics-donut-wrap">
+                    <div className="analytics-donut" style={{ background: analyticsRevenueDonut }}>
+                      <div className="analytics-donut-hole">
+                        <small>Всего</small>
+                        <strong>{formatMoneyShort(analyticsRevenueShare.total_paid || 0)}</strong>
                       </div>
-                    )
-                  })}
+                    </div>
+                  </div>
+                  <div className="analytics-share-legend">
+                    {(analyticsRevenueShare.items || []).map((item, idx) => (
+                      <div className="analytics-share-item" key={`share-${item.telegram_id ?? 'other'}-${idx}`}>
+                        <span className="analytics-share-color" style={{ background: ANALYTICS_SHARE_COLORS[idx % ANALYTICS_SHARE_COLORS.length] }} />
+                        <div className="analytics-share-meta">
+                          <strong>{item.full_name || item.telegram_id}</strong>
+                          <small>{formatMoneyShort(item.paid_amount || 0)} • {item.share_pct || 0}% • {item.lessons_count || 0} зан.</small>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              ) : (
+                <div className="placeholder-box">За выбранный период оплаченной выручки пока нет.</div>
+              )}
+            </Card>
+
+            <Card title="Доход и занятия по дням" subtitle={analyticsMode === 'week' ? 'Сравнение с прошлой неделей' : 'Сравнение с прошлым месяцем'}>
+              {(analyticsSeries || []).length ? (
+                <div className="analytics-compare-stack">
+                  <div className="analytics-compare-summary">
+                    <span className="badge good">Прогресс: {analyticsSeriesSummary?.progress ?? 0}</span>
+                    <span className="badge neutral">Стагнация: {analyticsSeriesSummary?.stagnation ?? 0}</span>
+                    <span className="badge mixed">Смешано: {analyticsSeriesSummary?.mixed ?? 0}</span>
+                    <span className="badge bad">Регресс: {analyticsSeriesSummary?.regress ?? 0}</span>
+                  </div>
+                  <div className="analytics-compare-list">
+                    {(analyticsSeries || []).map(point => {
+                      const revenueCurrent = Number(point.paid_amount || 0)
+                      const revenuePrev = Number(point.previous_paid_amount || 0)
+                      const lessonsCurrent = Number(point.lessons_done || 0)
+                      const lessonsPrev = Number(point.previous_lessons_done || 0)
+                      const revenueCurrentWidth = Math.max(revenueCurrent > 0 ? 8 : 0, Math.round((revenueCurrent / analyticsRevenueMax) * 100))
+                      const revenuePrevWidth = Math.max(revenuePrev > 0 ? 8 : 0, Math.round((revenuePrev / analyticsRevenueMax) * 100))
+                      const lessonsCurrentWidth = Math.max(lessonsCurrent > 0 ? 8 : 0, Math.round((lessonsCurrent / analyticsLessonsMax) * 100))
+                      const lessonsPrevWidth = Math.max(lessonsPrev > 0 ? 8 : 0, Math.round((lessonsPrev / analyticsLessonsMax) * 100))
+                      return (
+                        <div
+                          className={`analytics-compare-item ${signalClass(point.signal)}`}
+                          key={`analytics-compare-${point.date}`}
+                          title={`${point.date}: ${revenueCurrent} ₽ / ${lessonsCurrent} занятий; было ${revenuePrev} ₽ / ${lessonsPrev} занятий`}
+                        >
+                          <div className="analytics-compare-head">
+                            <strong>{analyticsDayLabel(point.date, analyticsMode)}</strong>
+                            <span className={`badge ${signalClass(point.signal)}`}>{signalLabel(point.signal)}</span>
+                          </div>
+                          <div className="analytics-compare-metric">
+                            <div className="analytics-compare-text">
+                              <span>Доход</span>
+                              <strong>{formatMoneyShort(revenueCurrent)}</strong>
+                              <small>Было {formatMoneyShort(revenuePrev)} • {point.revenue_delta_abs >= 0 ? '+' : ''}{formatMoneyShort(point.revenue_delta_abs)}</small>
+                            </div>
+                            <div className="analytics-track-group">
+                              <div className="analytics-track prev"><span style={{ width: `${revenuePrevWidth}%` }} /></div>
+                              <div className="analytics-track current revenue"><span style={{ width: `${revenueCurrentWidth}%` }} /></div>
+                            </div>
+                          </div>
+                          <div className="analytics-compare-metric">
+                            <div className="analytics-compare-text">
+                              <span>Занятия</span>
+                              <strong>{lessonsCurrent}</strong>
+                              <small>Было {lessonsPrev} • {point.lessons_delta_abs >= 0 ? '+' : ''}{point.lessons_delta_abs}</small>
+                            </div>
+                            <div className="analytics-track-group">
+                              <div className="analytics-track prev lessons"><span style={{ width: `${lessonsPrevWidth}%` }} /></div>
+                              <div className="analytics-track current lessons"><span style={{ width: `${lessonsCurrentWidth}%` }} /></div>
+                            </div>
+                          </div>
+                        </div>
+                      )
+                    })}
+                  </div>
                 </div>
               ) : (
                 <div className="placeholder-box">По выбранному периоду данных пока нет.</div>
