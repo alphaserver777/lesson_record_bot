@@ -773,6 +773,7 @@ export function AdminView({ token }) {
                   {adminCalendarCells.map((cell, idx) => (
                     cell ? (() => {
                       const cellDisabled = scheduleMode === 'free' && (cell.past || !cell.has_free)
+                      const cellMuted = cell.past || (scheduleMode === 'free' && !cell.has_free)
                       const cellTitle = scheduleMode === 'booked'
                         ? `Записей: ${cell.booked_count}`
                         : scheduleMode === 'free'
@@ -783,7 +784,7 @@ export function AdminView({ token }) {
                         <button
                           key={cell.date}
                           disabled={cellDisabled}
-                          className={`calendar-day ${day === cell.date ? 'selected' : ''} ${cellDisabled ? 'off' : 'on'}`}
+                          className={`calendar-day ${day === cell.date ? 'selected' : ''} ${cellDisabled ? 'off' : cellMuted ? 'muted' : 'on'}`}
                           onClick={async () => {
                             setDay(cell.date)
                             if (scheduleMode === 'booked') {

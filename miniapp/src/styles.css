@@ -448,6 +448,14 @@ body {
   cursor: pointer;
 }
 
+.calendar-day.muted {
+  border-color: rgba(70, 70, 76, 0.5);
+  background: #17181c;
+  color: #7a7a83;
+  opacity: 0.7;
+  filter: grayscale(0.18);
+}
+
 .calendar-day.off {
   border-color: rgba(70, 70, 76, 0.5);
   background: #17181c;
