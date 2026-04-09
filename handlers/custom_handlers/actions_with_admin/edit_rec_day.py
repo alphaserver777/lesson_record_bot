@@ -166,6 +166,20 @@ async def edit_record_day_4(message: types.Message, state: FSMContext) -> None:
                 new_minute,
                 duration_minutes=duration,
             )
+            if ok:
+                await transactions.log_analytics_event(
+                    "rescheduled_to",
+                    telegram_id=telegram_id,
+                    record_date=new_date,
+                    hour=new_hour,
+                    minute=new_minute,
+                    duration_minutes=duration,
+                    lesson_kind="single",
+                    source_context="admin",
+                    related_slot_date=old_date,
+                    related_slot_hour=old_hour,
+                    related_slot_minute=old_minute,
+                )
         else:
             ok = await transactions.reschedule_single_slot(
                 telegram_id,
