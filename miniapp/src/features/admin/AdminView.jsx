@@ -1641,11 +1641,23 @@ export function AdminView({ token }) {
             <Card title="Доход и занятия по дням" subtitle={analyticsMode === 'week' ? 'Сравнение с прошлой неделей' : 'Сравнение с прошлым месяцем'}>
               {(analyticsSeries || []).length ? (
                 <div className="analytics-compare-stack">
-                  <div className="analytics-compare-summary">
-                    <span className="badge good">Прогресс: {analyticsSeriesSummary?.progress ?? 0}</span>
-                    <span className="badge neutral">Стагнация: {analyticsSeriesSummary?.stagnation ?? 0}</span>
-                    <span className="badge mixed">Смешано: {analyticsSeriesSummary?.mixed ?? 0}</span>
-                    <span className="badge bad">Регресс: {analyticsSeriesSummary?.regress ?? 0}</span>
+                  <div className="analytics-summary-grid">
+                    <div className="analytics-summary-card">
+                      <span>Прогресс</span>
+                      <strong>{analyticsSeriesSummary?.progress ?? 0}</strong>
+                    </div>
+                    <div className="analytics-summary-card">
+                      <span>Стагнация</span>
+                      <strong>{analyticsSeriesSummary?.stagnation ?? 0}</strong>
+                    </div>
+                    <div className="analytics-summary-card">
+                      <span>Смешано</span>
+                      <strong>{analyticsSeriesSummary?.mixed ?? 0}</strong>
+                    </div>
+                    <div className="analytics-summary-card">
+                      <span>Регресс</span>
+                      <strong>{analyticsSeriesSummary?.regress ?? 0}</strong>
+                    </div>
                   </div>
                   <div className="analytics-chart-legend">
                     <span><i className="legend-swatch prev" /> Прошлый период</span>
