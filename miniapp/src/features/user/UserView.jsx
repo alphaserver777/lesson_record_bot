@@ -31,6 +31,7 @@ function UserView({ token, appUser, tgUser }) {
   const [error, setError] = useState('')
   const [success, setSuccess] = useState('')
   const [calendarLoading, setCalendarLoading] = useState(true)
+  const [slotsLoading, setSlotsLoading] = useState(false)
   const [calendarReady, setCalendarReady] = useState(false)
   const [calendarRetryTick, setCalendarRetryTick] = useState(0)
   const [bookingsLoading, setBookingsLoading] = useState(true)
@@ -38,6 +39,7 @@ function UserView({ token, appUser, tgUser }) {
   const [bookingsReady, setBookingsReady] = useState(false)
   const [bookingsRetryTick, setBookingsRetryTick] = useState(0)
   const calendarReqRef = useRef(0)
+  const slotsReqRef = useRef(0)
   const toastItems = useFloatingToasts({
     success,
     error,
@@ -62,11 +64,18 @@ function UserView({ token, appUser, tgUser }) {
   }
 
   async function loadSlots(d) {
+    const reqId = ++slotsReqRef.current
     setDate(d)
     setSelectedTime('')
-    const data = await api(`/api/user/slots?date=${d}&duration=${duration}`, { token })
-    setSlots(data.slots)
-    setError('')
+    setSlotsLoading(true)
+    try {
+      const data = await api(`/api/user/slots?date=${d}&duration=${duration}`, { token })
+      if (reqId !== slotsReqRef.current) return
+      setSlots(data.slots)
+      setError('')
+    } finally {
+      if (reqId === slotsReqRef.current) setSlotsLoading(false)
+    }
   }
 
   async function loadBookings(silent = false) {
@@ -165,6 +174,11 @@ function UserView({ token, appUser, tgUser }) {
   }
 
   useEffect(() => {
+    setDate('')
+    setSlots([])
+    setSelectedTime('')
+    setSlotsLoading(false)
+    slotsReqRef.current += 1
     setCalendarReady(false)
     loadCalendar().catch(e => setError(normalizeErrorMessage(e.message || e)))
   }, [month])
@@ -279,6 +293,14 @@ function UserView({ token, appUser, tgUser }) {
   const leadingEmpty = (firstWeekday + 6) % 7
   const calendarCells = [...Array(leadingEmpty).fill(null), ...calendar]
   const weekDays = ['Пн', 'Вт', 'Ср', 'Чт', 'Пт', 'Сб', 'Вс']
+  const calendarBusy = calendarLoading && !calendarReady
+  const calendarRefreshing = calendarLoading && calendarReady
+  const slotsBusy = slotsLoading
+  const slotsTitle = !date
+    ? 'Выберите дату'
+    : slotsBusy
+      ? `Загружаем время на ${formatDateRu(date)}`
+      : `Время на ${formatDateRu(date)}`
 
   return (
     <div className="mini-layout">
@@ -458,7 +480,13 @@ function UserView({ token, appUser, tgUser }) {
                     </div>
                   }
                 >
-                  {!calendarReady || calendarLoading ? (
+                  {calendarRefreshing ? (
+                    <div className="loading-strip" aria-live="polite">
+                      <div className="loading-strip-bar" />
+                      <span>Обновляем календарь для {formatMonthRu(month)}</span>
+                    </div>
+                  ) : null}
+                  {!calendarReady || calendarBusy ? (
                     <div className="calendar-skeleton">
                       {Array.from({ length: 35 }).map((_, idx) => (
                         <div key={`cal-skeleton-${idx}`} className="skeleton-box skeleton-day" />
@@ -490,14 +518,26 @@ function UserView({ token, appUser, tgUser }) {
                   )}
                 </Card>
 
-                <Card title={date ? `Время на ${formatDateRu(date)}` : 'Выберите дату'} subtitle="Только свободные слоты">
+                <Card title={slotsTitle} subtitle="Только свободные слоты">
+                  {calendarRefreshing || slotsBusy ? (
+                    <div className="loading-strip compact" aria-live="polite">
+                      <div className="loading-strip-bar" />
+                      <span>{calendarRefreshing ? 'Ждём данные нового месяца' : 'Загружаем свободные слоты'}</span>
+                    </div>
+                  ) : null}
                   <div className="segmented">
                     <button className={duration === 60 ? 'seg active' : 'seg'} onClick={() => setDuration(60)}>60 мин</button>
                     <button className={duration === 90 ? 'seg active' : 'seg'} onClick={() => setDuration(90)}>90 мин</button>
                     <button className={duration === 120 ? 'seg active' : 'seg'} onClick={() => setDuration(120)}>120 мин</button>
                   </div>
                   {!date ? (
-                    <div className="empty">Сначала выберите день.</div>
+                    <div className="empty">{calendarRefreshing ? 'Выберите день после обновления календаря.' : 'Сначала выберите день.'}</div>
+                  ) : slotsBusy ? (
+                    <div className="calendar-skeleton slots-skeleton">
+                      {Array.from({ length: 8 }).map((_, idx) => (
+                        <div key={`slot-skeleton-${idx}`} className="skeleton-box skeleton-day" />
+                      ))}
+                    </div>
                   ) : availableSlots.length ? (
                     <div className="slots-hours">
                       {groupedHourKeys.map(hour => (

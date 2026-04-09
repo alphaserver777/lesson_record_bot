@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { api } from '../../api'
 import { useFloatingToasts } from '../../shared/hooks/useFloatingToasts'
 import { dayName, formatMonthRu, normalizeErrorMessage, shiftMonth } from '../../shared/lib/formatters'
@@ -43,6 +43,10 @@ export function AdminView({ token }) {
   const [scheduleMonthDays, setScheduleMonthDays] = useState([])
   const [schedule, setSchedule] = useState([])
   const [freeSlots, setFreeSlots] = useState([])
+  const [scheduleMonthLoading, setScheduleMonthLoading] = useState(true)
+  const [scheduleLoading, setScheduleLoading] = useState(false)
+  const [freeSlotsLoading, setFreeSlotsLoading] = useState(false)
+  const [blocksLoading, setBlocksLoading] = useState(false)
   const [extraAvailability, setExtraAvailability] = useState([])
   const [showExtraAvailabilityForm, setShowExtraAvailabilityForm] = useState(false)
   const [extraAvailabilityForm, setExtraAvailabilityForm] = useState({ start_time: '12:00', end_time: '14:00', note: '' })
@@ -87,6 +91,10 @@ export function AdminView({ token }) {
     onClearError: () => setError(''),
     normalizeError: normalizeErrorMessage,
   })
+  const scheduleMonthReqRef = useRef(0)
+  const scheduleReqRef = useRef(0)
+  const freeSlotsReqRef = useRef(0)
+  const blocksReqRef = useRef(0)
   const adminTabs = [
     ['records', 'Записи', '▥'],
     ['work_schedule', 'Расписание', '▦'],
@@ -193,19 +201,55 @@ export function AdminView({ token }) {
   }
 
   async function loadSchedule(targetDay = day) {
-    const data = await api(`/api/admin/schedule/day?date=${targetDay}`, { token })
-    setSchedule(data.items || [])
+    if (!targetDay) {
+      setSchedule([])
+      return
+    }
+    const reqId = ++scheduleReqRef.current
+    setScheduleLoading(true)
+    try {
+      const data = await api(`/api/admin/schedule/day?date=${targetDay}`, { token })
+      if (reqId !== scheduleReqRef.current) return
+      setSchedule(data.items || [])
+    } finally {
+      if (reqId === scheduleReqRef.current) setScheduleLoading(false)
+    }
   }
 
   async function loadScheduleMonth() {
-    const data = await api(`/api/admin/schedule/month?month=${adminMonth}&duration=${scheduleDuration}`, { token })
-    setScheduleMonthDays(data.days || [])
+    const reqId = ++scheduleMonthReqRef.current
+    setScheduleMonthLoading(true)
+    try {
+      const data = await api(`/api/admin/schedule/month?month=${adminMonth}&duration=${scheduleDuration}`, { token })
+      if (reqId !== scheduleMonthReqRef.current) return
+      setScheduleMonthDays(data.days || [])
+    } finally {
+      if (reqId === scheduleMonthReqRef.current) setScheduleMonthLoading(false)
+    }
   }
 
   async function loadFreeSlots(targetDay = day) {
-    const data = await api(`/api/admin/schedule/free?date=${targetDay}&duration=${scheduleDuration}`, { token })
-    setFreeSlots(data.slots || [])
-    setSelectedFreeTime('')
+    if (!targetDay) {
+      setFreeSlots([])
+      setSelectedFreeTime('')
+      return
+    }
+    const reqId = ++freeSlotsReqRef.current
+    const startedAt = Date.now()
+    setFreeSlotsLoading(true)
+    try {
+      const data = await api(`/api/admin/schedule/free?date=${targetDay}&duration=${scheduleDuration}`, { token })
+      if (reqId !== freeSlotsReqRef.current) return
+      setFreeSlots(data.slots || [])
+      setSelectedFreeTime('')
+    } finally {
+      const elapsed = Date.now() - startedAt
+      const remaining = Math.max(0, 250 - elapsed)
+      if (remaining > 0) {
+        await new Promise(resolve => window.setTimeout(resolve, remaining))
+      }
+      if (reqId === freeSlotsReqRef.current) setFreeSlotsLoading(false)
+    }
   }
 
   async function loadExtraAvailability(targetDay = day) {
@@ -214,8 +258,19 @@ export function AdminView({ token }) {
   }
 
   async function loadBlocks(targetDay = day) {
-    const data = await api(`/api/admin/blocks?date=${targetDay}`, { token })
-    setDayBlocks(data.blocks || [])
+    if (!targetDay) {
+      setDayBlocks([])
+      return
+    }
+    const reqId = ++blocksReqRef.current
+    setBlocksLoading(true)
+    try {
+      const data = await api(`/api/admin/blocks?date=${targetDay}`, { token })
+      if (reqId !== blocksReqRef.current) return
+      setDayBlocks(data.blocks || [])
+    } finally {
+      if (reqId === blocksReqRef.current) setBlocksLoading(false)
+    }
   }
 
   function buildBlockPayload() {
@@ -550,7 +605,23 @@ export function AdminView({ token }) {
   }, [adminMonth, scheduleDuration])
 
   useEffect(() => {
+    setDay('')
+    setSchedule([])
+    setFreeSlots([])
+    setDayBlocks([])
+    setExtraAvailability([])
+    setSelectedFreeTime('')
+    setScheduleLoading(false)
+    setFreeSlotsLoading(false)
+    setBlocksLoading(false)
+    scheduleReqRef.current += 1
+    freeSlotsReqRef.current += 1
+    blocksReqRef.current += 1
+  }, [adminMonth])
+
+  useEffect(() => {
     if (activeTab !== 'records') return
+    if (!day) return
     if (scheduleMode === 'booked') {
       loadSchedule().catch(() => {})
     } else if (scheduleMode === 'free') {
@@ -599,6 +670,11 @@ export function AdminView({ token }) {
   const adminCalendarCells = [...Array(adminLeadingEmpty).fill(null), ...(scheduleMonthDays || [])]
   const weekDays = ['Пн', 'Вт', 'Ср', 'Чт', 'Пт', 'Сб', 'Вс']
   const analyticsPeriodClosed = Boolean(analyticsOverview?.period?.closed)
+  const adminCalendarRefreshing = scheduleMonthLoading && scheduleMonthDays.length > 0
+  const adminCalendarBusy = scheduleMonthLoading && scheduleMonthDays.length === 0
+  const adminScheduleTitle = day
+    ? (scheduleMode === 'booked' ? `Записи на ${day}` : scheduleMode === 'free' ? `Свободные слоты на ${day}` : `Бронь на ${day}`)
+    : 'Выберите день'
 
   async function assignClientToFreeSlot(timeValue) {
     if (!timeValue || !lessonForm.telegram_id) return
@@ -677,44 +753,71 @@ export function AdminView({ token }) {
                 <strong>{formatMonthRu(adminMonth)}</strong>
                 <button className="chip ok" onClick={() => setAdminMonth(prev => shiftMonth(prev, 1))}>{'>'}</button>
               </div>
+              {adminCalendarRefreshing ? (
+                <div className="loading-strip" aria-live="polite">
+                  <div className="loading-strip-bar" />
+                  <span>Обновляем календарь для {formatMonthRu(adminMonth)}</span>
+                </div>
+              ) : null}
               <div className="weekdays">
                 {weekDays.map(w => <div key={`adm-${w}`}>{w}</div>)}
               </div>
-              <div className="calendar-grid">
-                {adminCalendarCells.map((cell, idx) => (
-                  cell ? (
-                    <button
-                      key={cell.date}
-                      className={`calendar-day ${day === cell.date ? 'selected' : ''} ${cell.past ? 'off' : 'on'}`}
-                      onClick={async () => {
-                        setDay(cell.date)
-                        if (scheduleMode === 'booked') {
-                          await loadSchedule(cell.date).catch(() => {})
-                        } else if (scheduleMode === 'free') {
-                          await loadFreeSlots(cell.date).catch(() => {})
-                        } else {
-                          await loadBlocks(cell.date).catch(() => {})
-                        }
-                      }}
-                      title={
-                        scheduleMode === 'booked'
-                          ? `Записей: ${cell.booked_count}`
-                          : scheduleMode === 'free'
-                            ? `Свободно: ${cell.free_count}`
-                            : `Дата: ${cell.date}`
-                      }
-                    >
-                      <span>{Number(cell.date.slice(8))}</span>
-                    </button>
-                  ) : (
-                    <div key={`adm-empty-${idx}`} className="calendar-day empty" />
-                  )
-                ))}
-              </div>
+              {adminCalendarBusy ? (
+                <div className="calendar-skeleton">
+                  {Array.from({ length: 35 }).map((_, idx) => (
+                    <div key={`adm-cal-skeleton-${idx}`} className="skeleton-box skeleton-day" />
+                  ))}
+                </div>
+              ) : (
+                <div className="calendar-grid">
+                  {adminCalendarCells.map((cell, idx) => (
+                    cell ? (() => {
+                      const cellDisabled = scheduleMode === 'free' && (cell.past || !cell.has_free)
+                      const cellTitle = scheduleMode === 'booked'
+                        ? `Записей: ${cell.booked_count}`
+                        : scheduleMode === 'free'
+                          ? (cell.has_free ? `Свободно: ${cell.free_count}` : 'Нет свободных слотов')
+                          : `Дата: ${cell.date}`
+
+                      return (
+                        <button
+                          key={cell.date}
+                          disabled={cellDisabled}
+                          className={`calendar-day ${day === cell.date ? 'selected' : ''} ${cellDisabled ? 'off' : 'on'}`}
+                          onClick={async () => {
+                            setDay(cell.date)
+                            if (scheduleMode === 'booked') {
+                              await loadSchedule(cell.date).catch(() => {})
+                            } else if (scheduleMode === 'free') {
+                              await loadFreeSlots(cell.date).catch(() => {})
+                            } else {
+                              await loadBlocks(cell.date).catch(() => {})
+                            }
+                          }}
+                          title={cellTitle}
+                        >
+                          <span>{Number(cell.date.slice(8))}</span>
+                        </button>
+                      )
+                    })() : (
+                      <div key={`adm-empty-${idx}`} className="calendar-day empty" />
+                    )
+                  ))}
+                </div>
+              )}
             </Card>
 
             {scheduleMode === 'block' ? (
-              <Card title={`Бронь на ${day}`} subtitle="Закрывайте день целиком или только нужный период">
+              <Card title={adminScheduleTitle} subtitle="Закрывайте день целиком или только нужный период">
+                {blocksLoading ? (
+                  <div className="loading-strip compact" aria-live="polite">
+                    <div className="loading-strip-bar" />
+                    <span>{adminCalendarRefreshing ? 'Ждём данные нового месяца' : 'Загружаем бронь дня'}</span>
+                  </div>
+                ) : null}
+                {!day ? (
+                  <div className="empty">Выберите день в календаре.</div>
+                ) : (
                 <div className="stack">
                   <div className="segmented">
                     <button
@@ -869,11 +972,22 @@ export function AdminView({ token }) {
                     </div>
                   ) : null}
                 </div>
+                )}
               </Card>
             ) : null}
 
             {scheduleMode === 'booked' ? (
-              <Card title={`Записи на ${day}`} subtitle="Клиенты и время">
+              <Card title={adminScheduleTitle} subtitle="Клиенты и время">
+                {scheduleLoading ? (
+                  <div className="loading-strip compact" aria-live="polite">
+                    <div className="loading-strip-bar" />
+                    <span>{adminCalendarRefreshing ? 'Ждём данные нового месяца' : 'Загружаем записи дня'}</span>
+                  </div>
+                ) : null}
+                {!day ? (
+                  <div className="empty">Выберите день в календаре.</div>
+                ) : (
+                <>
                 <button className="btn secondary" onClick={() => loadSchedule().catch(e => setError(String(e.message || e)))}>Обновить</button>
                 <ul className="list list-compact">
                   {schedule.map((s, idx) => (
@@ -911,11 +1025,23 @@ export function AdminView({ token }) {
                     </li>
                   ))}
                 </ul>
+                </>
+                )}
               </Card>
             ) : null}
 
             {scheduleMode === 'free' ? (
-              <Card title={`Свободные слоты на ${day}`} subtitle="Выберите слот, назначьте клиента или откройте временные окна">
+              <Card title={adminScheduleTitle} subtitle="Выберите слот, назначьте клиента или откройте временные окна">
+                {freeSlotsLoading ? (
+                  <div className="loading-strip compact" aria-live="polite">
+                    <div className="loading-strip-bar" />
+                    <span>{adminCalendarRefreshing ? 'Ждём данные нового месяца' : 'Загружаем свободные слоты'}</span>
+                  </div>
+                ) : null}
+                {!day ? (
+                  <div className="empty">Выберите день в календаре.</div>
+                ) : (
+                <>
                 <input className="input" value={clientSearch} onChange={e => setClientSearch(e.target.value)} placeholder="Поиск клиента: имя / телефон / id" />
                 <select
                   className="input"
@@ -1020,6 +1146,8 @@ export function AdminView({ token }) {
                     </div>
                   ))}
                 </div>
+                </>
+                )}
               </Card>
             ) : null}
           </div>
