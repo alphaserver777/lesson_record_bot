@@ -862,31 +862,6 @@ body {
   gap: 12px;
 }
 
-.analytics-summary-grid {
-  display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: 8px;
-}
-
-.analytics-summary-card {
-  display: grid;
-  gap: 4px;
-  padding: 10px 12px;
-  border-radius: 12px;
-  border: 1px solid rgba(88, 95, 114, 0.32);
-  background: rgba(18, 20, 27, 0.72);
-}
-
-.analytics-summary-card span {
-  color: #9aa3b5;
-  font-size: 12px;
-}
-
-.analytics-summary-card strong {
-  color: #f4f7fb;
-  font-size: 16px;
-}
-
 .analytics-chart-legend {
   display: flex;
   gap: 12px;
@@ -912,12 +887,20 @@ body {
   background: rgba(197, 203, 220, 0.52);
 }
 
-.legend-swatch.current.revenue {
+.legend-swatch.progress {
   background: linear-gradient(180deg, #67e8a5, #27c46f);
 }
 
-.legend-swatch.current.lessons {
-  background: linear-gradient(180deg, #8cabff, #4f73d8);
+.legend-swatch.regress {
+  background: linear-gradient(180deg, #ff8aa7, #d84f76);
+}
+
+.legend-swatch.stagnation {
+  background: linear-gradient(180deg, #9ba5b9, #717b92);
+}
+
+.legend-swatch.mixed {
+  background: linear-gradient(180deg, #f2ca75, #d5a64b);
 }
 
 .analytics-hist-section {
@@ -979,14 +962,24 @@ body {
   background: rgba(140, 166, 236, 0.4);
 }
 
-.analytics-hist-bar.current.revenue {
+.analytics-hist-bar.current.progress {
   background: linear-gradient(180deg, #67e8a5, #27c46f);
   box-shadow: 0 6px 18px rgba(39, 196, 111, 0.22);
 }
 
-.analytics-hist-bar.current.lessons {
-  background: linear-gradient(180deg, #8cabff, #4f73d8);
-  box-shadow: 0 6px 18px rgba(79, 115, 216, 0.24);
+.analytics-hist-bar.current.regress {
+  background: linear-gradient(180deg, #ff8aa7, #d84f76);
+  box-shadow: 0 6px 18px rgba(216, 79, 118, 0.22);
+}
+
+.analytics-hist-bar.current.stagnation {
+  background: linear-gradient(180deg, #9ba5b9, #717b92);
+  box-shadow: 0 6px 18px rgba(113, 123, 146, 0.2);
+}
+
+.analytics-hist-bar.current.mixed {
+  background: linear-gradient(180deg, #f2ca75, #d5a64b);
+  box-shadow: 0 6px 18px rgba(213, 166, 75, 0.22);
 }
 
 .analytics-hist-label {
@@ -1424,10 +1417,6 @@ body {
 
   .analytics-kpi-grid {
     grid-template-columns: 1fr;
-  }
-
-  .analytics-summary-grid {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
   .analytics-columns {

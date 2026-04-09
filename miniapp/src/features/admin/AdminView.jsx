@@ -1641,28 +1641,12 @@ export function AdminView({ token }) {
             <Card title="Доход и занятия по дням" subtitle={analyticsMode === 'week' ? 'Сравнение с прошлой неделей' : 'Сравнение с прошлым месяцем'}>
               {(analyticsSeries || []).length ? (
                 <div className="analytics-compare-stack">
-                  <div className="analytics-summary-grid">
-                    <div className="analytics-summary-card">
-                      <span>Прогресс</span>
-                      <strong>{analyticsSeriesSummary?.progress ?? 0}</strong>
-                    </div>
-                    <div className="analytics-summary-card">
-                      <span>Стагнация</span>
-                      <strong>{analyticsSeriesSummary?.stagnation ?? 0}</strong>
-                    </div>
-                    <div className="analytics-summary-card">
-                      <span>Смешано</span>
-                      <strong>{analyticsSeriesSummary?.mixed ?? 0}</strong>
-                    </div>
-                    <div className="analytics-summary-card">
-                      <span>Регресс</span>
-                      <strong>{analyticsSeriesSummary?.regress ?? 0}</strong>
-                    </div>
-                  </div>
                   <div className="analytics-chart-legend">
                     <span><i className="legend-swatch prev" /> Прошлый период</span>
-                    <span><i className="legend-swatch current revenue" /> Текущий доход</span>
-                    <span><i className="legend-swatch current lessons" /> Текущие занятия</span>
+                    <span><i className="legend-swatch progress" /> Прогресс</span>
+                    <span><i className="legend-swatch regress" /> Регресс</span>
+                    <span><i className="legend-swatch stagnation" /> Стагнация</span>
+                    <span><i className="legend-swatch mixed" /> Смешано</span>
                   </div>
                   <div className="analytics-hist-section">
                     <div className="analytics-hist-title-row">
@@ -1679,7 +1663,7 @@ export function AdminView({ token }) {
                           <div className="analytics-hist-col" key={`analytics-revenue-${point.date}`} title={`${point.date}: текущий ${revenueCurrent} ₽, прошлый период ${revenuePrev} ₽`}>
                             <div className="analytics-hist-bars">
                               <span className="analytics-hist-bar prev" style={{ height: `${revenuePrevHeight}px` }} />
-                              <span className="analytics-hist-bar current revenue" style={{ height: `${revenueCurrentHeight}px` }} />
+                              <span className={`analytics-hist-bar current ${point.signal || 'stagnation'}`} style={{ height: `${revenueCurrentHeight}px` }} />
                             </div>
                             <div className="analytics-hist-label">{analyticsDayLabel(point.date, analyticsMode)}</div>
                             <div className="analytics-hist-values">
@@ -1706,7 +1690,7 @@ export function AdminView({ token }) {
                           <div className="analytics-hist-col" key={`analytics-lessons-${point.date}`} title={`${point.date}: текущий ${lessonsCurrent} занятий, прошлый период ${lessonsPrev} занятий`}>
                             <div className="analytics-hist-bars">
                               <span className="analytics-hist-bar prev lessons" style={{ height: `${lessonsPrevHeight}px` }} />
-                              <span className="analytics-hist-bar current lessons" style={{ height: `${lessonsCurrentHeight}px` }} />
+                              <span className={`analytics-hist-bar current ${point.signal || 'stagnation'}`} style={{ height: `${lessonsCurrentHeight}px` }} />
                             </div>
                             <div className="analytics-hist-label">{analyticsDayLabel(point.date, analyticsMode)}</div>
                             <div className="analytics-hist-values">
