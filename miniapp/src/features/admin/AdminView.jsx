@@ -23,6 +23,10 @@ function formatMetricCompact(value, kind = 'number') {
   return String(numeric)
 }
 
+function formatPct(value) {
+  return `${Number(value || 0).toLocaleString('ru-RU', { maximumFractionDigits: 1 })}%`
+}
+
 function analyticsDayLabel(isoDate, mode) {
   try {
     const dt = new Date(`${isoDate}T00:00:00`)
@@ -33,6 +37,22 @@ function analyticsDayLabel(isoDate, mode) {
   } catch {
     return String(isoDate || '')
   }
+}
+
+function analyticsModeLabel(mode) {
+  if (mode === 'quarter') return 'квартал'
+  return mode === 'week' ? 'неделя' : 'месяц'
+}
+
+function weekdayLabel(weekday) {
+  const labels = ['Пн', 'Вт', 'Ср', 'Чт', 'Пт', 'Сб', 'Вс']
+  return labels[Number(weekday)] || '—'
+}
+
+function heatLevelLabel(level) {
+  if (level === 'overloaded') return 'Перегруз'
+  if (level === 'underloaded') return 'Недогруз'
+  return 'Норма'
 }
 
 function signalLabel(signal) {
@@ -70,6 +90,7 @@ export function AdminView({ token }) {
   const [analyticsSeries, setAnalyticsSeries] = useState([])
   const [analyticsSeriesSummary, setAnalyticsSeriesSummary] = useState(null)
   const [analyticsRevenueShare, setAnalyticsRevenueShare] = useState({ total_paid: 0, items: [] })
+  const [analyticsV2, setAnalyticsV2] = useState(null)
   const [analyticsLoading, setAnalyticsLoading] = useState(false)
   const [query, setQuery] = useState('')
   const [usersPage, setUsersPage] = useState(1)
@@ -172,11 +193,12 @@ export function AdminView({ token }) {
   async function loadAnalyticsV2(mode = analyticsMode, anchorDate = analyticsAnchorDate) {
     setAnalyticsLoading(true)
     try {
-      const [overview, delta, series, revenueShare] = await Promise.all([
+      const [overview, delta, series, revenueShare, overviewV2] = await Promise.all([
         api(`/api/admin/analytics/overview?anchor_date=${anchorDate}&mode=${mode}`, { token }),
         api(`/api/admin/analytics/clients-delta?anchor_date=${anchorDate}&mode=${mode}`, { token }),
         api(`/api/admin/analytics/timeseries?anchor_date=${anchorDate}&mode=${mode}`, { token }),
         api(`/api/admin/analytics/revenue-share?anchor_date=${anchorDate}&mode=${mode}`, { token }),
+        api(`/api/admin/analytics/overview-v2?anchor_date=${anchorDate}&mode=${mode}`, { token }),
       ])
       setAnalyticsOverview(overview || null)
       setAnalyticsDelta({
@@ -189,6 +211,7 @@ export function AdminView({ token }) {
         total_paid: Number(revenueShare?.total_paid || 0),
         items: Array.isArray(revenueShare?.items) ? revenueShare.items : [],
       })
+      setAnalyticsV2(overviewV2 || null)
     } finally {
       setAnalyticsLoading(false)
     }
@@ -733,6 +756,13 @@ export function AdminView({ token }) {
   const analyticsRevenueDonut = buildRevenueDonut(analyticsRevenueShare?.items || [])
   const analyticsRevenueMax = Math.max(1, ...(analyticsSeries || []).map(point => Math.max(Number(point.paid_amount || 0), Number(point.previous_paid_amount || 0))))
   const analyticsLessonsMax = Math.max(1, ...(analyticsSeries || []).map(point => Math.max(Number(point.lessons_done || 0), Number(point.previous_lessons_done || 0))))
+  const analyticsLtvMax = Math.max(1, ...((analyticsV2?.client_value?.ltv_leaderboard || []).map(item => Number(item.total_revenue || 0))))
+  const analyticsOccupancyWeekdayMax = Math.max(1, ...((analyticsV2?.schedule_economics?.occupancy_by_weekday || []).map(item => Number(item.occupancy_pct || 0))))
+  const analyticsOccupancyHourMax = Math.max(1, ...((analyticsV2?.schedule_economics?.occupancy_by_hour || []).map(item => Number(item.occupancy_pct || 0))))
+  const analyticsRegularSingleRevenueMax = Math.max(1,
+    Number(analyticsV2?.stability?.regular_vs_single?.single?.revenue || 0),
+    Number(analyticsV2?.stability?.regular_vs_single?.regular?.revenue || 0),
+  )
   const adminCalendarRefreshing = scheduleMonthLoading && scheduleMonthDays.length > 0
   const adminCalendarBusy = scheduleMonthLoading && scheduleMonthDays.length === 0
   const adminScheduleTitle = day
@@ -1556,6 +1586,7 @@ export function AdminView({ token }) {
               <div className="segmented">
                 <button className={analyticsMode === 'week' ? 'seg active' : 'seg'} onClick={() => setAnalyticsMode('week')}>Неделя</button>
                 <button className={analyticsMode === 'month' ? 'seg active' : 'seg'} onClick={() => setAnalyticsMode('month')}>Месяц</button>
+                <button className={analyticsMode === 'quarter' ? 'seg active' : 'seg'} onClick={() => setAnalyticsMode('quarter')}>Квартал</button>
               </div>
               <div className="custom-row">
                 <input type="date" className="input" value={analyticsAnchorDate} onChange={e => setAnalyticsAnchorDate(e.target.value)} />
@@ -1564,7 +1595,7 @@ export function AdminView({ token }) {
               {analyticsLoading ? <div className="loading">Загружаем аналитику...</div> : null}
               {analyticsOverview ? (
                 <div className="pill-row">
-                  <Pill label={`Доход (${analyticsMode === 'week' ? 'неделя' : 'месяц'})`} value={`${analyticsOverview.finance?.paid_now ?? 0} ₽`} tone="mint" />
+                  <Pill label={`Доход (${analyticsModeLabel(analyticsMode)})`} value={`${analyticsOverview.finance?.paid_now ?? 0} ₽`} tone="mint" />
                   <Pill label="Активные ученики" value={analyticsOverview.clients?.active_now ?? 0} tone="blue" />
                   <Pill label="Занятия" value={analyticsOverview.ops?.lessons_now ?? 0} tone="violet" />
                   <Pill label="Средний чек" value={`${analyticsOverview.ops?.avg_check_now ?? 0} ₽`} tone="blue" />
@@ -1638,7 +1669,7 @@ export function AdminView({ token }) {
               )}
             </Card>
 
-            <Card title="Доход и занятия по дням" subtitle={analyticsMode === 'week' ? 'Сравнение с прошлой неделей' : 'Сравнение с прошлым месяцем'}>
+            <Card title="Доход и занятия по дням" subtitle={analyticsMode === 'week' ? 'Сравнение с прошлой неделей' : analyticsMode === 'month' ? 'Сравнение с прошлым месяцем' : 'Сравнение с прошлым кварталом'}>
               {(analyticsSeries || []).length ? (
                 <div className="analytics-compare-stack">
                   <div className="analytics-chart-legend">
@@ -1760,6 +1791,267 @@ export function AdminView({ token }) {
                 </ul>
               ) : (
                 <div className="placeholder-box">Сводка появится после загрузки аналитики.</div>
+              )}
+            </Card>
+
+            <Card title="Драйверы роста и просадки" subtitle="Кто именно сдвинул выручку относительно прошлого периода">
+              {analyticsV2?.executive?.revenue_drivers ? (
+                <div className="analytics-columns">
+                  <div className="analytics-col">
+                    <h4>Рост</h4>
+                    {(analyticsV2.executive.revenue_drivers.gainers || []).length ? (
+                      <ul className="list list-compact">
+                        {(analyticsV2.executive.revenue_drivers.gainers || []).map(item => (
+                          <li key={`gainer-${item.telegram_id}`}>
+                            <span>{item.full_name}</span>
+                            <small>{item.group === 'new' ? 'новый' : 'рост'} • +{formatMoneyShort(item.delta_abs || 0)}</small>
+                          </li>
+                        ))}
+                      </ul>
+                    ) : (
+                      <div className="placeholder-box">Явных драйверов роста пока нет.</div>
+                    )}
+                  </div>
+                  <div className="analytics-col">
+                    <h4>Просадка</h4>
+                    {(analyticsV2.executive.revenue_drivers.decliners || []).length ? (
+                      <ul className="list list-compact">
+                        {(analyticsV2.executive.revenue_drivers.decliners || []).map(item => (
+                          <li key={`decliner-${item.telegram_id}`}>
+                            <span>{item.full_name}</span>
+                            <small>{item.group === 'churned' ? 'выпал' : 'снижение'} • {formatMoneyShort(item.delta_abs || 0)}</small>
+                          </li>
+                        ))}
+                      </ul>
+                    ) : (
+                      <div className="placeholder-box">Сильной просадки по клиентам нет.</div>
+                    )}
+                  </div>
+                </div>
+              ) : (
+                <div className="placeholder-box">Драйверы появятся после загрузки аналитики.</div>
+              )}
+            </Card>
+
+            <Card title="Ценность учеников" subtitle="LTV, возвраты после первого урока и revenue share">
+              {analyticsV2 ? (
+                <div className="analytics-v2-grid">
+                  <div className="analytics-v2-panel">
+                    <div className="analytics-panel-head">
+                      <strong>LTV leaderboard</strong>
+                      <small>Сколько ученик принёс за всё время</small>
+                    </div>
+                    {(analyticsV2.client_value?.ltv_leaderboard || []).length ? (
+                      <div className="analytics-ltv-list">
+                        {(analyticsV2.client_value?.ltv_leaderboard || []).map(item => (
+                          <div className="analytics-ltv-item" key={`ltv-${item.telegram_id}`}>
+                            <div className="analytics-ltv-meta">
+                              <strong>{item.full_name}</strong>
+                              <small>{item.total_lessons || 0} зан. • ср. чек {formatMoneyShort(item.avg_revenue_per_lesson || 0)}</small>
+                            </div>
+                            <div className="analytics-ltv-bar-wrap">
+                              <span className="analytics-ltv-bar" style={{ width: `${Math.max(8, Math.round((Number(item.total_revenue || 0) / analyticsLtvMax) * 100))}%` }} />
+                            </div>
+                            <strong>{formatMoneyShort(item.total_revenue || 0)}</strong>
+                          </div>
+                        ))}
+                      </div>
+                    ) : (
+                      <div className="placeholder-box">Истории оплат пока недостаточно.</div>
+                    )}
+                  </div>
+                  <div className="analytics-v2-panel">
+                    <div className="analytics-panel-head">
+                      <strong>Возврат после первого урока</strong>
+                      <small>Какой процент учеников вернулся на второе занятие</small>
+                    </div>
+                    <div className="analytics-stat-stack">
+                      <div className="analytics-stat-card">
+                        <span>2nd lesson conversion</span>
+                        <strong>{formatPct(analyticsV2.client_value?.repeat_booking?.second_lesson_conversion_pct || 0)}</strong>
+                      </div>
+                      <div className="analytics-stat-card">
+                        <span>Вернувшихся учеников</span>
+                        <strong>{analyticsV2.client_value?.repeat_booking?.returned_clients || 0}</strong>
+                      </div>
+                      <div className="analytics-stat-card">
+                        <span>Всего учеников</span>
+                        <strong>{analyticsV2.client_value?.repeat_booking?.clients_total || 0}</strong>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              ) : (
+                <div className="placeholder-box">Блок ценности учеников ещё не загружен.</div>
+              )}
+            </Card>
+
+            <Card title="Retention / возвраты" subtitle="Удержание новых учеников на 2, 4 и 8 неделях">
+              {analyticsV2?.retention ? (
+                <div className="analytics-v2-grid">
+                  <div className="analytics-v2-panel">
+                    <div className="analytics-retention-cards">
+                      <div className="analytics-stat-card success">
+                        <span>2 недели</span>
+                        <strong>{formatPct(analyticsV2.retention.summary?.retention_2w_pct || 0)}</strong>
+                      </div>
+                      <div className="analytics-stat-card warning">
+                        <span>4 недели</span>
+                        <strong>{formatPct(analyticsV2.retention.summary?.retention_4w_pct || 0)}</strong>
+                      </div>
+                      <div className="analytics-stat-card neutral">
+                        <span>8 недель</span>
+                        <strong>{formatPct(analyticsV2.retention.summary?.retention_8w_pct || 0)}</strong>
+                      </div>
+                    </div>
+                  </div>
+                  <div className="analytics-v2-panel">
+                    <div className="analytics-panel-head">
+                      <strong>Когорты</strong>
+                      <small>Последние месяцы первого урока</small>
+                    </div>
+                    {(analyticsV2.retention.cohorts || []).length ? (
+                      <div className="analytics-cohort-list">
+                        {(analyticsV2.retention.cohorts || []).map(item => (
+                          <div className="analytics-cohort-row" key={`cohort-${item.cohort}`}>
+                            <div className="analytics-cohort-head">
+                              <strong>{item.cohort}</strong>
+                              <small>{item.clients || 0} учеников</small>
+                            </div>
+                            <div className="analytics-cohort-bars">
+                              <span className="analytics-cohort-bar success" style={{ width: `${Math.max(6, Number(item.retention_2w_pct || 0))}%` }}>2w {formatPct(item.retention_2w_pct || 0)}</span>
+                              <span className="analytics-cohort-bar warning" style={{ width: `${Math.max(6, Number(item.retention_4w_pct || 0))}%` }}>4w {formatPct(item.retention_4w_pct || 0)}</span>
+                              <span className="analytics-cohort-bar neutral" style={{ width: `${Math.max(6, Number(item.retention_8w_pct || 0))}%` }}>8w {formatPct(item.retention_8w_pct || 0)}</span>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    ) : (
+                      <div className="placeholder-box">Когорт пока недостаточно.</div>
+                    )}
+                  </div>
+                </div>
+              ) : (
+                <div className="placeholder-box">Retention пока не загружен.</div>
+              )}
+            </Card>
+
+            <Card title="Экономика расписания" subtitle="Заполняемость по дням, часам и heatmap нагрузки">
+              {analyticsV2?.schedule_economics ? (
+                <div className="analytics-v2-grid">
+                  <div className="analytics-v2-panel">
+                    <div className="analytics-panel-head">
+                      <strong>Заполняемость по дням недели</strong>
+                      <small>Доля занятых слотов от доступных</small>
+                    </div>
+                    <div className="analytics-occ-list">
+                      {(analyticsV2.schedule_economics.occupancy_by_weekday || []).map(item => (
+                        <div className="analytics-occ-row" key={`occ-weekday-${item.weekday}`}>
+                          <span>{weekdayLabel(item.weekday)}</span>
+                          <div className="analytics-occ-bar-wrap">
+                            <span className="analytics-occ-bar" style={{ width: `${Math.max(6, Math.round((Number(item.occupancy_pct || 0) / analyticsOccupancyWeekdayMax) * 100))}%` }} />
+                          </div>
+                          <strong>{formatPct(item.occupancy_pct || 0)}</strong>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                  <div className="analytics-v2-panel">
+                    <div className="analytics-panel-head">
+                      <strong>Заполняемость по часам</strong>
+                      <small>Где недогруз и перегруз</small>
+                    </div>
+                    <div className="analytics-occ-list dense">
+                      {(analyticsV2.schedule_economics.occupancy_by_hour || []).map(item => (
+                        <div className="analytics-occ-row" key={`occ-hour-${item.hour}`}>
+                          <span>{String(item.hour).padStart(2, '0')}:00</span>
+                          <div className="analytics-occ-bar-wrap">
+                            <span className="analytics-occ-bar hour" style={{ width: `${Math.max(6, Math.round((Number(item.occupancy_pct || 0) / analyticsOccupancyHourMax) * 100))}%` }} />
+                          </div>
+                          <strong>{formatPct(item.occupancy_pct || 0)}</strong>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+              ) : (
+                <div className="placeholder-box">Экономика расписания пока не загружена.</div>
+              )}
+              {analyticsV2?.schedule_economics?.load_heatmap?.length ? (
+                <div className="analytics-heatmap">
+                  {(analyticsV2.schedule_economics.load_heatmap || []).map(cell => (
+                    <div
+                      key={`heat-${cell.weekday}-${cell.hour}`}
+                      className={`analytics-heatmap-cell ${cell.level || 'normal'}`}
+                      title={`${weekdayLabel(cell.weekday)} ${String(cell.hour).padStart(2, '0')}:00 • ${formatPct(cell.occupancy_pct || 0)} • ${heatLevelLabel(cell.level)}`}
+                    >
+                      <small>{weekdayLabel(cell.weekday)}</small>
+                      <strong>{String(cell.hour).padStart(2, '0')}</strong>
+                      <span>{formatPct(cell.occupancy_pct || 0)}</span>
+                    </div>
+                  ))}
+                </div>
+              ) : null}
+            </Card>
+
+            <Card title="Стабильность и риски" subtitle="Отмены, no-show и структура регулярных/разовых уроков">
+              {analyticsV2?.stability ? (
+                <div className="analytics-v2-grid">
+                  <div className="analytics-v2-panel">
+                    <div className="analytics-panel-head">
+                      <strong>Cancel / no-show</strong>
+                      <small>{analyticsV2.limitations?.cancel_history_note || 'Событийный лог активен'}</small>
+                    </div>
+                    <div className="analytics-stat-stack">
+                      <div className="analytics-stat-card danger">
+                        <span>Отмены учеником</span>
+                        <strong>{analyticsV2.stability.cancellations?.counts?.canceled_by_client || 0}</strong>
+                        <small>{formatPct(analyticsV2.stability.cancellations?.rates?.cancel_client_pct || 0)}</small>
+                      </div>
+                      <div className="analytics-stat-card danger">
+                        <span>Отмены админом</span>
+                        <strong>{analyticsV2.stability.cancellations?.counts?.canceled_by_admin || 0}</strong>
+                        <small>{formatPct(analyticsV2.stability.cancellations?.rates?.cancel_admin_pct || 0)}</small>
+                      </div>
+                      <div className="analytics-stat-card warning">
+                        <span>Переносы</span>
+                        <strong>{analyticsV2.stability.cancellations?.counts?.rescheduled || 0}</strong>
+                        <small>{formatPct(analyticsV2.stability.cancellations?.rates?.reschedule_pct || 0)}</small>
+                      </div>
+                      <div className="analytics-stat-card neutral">
+                        <span>No-show</span>
+                        <strong>{analyticsV2.stability.cancellations?.counts?.no_show || 0}</strong>
+                        <small>{formatPct(analyticsV2.stability.cancellations?.rates?.no_show_pct || 0)}</small>
+                      </div>
+                    </div>
+                  </div>
+                  <div className="analytics-v2-panel">
+                    <div className="analytics-panel-head">
+                      <strong>Regular vs single</strong>
+                      <small>Доля выручки, уроков и риск по долгам</small>
+                    </div>
+                    {['regular', 'single'].map(kind => {
+                      const item = analyticsV2.stability.regular_vs_single?.[kind] || {}
+                      return (
+                        <div className="analytics-rs-row" key={`rs-${kind}`}>
+                          <div className="analytics-rs-meta">
+                            <strong>{kind === 'regular' ? 'Регулярные' : 'Разовые'}</strong>
+                            <small>{item.lessons || 0} уроков • доля {formatPct(item.lessons_share_pct || 0)}</small>
+                          </div>
+                          <div className="analytics-rs-bar-wrap">
+                            <span className={`analytics-rs-bar ${kind}`} style={{ width: `${Math.max(8, Math.round((Number(item.revenue || 0) / analyticsRegularSingleRevenueMax) * 100))}%` }} />
+                          </div>
+                          <div className="analytics-rs-stats">
+                            <strong>{formatMoneyShort(item.revenue || 0)}</strong>
+                            <small>долг {formatPct(item.debt_ratio_pct || 0)}</small>
+                          </div>
+                        </div>
+                      )
+                    })}
+                  </div>
+                </div>
+              ) : (
+                <div className="placeholder-box">Блок стабильности ещё не загружен.</div>
               )}
             </Card>
           </div>
