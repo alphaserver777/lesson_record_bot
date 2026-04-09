@@ -1646,7 +1646,6 @@ export function AdminView({ token }) {
                     <span><i className="legend-swatch progress" /> Прогресс</span>
                     <span><i className="legend-swatch regress" /> Регресс</span>
                     <span><i className="legend-swatch stagnation" /> Стагнация</span>
-                    <span><i className="legend-swatch mixed" /> Смешано</span>
                   </div>
                   <div className="analytics-hist-section">
                     <div className="analytics-hist-title-row">
@@ -1663,7 +1662,7 @@ export function AdminView({ token }) {
                           <div className="analytics-hist-col" key={`analytics-revenue-${point.date}`} title={`${point.date}: текущий ${revenueCurrent} ₽, прошлый период ${revenuePrev} ₽`}>
                             <div className="analytics-hist-bars">
                               <span className="analytics-hist-bar prev" style={{ height: `${revenuePrevHeight}px` }} />
-                              <span className={`analytics-hist-bar current ${point.signal || 'stagnation'}`} style={{ height: `${revenueCurrentHeight}px` }} />
+                              <span className={`analytics-hist-bar current ${point.signal === 'mixed' ? 'stagnation' : (point.signal || 'stagnation')}`} style={{ height: `${revenueCurrentHeight}px` }} />
                             </div>
                             <div className="analytics-hist-label">{analyticsDayLabel(point.date, analyticsMode)}</div>
                             <div className="analytics-hist-values">
@@ -1690,7 +1689,7 @@ export function AdminView({ token }) {
                           <div className="analytics-hist-col" key={`analytics-lessons-${point.date}`} title={`${point.date}: текущий ${lessonsCurrent} занятий, прошлый период ${lessonsPrev} занятий`}>
                             <div className="analytics-hist-bars">
                               <span className="analytics-hist-bar prev lessons" style={{ height: `${lessonsPrevHeight}px` }} />
-                              <span className={`analytics-hist-bar current ${point.signal || 'stagnation'}`} style={{ height: `${lessonsCurrentHeight}px` }} />
+                              <span className={`analytics-hist-bar current ${point.signal === 'mixed' ? 'stagnation' : (point.signal || 'stagnation')}`} style={{ height: `${lessonsCurrentHeight}px` }} />
                             </div>
                             <div className="analytics-hist-label">{analyticsDayLabel(point.date, analyticsMode)}</div>
                             <div className="analytics-hist-values">
