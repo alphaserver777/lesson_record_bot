@@ -45,7 +45,13 @@ async def del_record_day_1(message: [types.CallbackQuery, types.Message]):
     try:
         if kind == "regular":
             canceled = await transactions.cancel_regular_occurrence(
-                telegram_id, date, hour, minute, note="Отмена регулярного занятия"
+                telegram_id,
+                date,
+                hour,
+                minute,
+                note="Отмена регулярного занятия",
+                cancel_event_type="canceled_by_admin",
+                source_context="admin",
             )
             if not canceled:
                 await transactions.cancel_regular_slot_with_allow(

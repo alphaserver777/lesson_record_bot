@@ -352,11 +352,27 @@ async def cancel_time_input(message: types.Message, state: FSMContext):
     telegram_id = data.get("edit_telegram_id")
     if mode == "single":
         date = data.get("cancel_date")
-        await transactions.delete_single_slot(telegram_id, date, time.hour, time.minute)
+        await transactions.delete_single_slot(
+            telegram_id,
+            date,
+            time.hour,
+            time.minute,
+            cancel_event_type="canceled_by_admin",
+            source_context="admin",
+            note="Отменено администратором",
+        )
         await message.answer(f"Занятие {date} {time.strftime('%H:%M')} удалено.")
     elif mode == "once":
         date = data.get("cancel_date")
-        await transactions.delete_single_slot(telegram_id, date, time.hour, time.minute)
+        await transactions.delete_single_slot(
+            telegram_id,
+            date,
+            time.hour,
+            time.minute,
+            cancel_event_type="canceled_by_admin",
+            source_context="admin",
+            note="Разовая отмена регулярного занятия",
+        )
         try:
             event_id = await create_block_event(date, time.hour, time.minute, SLOT_DURATION_MINUTES)
         except Exception:
@@ -381,6 +397,9 @@ async def cancel_time_input(message: types.Message, state: FSMContext):
             hour=time.hour,
             minute=time.minute,
             delete_future_single=True,
+            cancel_event_type="canceled_by_admin",
+            source_context="admin",
+            note="Полная отмена регулярной серии",
         )
         await message.answer(f"Регулярные занятия (день {cancel_day}, {time.strftime('%H:%M')}) отменены полностью.")
     else:

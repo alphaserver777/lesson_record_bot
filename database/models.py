@@ -105,3 +105,23 @@ class Payment(Base):
     status = Column(String(20), nullable=False, default="paid")  # paid/unpaid
     created_at = Column(String(50), nullable=True)
     source = Column(String(50), nullable=True)  # balance/manual
+
+
+class AnalyticsEvent(Base):
+    __tablename__ = "analytics_events"
+    __table_args__ = {"extend_existing": True}
+
+    id = Column(Integer, primary_key=True)
+    event_type = Column(String(40), nullable=False)
+    telegram_id = Column(Integer, ForeignKey("student_profiles.telegram_id", ondelete="SET NULL"), nullable=True)
+    record_date = Column(Date, nullable=True)
+    hour = Column(Integer, nullable=True)
+    minute = Column(Integer, nullable=True, default=0)
+    duration_minutes = Column(Integer, nullable=True, default=60)
+    lesson_kind = Column(String(20), nullable=True)  # single/regular
+    source_context = Column(String(20), nullable=True)  # miniapp/bot/admin
+    related_slot_date = Column(Date, nullable=True)
+    related_slot_hour = Column(Integer, nullable=True)
+    related_slot_minute = Column(Integer, nullable=True, default=0)
+    meta_json = Column(String(2000), nullable=True)
+    created_at = Column(String(50), nullable=True)

@@ -255,7 +255,20 @@ def _period_bounds(anchor_date: datetime.date, mode: str) -> tuple[datetime.date
         prev_from = prev_to.replace(day=1)
         return current_from, current_to, prev_from, prev_to
 
-    raise HTTPException(status_code=422, detail={"code": "INVALID_MODE", "message": "mode must be week or month"})
+    if mode == "quarter":
+        quarter_start_month = ((anchor_date.month - 1) // 3) * 3 + 1
+        current_from = datetime.date(anchor_date.year, quarter_start_month, 1)
+        next_quarter_month = quarter_start_month + 3
+        next_quarter_year = anchor_date.year + (1 if next_quarter_month > 12 else 0)
+        next_quarter_month = ((next_quarter_month - 1) % 12) + 1
+        next_quarter = datetime.date(next_quarter_year, next_quarter_month, 1)
+        current_to = next_quarter - datetime.timedelta(days=1)
+        prev_to = current_from - datetime.timedelta(days=1)
+        prev_quarter_start_month = ((prev_to.month - 1) // 3) * 3 + 1
+        prev_from = datetime.date(prev_to.year, prev_quarter_start_month, 1)
+        return current_from, current_to, prev_from, prev_to
+
+    raise HTTPException(status_code=422, detail={"code": "INVALID_MODE", "message": "mode must be week, month or quarter"})
 
 
 def _normalized_days_payload(days: list[Any]) -> list[dict[str, Any]]:
@@ -657,7 +670,15 @@ async def user_bookings(user: dict[str, Any] = Depends(get_current_user)) -> dic
 async def user_cancel(payload: BookIn, user: dict[str, Any] = Depends(get_current_user)) -> dict[str, Any]:
     telegram_id = int(user["sub"])
     hh, mm = _parse_hhmm(payload.time)
-    await transactions.delete_single_slot(telegram_id, payload.date, hh, mm)
+    await transactions.delete_single_slot(
+        telegram_id,
+        payload.date,
+        hh,
+        mm,
+        cancel_event_type="canceled_by_client",
+        source_context="miniapp",
+        note="Отменено пользователем",
+    )
     return {"status": "ok"}
 
 
@@ -1032,7 +1053,17 @@ async def admin_add_regular(payload: RegularLessonIn, admin: dict[str, Any] = De
 async def admin_patch_lesson(lesson_id: int, payload: SingleLessonIn, admin: dict[str, Any] = Depends(require_admin)) -> dict[str, Any]:
     _ = lesson_id
     hh, mm = _parse_hhmm(payload.time)
-    await transactions.reschedule_single_slot(payload.telegram_id, payload.date, hh, mm, payload.date, hh, mm, payload.duration)
+    await transactions.reschedule_single_slot(
+        payload.telegram_id,
+        payload.date,
+        hh,
+        mm,
+        payload.date,
+        hh,
+        mm,
+        payload.duration,
+        source_context="admin",
+    )
     await _audit(int(admin["sub"]), "update", "lesson", {"lesson_id": lesson_id, **payload.model_dump()})
     return {"status": "ok"}
 
@@ -1050,7 +1081,16 @@ async def admin_del_lesson(
     hh, mm = _parse_hhmm(time)
 
     if scope == "all_regular":
-        await transactions.delete_regular_slot(telegram_id, date.weekday(), hh, mm, delete_future_single=True)
+        await transactions.delete_regular_slot(
+            telegram_id,
+            date.weekday(),
+            hh,
+            mm,
+            delete_future_single=True,
+            cancel_event_type="canceled_by_admin",
+            source_context="admin",
+            note="Удалено администратором",
+        )
         await _audit(
             int(admin["sub"]),
             "delete",
@@ -1062,7 +1102,15 @@ async def admin_del_lesson(
     # Для регулярки удаляем только конкретный день и оставляем серию.
     slot_kind = await transactions.get_lesson_kind(date, hh, mm, telegram_id)
     if slot_kind == "regular":
-        canceled = await transactions.cancel_regular_occurrence(telegram_id, date, hh, mm, note="Отменено администратором")
+        canceled = await transactions.cancel_regular_occurrence(
+            telegram_id,
+            date,
+            hh,
+            mm,
+            note="Отменено администратором",
+            cancel_event_type="canceled_by_admin",
+            source_context="admin",
+        )
         if not canceled:
             await transactions.cancel_regular_slot_with_allow(date, hh, mm, note="Отменено администратором")
         await _audit(
@@ -1073,7 +1121,15 @@ async def admin_del_lesson(
         )
         return {"status": "ok", "scope": scope}
 
-    await transactions.delete_single_slot(telegram_id, date, hh, mm)
+    await transactions.delete_single_slot(
+        telegram_id,
+        date,
+        hh,
+        mm,
+        cancel_event_type="canceled_by_admin",
+        source_context="admin",
+        note="Удалено администратором",
+    )
     await _audit(
         int(admin["sub"]),
         "delete",
@@ -1174,7 +1230,15 @@ async def admin_apply_work_schedule_impact(
         rec = await transactions.get_record_by_id(int(record_id))
         if not rec or rec.telegram_id is None:
             continue
-        await transactions.delete_single_slot(int(rec.telegram_id), rec.record_date, int(rec.hour), int(rec.minute))
+        await transactions.delete_single_slot(
+            int(rec.telegram_id),
+            rec.record_date,
+            int(rec.hour),
+            int(rec.minute),
+            cancel_event_type="canceled_by_admin",
+            source_context="admin",
+            note=f"Отменено из-за изменения рабочего расписания: {reason}",
+        )
         deleted += 1
 
         if payload.notify_users:
@@ -1341,11 +1405,29 @@ async def admin_create_blocks(
                     hh,
                     mm,
                     note=f"Отменено из-за брони администратора: {reason}",
+                    cancel_event_type="canceled_by_admin",
+                    source_context="admin",
                 )
                 if not canceled_now and item["source"] == "record":
-                    await transactions.delete_single_slot(int(item["telegram_id"]), payload.date, hh, mm)
+                    await transactions.delete_single_slot(
+                        int(item["telegram_id"]),
+                        payload.date,
+                        hh,
+                        mm,
+                        cancel_event_type="canceled_by_admin",
+                        source_context="admin",
+                        note=f"Отменено из-за брони администратора: {reason}",
+                    )
             elif item["source"] == "record":
-                await transactions.delete_single_slot(int(item["telegram_id"]), payload.date, hh, mm)
+                await transactions.delete_single_slot(
+                    int(item["telegram_id"]),
+                    payload.date,
+                    hh,
+                    mm,
+                    cancel_event_type="canceled_by_admin",
+                    source_context="admin",
+                    note=f"Отменено из-за брони администратора: {reason}",
+                )
             canceled += 1
             try:
                 await bot.send_message(
@@ -1880,7 +1962,7 @@ async def stats_month(year: int, month: int, _: dict[str, Any] = Depends(require
 @app.get("/api/admin/analytics/overview")
 async def analytics_overview(
     anchor_date: datetime.date,
-    mode: str = Query(default="week", pattern=r"^(week|month)$"),
+    mode: str = Query(default="week", pattern=r"^(week|month|quarter)$"),
     _: dict[str, Any] = Depends(require_admin),
 ) -> dict[str, Any]:
     current_from, current_to, prev_from, prev_to = _period_bounds(anchor_date, mode)
@@ -1959,7 +2041,7 @@ async def analytics_overview(
 @app.get("/api/admin/analytics/clients-delta")
 async def analytics_clients_delta(
     anchor_date: datetime.date,
-    mode: str = Query(default="week", pattern=r"^(week|month)$"),
+    mode: str = Query(default="week", pattern=r"^(week|month|quarter)$"),
     _: dict[str, Any] = Depends(require_admin),
 ) -> dict[str, Any]:
     current_from, current_to, prev_from, prev_to = _period_bounds(anchor_date, mode)
@@ -2003,7 +2085,7 @@ async def analytics_clients_delta(
 @app.get("/api/admin/analytics/timeseries")
 async def analytics_timeseries(
     anchor_date: datetime.date,
-    mode: str = Query(default="week", pattern=r"^(week|month)$"),
+    mode: str = Query(default="week", pattern=r"^(week|month|quarter)$"),
     _: dict[str, Any] = Depends(require_admin),
 ) -> dict[str, Any]:
     current_from, current_to, prev_from, prev_to = _period_bounds(anchor_date, mode)
@@ -2055,7 +2137,7 @@ async def analytics_timeseries(
 @app.get("/api/admin/analytics/revenue-share")
 async def analytics_revenue_share(
     anchor_date: datetime.date,
-    mode: str = Query(default="week", pattern=r"^(week|month)$"),
+    mode: str = Query(default="week", pattern=r"^(week|month|quarter)$"),
     _: dict[str, Any] = Depends(require_admin),
 ) -> dict[str, Any]:
     current_from, current_to, _, _ = _period_bounds(anchor_date, mode)
@@ -2067,4 +2149,71 @@ async def analytics_revenue_share(
             "current_to": current_to.isoformat(),
         },
         **share,
+    }
+
+
+@app.get("/api/admin/analytics/overview-v2")
+async def analytics_overview_v2(
+    anchor_date: datetime.date,
+    mode: str = Query(default="week", pattern=r"^(week|month|quarter)$"),
+    _: dict[str, Any] = Depends(require_admin),
+) -> dict[str, Any]:
+    current_from, current_to, prev_from, prev_to = _period_bounds(anchor_date, mode)
+    current_summary = await transactions.payments_summary_for_range(current_from, current_to)
+    previous_summary = await transactions.payments_summary_for_range(prev_from, prev_to)
+    revenue_share = await transactions.client_revenue_share_for_range(current_from, current_to)
+    ltv = await transactions.client_ltv_leaderboard()
+    retention = await transactions.retention_overview()
+    revenue_drivers = await transactions.revenue_drivers_for_ranges(current_from, current_to, prev_from, prev_to)
+    occupancy = await transactions.occupancy_snapshot(current_from, current_to)
+    cancellations = await transactions.analytics_event_breakdown(current_from, current_to)
+    repeat_booking = await transactions.repeat_booking_summary()
+    regular_vs_single = await transactions.regular_vs_single_summary(current_from, current_to)
+    event_coverage = await transactions.analytics_event_log_coverage()
+
+    paid_now = int(current_summary.get("earned_total", 0))
+    paid_prev = int(previous_summary.get("earned_total", 0))
+    lessons_now = int(current_summary.get("lessons_total", 0))
+    lessons_prev = int(previous_summary.get("lessons_total", 0))
+
+    return {
+        "period": {
+            "mode": mode,
+            "current_from": current_from.isoformat(),
+            "current_to": current_to.isoformat(),
+            "previous_from": prev_from.isoformat(),
+            "previous_to": prev_to.isoformat(),
+        },
+        "executive": {
+            "kpi": {
+                "paid_now": paid_now,
+                "paid_prev": paid_prev,
+                "paid_delta_abs": paid_now - paid_prev,
+                "paid_delta_pct": _safe_delta_pct(paid_now, paid_prev),
+                "lessons_now": lessons_now,
+                "lessons_prev": lessons_prev,
+                "lessons_delta_abs": lessons_now - lessons_prev,
+                "avg_check_now": int(round(paid_now / max(1, int(current_summary.get("lessons_paid", 0) or 0)))) if int(current_summary.get("lessons_paid", 0) or 0) > 0 else 0,
+            },
+            "revenue_drivers": revenue_drivers,
+        },
+        "client_value": {
+            "revenue_share": revenue_share,
+            "ltv_leaderboard": ltv,
+            "repeat_booking": repeat_booking,
+        },
+        "retention": retention,
+        "schedule_economics": {
+            "occupancy_by_weekday": occupancy.get("weekday", []),
+            "occupancy_by_hour": occupancy.get("hour", []),
+            "load_heatmap": occupancy.get("heatmap", []),
+        },
+        "stability": {
+            "cancellations": cancellations,
+            "regular_vs_single": regular_vs_single,
+        },
+        "limitations": {
+            "cancel_history_note": cancellations.get("coverage_note"),
+            "event_tracking": event_coverage,
+        },
     }
