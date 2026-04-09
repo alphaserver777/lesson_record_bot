@@ -12,6 +12,17 @@ function formatMoneyShort(value) {
   return `${Number(value || 0).toLocaleString('ru-RU')} ₽`
 }
 
+function formatMetricCompact(value, kind = 'number') {
+  const numeric = Number(value || 0)
+  if (kind === 'money') {
+    if (Math.abs(numeric) >= 1000) {
+      return `${(numeric / 1000).toLocaleString('ru-RU', { maximumFractionDigits: 1 })}к`
+    }
+    return String(numeric)
+  }
+  return String(numeric)
+}
+
 function analyticsDayLabel(isoDate, mode) {
   try {
     const dt = new Date(`${isoDate}T00:00:00`)
@@ -29,10 +40,6 @@ function signalLabel(signal) {
   if (signal === 'regress') return 'Регресс'
   if (signal === 'stagnation') return 'Стагнация'
   return 'Смешано'
-}
-
-function signalClass(signal) {
-  return signal === 'progress' ? 'good' : signal === 'regress' ? 'bad' : signal === 'stagnation' ? 'neutral' : 'mixed'
 }
 
 function buildRevenueDonut(items) {
@@ -1640,51 +1647,64 @@ export function AdminView({ token }) {
                     <span className="badge mixed">Смешано: {analyticsSeriesSummary?.mixed ?? 0}</span>
                     <span className="badge bad">Регресс: {analyticsSeriesSummary?.regress ?? 0}</span>
                   </div>
-                  <div className="analytics-compare-list">
-                    {(analyticsSeries || []).map(point => {
-                      const revenueCurrent = Number(point.paid_amount || 0)
-                      const revenuePrev = Number(point.previous_paid_amount || 0)
-                      const lessonsCurrent = Number(point.lessons_done || 0)
-                      const lessonsPrev = Number(point.previous_lessons_done || 0)
-                      const revenueCurrentWidth = Math.max(revenueCurrent > 0 ? 8 : 0, Math.round((revenueCurrent / analyticsRevenueMax) * 100))
-                      const revenuePrevWidth = Math.max(revenuePrev > 0 ? 8 : 0, Math.round((revenuePrev / analyticsRevenueMax) * 100))
-                      const lessonsCurrentWidth = Math.max(lessonsCurrent > 0 ? 8 : 0, Math.round((lessonsCurrent / analyticsLessonsMax) * 100))
-                      const lessonsPrevWidth = Math.max(lessonsPrev > 0 ? 8 : 0, Math.round((lessonsPrev / analyticsLessonsMax) * 100))
-                      return (
-                        <div
-                          className={`analytics-compare-item ${signalClass(point.signal)}`}
-                          key={`analytics-compare-${point.date}`}
-                          title={`${point.date}: ${revenueCurrent} ₽ / ${lessonsCurrent} занятий; было ${revenuePrev} ₽ / ${lessonsPrev} занятий`}
-                        >
-                          <div className="analytics-compare-head">
-                            <strong>{analyticsDayLabel(point.date, analyticsMode)}</strong>
-                            <span className={`badge ${signalClass(point.signal)}`}>{signalLabel(point.signal)}</span>
-                          </div>
-                          <div className="analytics-compare-metric">
-                            <div className="analytics-compare-text">
-                              <span>Доход</span>
-                              <strong>{formatMoneyShort(revenueCurrent)}</strong>
-                              <small>Было {formatMoneyShort(revenuePrev)} • {point.revenue_delta_abs >= 0 ? '+' : ''}{formatMoneyShort(point.revenue_delta_abs)}</small>
+                  <div className="analytics-chart-legend">
+                    <span><i className="legend-swatch prev" /> Прошлый период</span>
+                    <span><i className="legend-swatch current revenue" /> Текущий доход</span>
+                    <span><i className="legend-swatch current lessons" /> Текущие занятия</span>
+                  </div>
+                  <div className="analytics-hist-section">
+                    <div className="analytics-hist-title-row">
+                      <strong>Доход</strong>
+                      <small>По каждой дате видно прошлый и текущий день</small>
+                    </div>
+                    <div className="analytics-histogram">
+                      {(analyticsSeries || []).map(point => {
+                        const revenueCurrent = Number(point.paid_amount || 0)
+                        const revenuePrev = Number(point.previous_paid_amount || 0)
+                        const revenueCurrentHeight = Math.max(revenueCurrent > 0 ? 8 : 0, Math.round((revenueCurrent / analyticsRevenueMax) * 108))
+                        const revenuePrevHeight = Math.max(revenuePrev > 0 ? 8 : 0, Math.round((revenuePrev / analyticsRevenueMax) * 108))
+                        return (
+                          <div className="analytics-hist-col" key={`analytics-revenue-${point.date}`} title={`${point.date}: текущий ${revenueCurrent} ₽, прошлый период ${revenuePrev} ₽`}>
+                            <div className="analytics-hist-bars">
+                              <span className="analytics-hist-bar prev" style={{ height: `${revenuePrevHeight}px` }} />
+                              <span className="analytics-hist-bar current revenue" style={{ height: `${revenueCurrentHeight}px` }} />
                             </div>
-                            <div className="analytics-track-group">
-                              <div className="analytics-track prev"><span style={{ width: `${revenuePrevWidth}%` }} /></div>
-                              <div className="analytics-track current revenue"><span style={{ width: `${revenueCurrentWidth}%` }} /></div>
+                            <div className="analytics-hist-label">{analyticsDayLabel(point.date, analyticsMode)}</div>
+                            <div className="analytics-hist-values">
+                              <small>{formatMetricCompact(revenuePrev, 'money')}</small>
+                              <strong>{formatMetricCompact(revenueCurrent, 'money')}</strong>
                             </div>
                           </div>
-                          <div className="analytics-compare-metric">
-                            <div className="analytics-compare-text">
-                              <span>Занятия</span>
-                              <strong>{lessonsCurrent}</strong>
-                              <small>Было {lessonsPrev} • {point.lessons_delta_abs >= 0 ? '+' : ''}{point.lessons_delta_abs}</small>
+                        )
+                      })}
+                    </div>
+                  </div>
+                  <div className="analytics-hist-section">
+                    <div className="analytics-hist-title-row">
+                      <strong>Занятия</strong>
+                      <small>Тот же день прошлого периода против текущего</small>
+                    </div>
+                    <div className="analytics-histogram">
+                      {(analyticsSeries || []).map(point => {
+                        const lessonsCurrent = Number(point.lessons_done || 0)
+                        const lessonsPrev = Number(point.previous_lessons_done || 0)
+                        const lessonsCurrentHeight = Math.max(lessonsCurrent > 0 ? 8 : 0, Math.round((lessonsCurrent / analyticsLessonsMax) * 108))
+                        const lessonsPrevHeight = Math.max(lessonsPrev > 0 ? 8 : 0, Math.round((lessonsPrev / analyticsLessonsMax) * 108))
+                        return (
+                          <div className="analytics-hist-col" key={`analytics-lessons-${point.date}`} title={`${point.date}: текущий ${lessonsCurrent} занятий, прошлый период ${lessonsPrev} занятий`}>
+                            <div className="analytics-hist-bars">
+                              <span className="analytics-hist-bar prev lessons" style={{ height: `${lessonsPrevHeight}px` }} />
+                              <span className="analytics-hist-bar current lessons" style={{ height: `${lessonsCurrentHeight}px` }} />
                             </div>
-                            <div className="analytics-track-group">
-                              <div className="analytics-track prev lessons"><span style={{ width: `${lessonsPrevWidth}%` }} /></div>
-                              <div className="analytics-track current lessons"><span style={{ width: `${lessonsCurrentWidth}%` }} /></div>
+                            <div className="analytics-hist-label">{analyticsDayLabel(point.date, analyticsMode)}</div>
+                            <div className="analytics-hist-values">
+                              <small>{formatMetricCompact(lessonsPrev)}</small>
+                              <strong>{formatMetricCompact(lessonsCurrent)}</strong>
                             </div>
                           </div>
-                        </div>
-                      )
-                    })}
+                        )
+                      })}
+                    </div>
                   </div>
                 </div>
               ) : (
