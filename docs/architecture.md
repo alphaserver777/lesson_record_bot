@@ -77,6 +77,8 @@ Production stack должен подниматься через:
 - DB session и engine: `database/connect.py`
 - Модели и транзакции: `database/`
 - Общая бизнес-логика: `utils/`
+- Для long-lived процессов проекта запрещено держать одну shared ORM session на весь runtime.
+- Session lifecycle должен быть привязан к короткоживущему unit of work: HTTP request, bot update или отдельная background job iteration.
 - Для профилей учеников `student_profiles.first_name` и `student_profiles.last_name` считаются источником истины для имени.
 - `student_profiles.full_name` хранится как производное поле в формате `Фамилия Имя`, а не как независимое свободное значение.
 

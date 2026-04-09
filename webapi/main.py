@@ -10,13 +10,13 @@ from typing import Any
 
 from aiogram.exceptions import TelegramBadRequest
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
-from fastapi import Depends, FastAPI, Header, HTTPException, Query
+from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import select, text
 
 from config_data.config import ADMINS_TELEGRAM_ID
 from database import transactions
-from database.connect import session
+from database.connect import close_db, remove_session, rollback_session, session
 from database.models import RecordDate, StudentProfile
 from loader import bot
 from utils.calendar_backend import get_busy_intervals, get_calendar_tz
@@ -55,6 +55,17 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+@app.middleware("http")
+async def db_session_middleware(request: Request, call_next):
+    try:
+        return await call_next(request)
+    except Exception:
+        await rollback_session()
+        raise
+    finally:
+        await remove_session()
 
 
 def _parse_hhmm(value: str) -> tuple[int, int]:
@@ -405,6 +416,12 @@ async def startup() -> None:
                     {"weekday": int(weekday), "start_minute": int(start_min), "end_minute": int(end_min)},
                 )
     await session.commit()
+    await remove_session()
+
+
+@app.on_event("shutdown")
+async def shutdown() -> None:
+    await close_db()
 
 
 @app.get("/health")
@@ -1464,28 +1481,13 @@ async def admin_schedule_month(
 ) -> dict[str, Any]:
     year, mon = month.split("-")
     y, m = int(year), int(mon)
-    today = datetime.date.today()
-    days: list[dict[str, Any]] = []
-
-    for day in range(1, calendar.monthrange(y, m)[1] + 1):
-        d = datetime.date(y, m, day)
-        booked_items = await transactions.viewing_recordings_day_db(d, show_blocks=False)
-        booked_count = len(booked_items)
-        if d < today:
-            free_count = 0
-        else:
-            slots = await _available_slots_for_date(d, duration)
-            free_count = sum(1 for s in slots if s.get("available"))
-        days.append(
-            {
-                "date": d.isoformat(),
-                "booked_count": booked_count,
-                "free_count": free_count,
-                "has_booked": booked_count > 0,
-                "has_free": free_count > 0,
-                "past": d < today,
-            }
-        )
+    start_date = datetime.date(y, m, 1)
+    end_date = datetime.date(y, m, calendar.monthrange(y, m)[1])
+    days = await transactions.admin_schedule_month_summary(
+        start_date=start_date,
+        end_date=end_date,
+        duration_minutes=duration,
+    )
     return {"month": month, "duration": duration, "days": days}
 
 
