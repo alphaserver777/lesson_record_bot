@@ -6,6 +6,7 @@ import os
 from aiogram import Bot, Dispatcher
 
 from database.transactions import init_db
+from health_server import HealthState, start_health_server
 from handlers.routers import register_routers
 from loader import bot, dp, on_shutdown, start_up
 from middlewares.who_here import WhoHereMiddleware
@@ -15,6 +16,9 @@ from utils.restart_services import restarting_services
 
 async def main(bot: Bot, dp: Dispatcher) -> None:
     """Функция main. Запускает бота."""
+    health_state = HealthState()
+    health_server = await start_health_server(health_state)
+
     await set_default_commands(bot)
 
     dp.startup.register(start_up)
@@ -30,7 +34,13 @@ async def main(bot: Bot, dp: Dispatcher) -> None:
     asyncio.ensure_future(restarting_services())
 
     await bot.delete_webhook(drop_pending_updates=True)
-    await dp.start_polling(bot)
+    health_state.ready = True
+    try:
+        await dp.start_polling(bot)
+    finally:
+        health_state.ready = False
+        health_server.close()
+        await health_server.wait_closed()
 
 
 if __name__ == "__main__":

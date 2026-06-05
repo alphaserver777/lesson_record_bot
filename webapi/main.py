@@ -16,12 +16,20 @@ from sqlalchemy import select, text
 
 from config_data.config import ADMINS_TELEGRAM_ID
 from database import transactions
-from database.connect import close_db, remove_session, rollback_session, session
+from database.connect import (
+    bind_request_session_scope,
+    close_db,
+    remove_session,
+    reset_request_session_scope,
+    rollback_session,
+    session,
+)
 from database.models import RecordDate, StudentProfile
 from loader import bot
 from utils.calendar_backend import get_busy_intervals, get_calendar_tz
 from utils.schedule import WEEK_SCHEDULE, is_time_in_schedule, slots_for_date
 from webapi.auth import issue_session_token, verify_init_data, verify_session_token
+from webapi.probes import router as probes_router
 from webapi.schemas import (
     AdminBlockCreateIn,
     AdminBlockDeleteIn,
@@ -44,6 +52,7 @@ from webapi.schemas import (
 
 logger = logging.getLogger(__name__)
 app = FastAPI(title="Lesson Record MiniApp API", version="1.0.0")
+app.state.ready = False
 ADMIN_MINIAPP_APPROVALS_ENABLED = os.getenv("ADMIN_MINIAPP_APPROVALS_ENABLED", "1").strip().lower() in {"1", "true", "yes", "on"}
 ADMIN_BOT_LEGACY_ENABLED = os.getenv("ADMIN_BOT_LEGACY_ENABLED", "1").strip().lower() in {"1", "true", "yes", "on"}
 MINI_APP_URL = os.getenv("MINI_APP_URL", "http://localhost:5173")
@@ -55,10 +64,14 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+app.include_router(probes_router)
 
 
 @app.middleware("http")
 async def db_session_middleware(request: Request, call_next):
+    if request.url.path in {"/health", "/ready"}:
+        return await call_next(request)
+    scope_token = bind_request_session_scope()
     try:
         return await call_next(request)
     except Exception:
@@ -66,6 +79,7 @@ async def db_session_middleware(request: Request, call_next):
         raise
     finally:
         await remove_session()
+        reset_request_session_scope(scope_token)
 
 
 def _parse_hhmm(value: str) -> tuple[int, int]:
@@ -452,12 +466,13 @@ async def startup() -> None:
 
 @app.on_event("shutdown")
 async def shutdown() -> None:
+    app.state.ready = False
     await close_db()
 
 
-@app.get("/health")
-async def health() -> dict[str, str]:
-    return {"status": "ok"}
+@app.on_event("startup")
+async def mark_ready() -> None:
+    app.state.ready = True
 
 
 @app.post("/api/webapp/auth/telegram")

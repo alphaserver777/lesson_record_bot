@@ -1,6 +1,8 @@
 """Модуль подключения базы данных."""
 import os
 from asyncio import current_task
+from contextvars import ContextVar, Token
+from uuid import uuid4
 
 from sqlalchemy.ext.asyncio import AsyncSession, async_scoped_session, create_async_engine
 from sqlalchemy.orm import declarative_base, sessionmaker
@@ -20,7 +22,22 @@ else:
 engine = create_async_engine(__DATABASE_URL, echo=False)
 Base = declarative_base()
 SessionFactory = sessionmaker(bind=engine, expire_on_commit=False, class_=AsyncSession)
-Session = async_scoped_session(SessionFactory, scopefunc=current_task)
+_request_session_scope: ContextVar[str | None] = ContextVar("request_session_scope", default=None)
+
+
+def _session_scope() -> object:
+    return _request_session_scope.get() or current_task()
+
+
+def bind_request_session_scope() -> Token[str | None]:
+    return _request_session_scope.set(uuid4().hex)
+
+
+def reset_request_session_scope(token: Token[str | None]) -> None:
+    _request_session_scope.reset(token)
+
+
+Session = async_scoped_session(SessionFactory, scopefunc=_session_scope)
 session = Session
 
 
