@@ -6,7 +6,7 @@ import logging
 from config_data.config import REMINDER_TIME
 from database import transactions
 from utils.calendar_backend import get_calendar_tz
-from utils.misc.reminder import reminder, reminder_before_delta, send_presence_prompts
+from utils.misc.reminder import reminder, reminder_before_delta, send_daily_admin_summary, send_presence_prompts
 
 logger = logging.getLogger(__name__)
 
@@ -15,6 +15,7 @@ async def restarting_services() -> None:
     """
     Notification-only scheduler:
     - daily cleanup,
+    - daily admin summary,
     - daily presence prompts,
     - hourly pending presence pings,
     - reminders before lesson start.
@@ -36,12 +37,21 @@ async def restarting_services() -> None:
         reminder_minute = 0
 
     reminder_total_minutes = reminder_hour * 60 + reminder_minute
+    summary_total_minutes = 9 * 60
+    last_daily_summary_date: datetime.date | None = None
     last_daily_presence_date: datetime.date | None = None
 
     while True:
         region_time = datetime.datetime.now(get_calendar_tz())
         current_date = region_time.date()
         current_total_minutes = region_time.hour * 60 + region_time.minute
+
+        if last_daily_summary_date != current_date and current_total_minutes >= summary_total_minutes:
+            try:
+                await send_daily_admin_summary(current_date)
+            except Exception as exc:  # pylint: disable=broad-except
+                logger.warning("Daily admin summary warning: %s", exc)
+            last_daily_summary_date = current_date
 
         if last_daily_presence_date != current_date and current_total_minutes >= reminder_total_minutes:
             await transactions.deleting_records_older_7_days()

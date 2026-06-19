@@ -2764,6 +2764,108 @@ async def records_starting_at(date: datetime.date, hour: int, minute: int) -> li
     ]
 
 
+async def lessons_for_date_details(date: datetime.date) -> list[dict[str, Any]]:
+    result: list[dict[str, Any]] = []
+    blocked_rows = await session.execute(
+        select(RecordDate.hour, RecordDate.minute).where(
+            RecordDate.record_date == date,
+            RecordDate.kind == "block",
+        )
+    )
+    blocked_times = {(int(row.hour), int(row.minute)) for row in blocked_rows}
+
+    res = await session.execute(
+        select(
+            StudentProfile.telegram_id,
+            StudentProfile.full_name,
+            StudentProfile.telephone,
+            StudentProfile.price,
+            RecordDate.hour,
+            RecordDate.minute,
+            RecordDate.duration_minutes,
+            RecordDate.kind,
+        )
+        .join(StudentProfile, StudentProfile.telegram_id == RecordDate.telegram_id)
+        .where(
+            RecordDate.record_date == date,
+            ((RecordDate.kind.is_(None)) | (RecordDate.kind.not_in(["block", "allow"]))),
+            ((RecordDate.booking_status.is_(None)) | (RecordDate.booking_status == "approved")),
+        )
+    )
+    seen = set()
+    for row in res.all():
+        tg_id = int(row.telegram_id)
+        hour = int(row.hour or 0)
+        minute = int(row.minute or 0)
+        key = (tg_id, hour, minute)
+        seen.add(key)
+        duration_val = int(row.duration_minutes or SLOT_DURATION_MINUTES)
+        price_60 = int(row.price or 0)
+        result.append(
+            {
+                "telegram_id": tg_id,
+                "full_name": row.full_name,
+                "telephone": row.telephone,
+                "hour": hour,
+                "minute": minute,
+                "duration_minutes": duration_val,
+                "kind": "regular" if (row.kind or "single") == "regular" else "single",
+                "price_60": price_60,
+                "amount": max(0, int(round(price_60 * (duration_val / 60.0)))),
+            }
+        )
+
+    weekday = date.weekday()
+    skipped_ids = await skipped_regular_lesson_ids_for_date(date)
+    allow_times = await legacy_allow_times_for_date(date)
+    regs = await session.execute(
+        select(
+            RegularLesson.id,
+            RegularLesson.telegram_id,
+            RegularLesson.hour,
+            RegularLesson.minute,
+            RegularLesson.duration_minutes,
+            StudentProfile.full_name,
+            StudentProfile.telephone,
+            StudentProfile.price,
+        )
+        .join(StudentProfile, StudentProfile.telegram_id == RegularLesson.telegram_id, isouter=True)
+        .where(
+            RegularLesson.day_of_week == weekday,
+            RegularLesson.telegram_id.is_not(None),
+        )
+    )
+    for row in regs:
+        if int(row.id) in skipped_ids:
+            continue
+        hour = int(row.hour or 0)
+        minute = int(row.minute or 0)
+        time_key = (hour, minute)
+        if time_key in allow_times or time_key in blocked_times:
+            continue
+        tg_id = int(row.telegram_id)
+        key = (tg_id, hour, minute)
+        if key in seen:
+            continue
+        duration_val = int(row.duration_minutes or SLOT_DURATION_MINUTES)
+        price_60 = int(row.price or 0)
+        result.append(
+            {
+                "telegram_id": tg_id,
+                "full_name": row.full_name,
+                "telephone": row.telephone,
+                "hour": hour,
+                "minute": minute,
+                "duration_minutes": duration_val,
+                "kind": "regular",
+                "price_60": price_60,
+                "amount": max(0, int(round(price_60 * (duration_val / 60.0)))),
+            }
+        )
+
+    return sorted(result, key=lambda item: (item["hour"], item["minute"], item["full_name"] or ""))
+
+
 async def lessons_for_date(date: datetime.date) -> list[Any]:
     single = await session.execute(
         select(

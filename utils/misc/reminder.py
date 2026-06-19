@@ -41,6 +41,44 @@ def _admin_reminder_text(item: dict, target_datetime: datetime.datetime, lead_te
         f"<a href=\"tg://user?id={telegram_id}\">Написать клиенту</a>"
     )
 
+
+def _daily_admin_summary_text(date: datetime.date, lessons: list[dict]) -> str:
+    date_text = date.strftime("%d.%m.%Y")
+    if not lessons:
+        return f"Сводка на сегодня, {date_text}\n\nЗанятий сегодня нет."
+
+    lines = [
+        f"Сводка на сегодня, {date_text}",
+        f"Всего занятий: {len(lessons)}",
+        "",
+    ]
+    for index, item in enumerate(lessons, start=1):
+        full_name = (item.get("full_name") or "").strip() or str(item.get("telegram_id") or "Без имени")
+        kind = "регулярное" if item.get("kind") == "regular" else "разовое"
+        hour = int(item.get("hour") or 0)
+        minute = int(item.get("minute") or 0)
+        duration = int(item.get("duration_minutes") or SLOT_DURATION_MINUTES)
+        amount = int(item.get("amount") or 0)
+        price_text = f", {amount} ₽" if amount else ""
+        lines.append(
+            f"{index}. {hour:02d}:{minute:02d} — {full_name} "
+            f"({kind}, {duration} мин{price_text})"
+        )
+    return "\n".join(lines)
+
+
+async def send_daily_admin_summary(date: datetime.date) -> None:
+    """Отправляет администраторам утреннюю сводку занятий на день."""
+    lessons = await transactions.lessons_for_date_details(date)
+    summary_text = _daily_admin_summary_text(date, lessons)
+    for admin_id in ADMINS_TELEGRAM_ID:
+        try:
+            await bot.send_message(chat_id=admin_id, text=summary_text)
+            logger.info("Утренняя сводка отправлена admin=%s date=%s count=%s", admin_id, date, len(lessons))
+        except Exception as exc:
+            logger.warning("Не удалось отправить утреннюю сводку админу %s: %s", admin_id, exc)
+
+
 async def reminder(date: datetime) -> None:
     """
     Функция reminder. Напоминания о записи. Запрашивает всех пользователей на сегодня.
