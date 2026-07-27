@@ -3,6 +3,8 @@ from aiogram import F, Router
 from aiogram.filters import CommandStart
 
 from handlers.custom_handlers.actioins_users.presence_response import (
+    presence_cancel_no,
+    presence_cancel_yes,
     presence_no,
     presence_yes,
 )
@@ -20,5 +22,7 @@ def register_routers(router: Router):
 
     router.callback_query.register(presence_yes, F.data.startswith("presence_yes="))
     router.callback_query.register(presence_no, F.data.startswith("presence_no="))
+    router.callback_query.register(presence_cancel_yes, F.data.startswith("presence_cancel_yes="))
+    router.callback_query.register(presence_cancel_no, F.data.startswith("presence_cancel_no="))
     router.callback_query.register(booking_approve, F.data.startswith("booking_approve:"))
     router.callback_query.register(booking_reject, F.data.startswith("booking_reject:"))

@@ -155,3 +155,6 @@ database_prod/database.db
 # Miniapp local/runtime artifacts
 miniapp/node_modules/
 miniapp/package-lock.json
+
+# Local production DB backups pulled from servers
+backups/production-db/

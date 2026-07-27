@@ -38,7 +38,15 @@ async def cancel_record(callback: types.CallbackQuery):
         hour, minute = map(int, time_str.split("_"))
 
         try:
-            await transactions.del_record(date, hour, minute)
+            await transactions.delete_single_slot(
+                user_id,
+                date,
+                hour,
+                minute,
+                cancel_event_type="canceled_by_admin",
+                source_context="admin",
+                note="Аннулировано администратором",
+            )
         except Exception as exc:  # pylint: disable=broad-except
             logger.warning("Не удалось удалить запись %s %s:%s: %s", date, hour, minute, exc)
 

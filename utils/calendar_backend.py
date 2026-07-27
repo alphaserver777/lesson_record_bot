@@ -8,7 +8,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from sqlalchemy import select
 
 from database.connect import session
-from database.models import RecordDate, RegularLesson
+from database.models import RecordDate, RegularLesson, RegularLessonException
 
 
 class CalendarBackendError(Exception):
@@ -73,13 +73,31 @@ async def get_busy_intervals(
         busy.append((start, end))
 
     weekday = target_date.weekday()
+    skipped_rows = await session.execute(
+        select(RegularLessonException.regular_lesson_id).where(
+            RegularLessonException.exception_date == target_date,
+            RegularLessonException.action == "skip",
+        )
+    )
+    skipped_ids = {int(row[0]) for row in skipped_rows.all() if row[0] is not None}
+    allow_rows = await session.execute(
+        select(RecordDate.hour, RecordDate.minute).where(
+            RecordDate.record_date == target_date,
+            RecordDate.kind == "allow",
+        )
+    )
+    allow_times = {(int(row.hour), int(row.minute)) for row in allow_rows}
     regulars = await session.execute(
-        select(RegularLesson.hour, RegularLesson.minute, RegularLesson.duration_minutes).where(
+        select(RegularLesson.id, RegularLesson.hour, RegularLesson.minute, RegularLesson.duration_minutes).where(
             RegularLesson.day_of_week == weekday,
             RegularLesson.telegram_id.is_not(None),
         )
     )
     for row in regulars:
+        if int(row.id) in skipped_ids:
+            continue
+        if (int(row.hour or 0), int(row.minute or 0)) in allow_times:
+            continue
         hour = int(row.hour or 0)
         minute = int(row.minute or 0)
         duration = int(row.duration_minutes or 60)

@@ -12,7 +12,7 @@ from utils.calendar_backend import (
     get_calendar_tz,
     list_events,
 )
-from database.models import RecordDate, RegularLesson
+from database.models import RecordDate, RegularLesson, RegularLessonException
 from database.connect import session
 from utils.schedule import SLOT_DURATION_MINUTES
 
@@ -311,12 +311,24 @@ async def push_db_events_to_calendar(days_ahead: int = 30) -> int:
 
     regulars = await session.execute(select(RegularLesson))
     regulars = regulars.scalars().all()
+    exception_rows = await session.execute(
+        select(RegularLessonException.regular_lesson_id, RegularLessonException.exception_date).where(
+            RegularLessonException.action == "skip",
+            RegularLessonException.exception_date >= today,
+            RegularLessonException.exception_date <= max_date,
+        )
+    )
+    skipped_pairs = {
+        (int(row[0]), row[1]) for row in exception_rows.all() if row[0] is not None and row[1] is not None
+    }
     if regulars:
         day_iter = today
         while day_iter <= max_date:
             weekday = day_iter.weekday()
             for lesson in regulars:
                 if lesson.day_of_week == weekday:
+                    if (int(lesson.id), day_iter) in skipped_pairs:
+                        continue
                     existing = await session.execute(
                         select(RecordDate)
                         .where(

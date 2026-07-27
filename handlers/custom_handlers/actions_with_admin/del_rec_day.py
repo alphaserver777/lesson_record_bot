@@ -44,10 +44,19 @@ async def del_record_day_1(message: [types.CallbackQuery, types.Message]):
 
     try:
         if kind == "regular":
-            # Разовая отмена регулярки: удаляем запись (если есть) и ставим allow, чтобы не показывать блок
-            await transactions.cancel_regular_slot_with_allow(
-                date, hour, minute, note="Отмена регулярного занятия"
+            canceled = await transactions.cancel_regular_occurrence(
+                telegram_id,
+                date,
+                hour,
+                minute,
+                note="Отмена регулярного занятия",
+                cancel_event_type="canceled_by_admin",
+                source_context="admin",
             )
+            if not canceled:
+                await transactions.cancel_regular_slot_with_allow(
+                    date, hour, minute, note="Отмена регулярного занятия"
+                )
         else:
             await transactions.del_record(date, hour, minute)
     except Exception as exc:  # pylint: disable=broad-except

@@ -11,11 +11,5 @@ def open_miniapp_kb(mini_app_url: str) -> types.InlineKeyboardMarkup:
                     web_app=types.WebAppInfo(url=mini_app_url),
                 )
             ],
-            [
-                types.InlineKeyboardButton(
-                    text="🌐 Открыть в браузере",
-                    url=mini_app_url,
-                )
-            ],
         ]
     )

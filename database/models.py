@@ -42,6 +42,31 @@ class RegularLesson(Base):
     duration_minutes = Column(Integer, nullable=False, default=60)
 
 
+class RegularLessonException(Base):
+    __tablename__ = "regular_lesson_exceptions"
+    __table_args__ = {'extend_existing': True}
+
+    id = Column(Integer, primary_key=True)
+    regular_lesson_id = Column(Integer, ForeignKey("regular_lessons.id", ondelete="CASCADE"), nullable=False)
+    exception_date = Column(Date, nullable=False)
+    action = Column(String(20), nullable=False, default="skip")
+    note = Column(String(255), nullable=True)
+    created_at = Column(String(50), nullable=True)
+
+
+class DateAvailabilityOverride(Base):
+    __tablename__ = "date_availability_overrides"
+    __table_args__ = {'extend_existing': True}
+
+    id = Column(Integer, primary_key=True)
+    target_date = Column(Date, nullable=False)
+    start_minute = Column(Integer, nullable=False)
+    end_minute = Column(Integer, nullable=False)
+    mode = Column(String(20), nullable=False, default="extra_open")
+    note = Column(String(255), nullable=True)
+    created_at = Column(String(50), nullable=True)
+
+
 class StudentProfile(Base):
     __tablename__ = "student_profiles"
     __table_args__ = {"extend_existing": True}
@@ -57,6 +82,8 @@ class StudentProfile(Base):
     goal = Column(String(255), nullable=True)
     notes = Column(String(255), nullable=True)
     telephone = Column(String(20), nullable=True)
+    miniapp_entry_chat_id = Column(Integer, nullable=True)
+    miniapp_entry_message_id = Column(Integer, nullable=True)
     blocked = Column(Boolean, default=False)
     is_deleted = Column(Boolean, default=False)
     last_visit_date = Column(String(50), nullable=True)
@@ -78,3 +105,23 @@ class Payment(Base):
     status = Column(String(20), nullable=False, default="paid")  # paid/unpaid
     created_at = Column(String(50), nullable=True)
     source = Column(String(50), nullable=True)  # balance/manual
+
+
+class AnalyticsEvent(Base):
+    __tablename__ = "analytics_events"
+    __table_args__ = {"extend_existing": True}
+
+    id = Column(Integer, primary_key=True)
+    event_type = Column(String(40), nullable=False)
+    telegram_id = Column(Integer, ForeignKey("student_profiles.telegram_id", ondelete="SET NULL"), nullable=True)
+    record_date = Column(Date, nullable=True)
+    hour = Column(Integer, nullable=True)
+    minute = Column(Integer, nullable=True, default=0)
+    duration_minutes = Column(Integer, nullable=True, default=60)
+    lesson_kind = Column(String(20), nullable=True)  # single/regular
+    source_context = Column(String(20), nullable=True)  # miniapp/bot/admin
+    related_slot_date = Column(Date, nullable=True)
+    related_slot_hour = Column(Integer, nullable=True)
+    related_slot_minute = Column(Integer, nullable=True, default=0)
+    meta_json = Column(String(2000), nullable=True)
+    created_at = Column(String(50), nullable=True)

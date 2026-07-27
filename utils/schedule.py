@@ -77,6 +77,33 @@ def _load_schedule_from_db() -> dict[int, list[tuple[str, str]]]:
     return schedule_map
 
 
+def _load_extra_open_intervals_for_date(target_date: datetime.date) -> list[tuple[str, str]]:
+    path = _resolve_db_path()
+    if not os.path.exists(path):
+        return []
+    conn = sqlite3.connect(path)
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='date_availability_overrides'"
+        )
+        if not cur.fetchone():
+            return []
+
+        cur.execute(
+            "SELECT start_minute, end_minute "
+            "FROM date_availability_overrides "
+            "WHERE target_date = ? AND mode = 'extra_open' "
+            "ORDER BY start_minute, end_minute",
+            (target_date.isoformat(),),
+        )
+        rows = cur.fetchall()
+    finally:
+        conn.close()
+
+    return [(_minutes_to_hhmm(int(start_minute)), _minutes_to_hhmm(int(end_minute))) for start_minute, end_minute in rows]
+
+
 def _working_schedule_map() -> dict[int, list[tuple[str, str]]]:
     global _CACHE_TS, _CACHE_MAP
     now = time.time()
@@ -101,9 +128,16 @@ def get_working_intervals_for_weekday(weekday: int) -> list[tuple[str, str]]:
     return WEEK_SCHEDULE.get(weekday, [])
 
 
+def get_working_intervals_for_date(target_date: datetime.date) -> list[tuple[str, str]]:
+    base = list(get_working_intervals_for_weekday(target_date.weekday()))
+    extra = _load_extra_open_intervals_for_date(target_date)
+    merged = [*base, *extra]
+    return sorted(merged, key=lambda item: item[0])
+
+
 def slots_for_date(target_date: datetime.date, now_dt: datetime.datetime | None = None) -> List[Tuple[int, int]]:
     """Возвращает список доступных стартов слотов (hour, minute) на дату по расписанию."""
-    day_schedule = get_working_intervals_for_weekday(target_date.weekday())
+    day_schedule = get_working_intervals_for_date(target_date)
     if not day_schedule:
         return []
 
@@ -122,7 +156,7 @@ def slots_for_date(target_date: datetime.date, now_dt: datetime.datetime | None 
     if now_dt and now_dt.date() == target_date:
         slots = [(h, m) for h, m in slots if datetime.datetime.combine(target_date, datetime.time(h, m)) > now_dt]
 
-    return slots
+    return sorted(set(slots), key=lambda item: (item[0], item[1]))
 
 
 def format_slot(hour: int, minute: int) -> str:
@@ -136,7 +170,7 @@ def is_time_in_schedule(
     duration_minutes: int = SLOT_DURATION_MINUTES,
 ) -> bool:
     """Проверяет, попадает ли слот в доступные интервалы дня."""
-    day_schedule = get_working_intervals_for_weekday(target_date.weekday())
+    day_schedule = get_working_intervals_for_date(target_date)
     if not day_schedule:
         return False
 

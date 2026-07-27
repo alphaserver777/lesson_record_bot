@@ -15,4 +15,6 @@ COPY . /app/
 
 WORKDIR /app
 
+EXPOSE 8081
+
 ENTRYPOINT ["python", "main.py"]

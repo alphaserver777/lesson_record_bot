@@ -1,25 +1,26 @@
 """Модуль работы с базой данных."""
+from collections import defaultdict
 import datetime
+import json
 import logging
 from typing import Any
 
 from sqlalchemy import case, delete, func, select, text, update
+from sqlalchemy.exc import IntegrityError
 
 from database.connect import Base, engine, session
-from database.models import Payment, RecordDate, RegularLesson, StudentProfile
+from database.models import AnalyticsEvent, DateAvailabilityOverride, Payment, RecordDate, RegularLesson, RegularLessonException, StudentProfile
 from utils.calendar_backend import (
     CalendarBackendError,
-    create_block_event,
     create_booking,
     create_simple_event,
-    create_full_day_block_event,
     delete_events,
     delete_events_in_range,
     get_busy_intervals,
     get_calendar_tz,
 )
 from utils.sync_calendar import push_db_events_to_calendar
-from utils.schedule import SLOT_DURATION_MINUTES, slots_for_date
+from utils.schedule import SLOT_DURATION_MINUTES, SLOT_STEP_MINUTES, get_working_intervals_for_weekday, slots_for_date
 
 logger = logging.getLogger(__name__)
 
@@ -59,8 +60,11 @@ async def init_db() -> None:
     await _ensure_record_note_column()
     await _ensure_presence_columns()
     await _ensure_regular_lessons_columns()
+    await _ensure_regular_lesson_exceptions_table()
+    await _ensure_date_availability_overrides_table()
     await _ensure_student_profiles_columns()
     await _ensure_payments_columns()
+    await _ensure_analytics_events_table()
     await _ensure_booking_status_columns()
     await _normalize_record_kinds()
 
@@ -193,11 +197,13 @@ async def pending_presence_for_date(date: datetime.date) -> list[Any]:
     )
     records = res.all()
     seen_slots = {(row[1], row[3], row[4]) for row in records}
+    skipped_ids = await skipped_regular_lesson_ids_for_date(target_date)
 
     # Добавляем регулярки на этот день, если слота нет в record_dates, и создаём запись для хранения статуса
     weekday = target_date.weekday()
     regulars = await session.execute(
         select(
+            RegularLesson.id,
             RegularLesson.telegram_id,
             RegularLesson.hour,
             RegularLesson.minute,
@@ -210,6 +216,8 @@ async def pending_presence_for_date(date: datetime.date) -> list[Any]:
     new_records: list[tuple] = []
     for lesson in regulars:
         key = (lesson.telegram_id, lesson.hour, lesson.minute)
+        if int(lesson.id) in skipped_ids:
+            continue
         if key in seen_slots:
             continue
         if (lesson.hour, lesson.minute) in blocked_times:
@@ -280,6 +288,17 @@ async def mark_presence_status(
         )
         for dup in dupes.scalars():
             await session.delete(dup)
+        await log_analytics_event(
+            "presence_yes" if status == "yes" else "presence_no",
+            telegram_id=rec_obj.telegram_id,
+            record_date=rec_obj.record_date,
+            hour=rec_obj.hour,
+            minute=rec_obj.minute,
+            duration_minutes=rec_obj.duration_minutes or SLOT_DURATION_MINUTES,
+            lesson_kind=rec_obj.kind or "single",
+            source_context="bot",
+            commit=False,
+        )
         await session.commit()
 
 
@@ -297,11 +316,34 @@ async def _ensure_regular_lessons_columns() -> None:
         await session.commit()
 
 
+async def _ensure_regular_lesson_exceptions_table() -> None:
+    async with engine.begin() as conn:
+        await conn.run_sync(RegularLessonException.__table__.create, checkfirst=True)
+
+
+async def _ensure_date_availability_overrides_table() -> None:
+    async with engine.begin() as conn:
+        await conn.run_sync(DateAvailabilityOverride.__table__.create, checkfirst=True)
+    await session.execute(
+        text(
+            "CREATE INDEX IF NOT EXISTS idx_date_availability_overrides_target_date "
+            "ON date_availability_overrides(target_date, mode, start_minute, end_minute)"
+        )
+    )
+    await session.commit()
+
+
 async def _ensure_student_profiles_columns() -> None:
     columns = await session.execute(text("PRAGMA table_info('student_profiles')"))
     column_names = {row[1] for row in columns}
     if "telephone" not in column_names:
         await session.execute(text("ALTER TABLE student_profiles ADD COLUMN telephone VARCHAR(20)"))
+        await session.commit()
+    if "miniapp_entry_chat_id" not in column_names:
+        await session.execute(text("ALTER TABLE student_profiles ADD COLUMN miniapp_entry_chat_id INTEGER"))
+        await session.commit()
+    if "miniapp_entry_message_id" not in column_names:
+        await session.execute(text("ALTER TABLE student_profiles ADD COLUMN miniapp_entry_message_id INTEGER"))
         await session.commit()
     if "blocked" not in column_names:
         await session.execute(text("ALTER TABLE student_profiles ADD COLUMN blocked BOOLEAN DEFAULT 0"))
@@ -345,6 +387,26 @@ async def _ensure_student_profiles_columns() -> None:
     if changed:
         await session.commit()
 
+    await _normalize_student_profile_full_names()
+
+
+async def _normalize_student_profile_full_names() -> None:
+    """Делает full_name производным полем от first_name/last_name для legacy-профилей."""
+    rows = await session.execute(
+        select(StudentProfile).where(
+            ((StudentProfile.first_name.is_not(None)) & (StudentProfile.first_name != ""))
+            | ((StudentProfile.last_name.is_not(None)) & (StudentProfile.last_name != ""))
+        )
+    )
+    changed = False
+    for (profile,) in rows.all():
+        canonical = _compose_full_name(profile.first_name, profile.last_name)
+        if canonical and (profile.full_name or "").strip() != canonical:
+            profile.full_name = canonical
+            changed = True
+    if changed:
+        await session.commit()
+
 
 async def _ensure_payments_columns() -> None:
     async with engine.begin() as conn:
@@ -354,6 +416,152 @@ async def _ensure_payments_columns() -> None:
     if "source" not in column_names:
         await session.execute(text("ALTER TABLE payments ADD COLUMN source VARCHAR(50)"))
         await session.commit()
+
+
+async def _ensure_analytics_events_table() -> None:
+    async with engine.begin() as conn:
+        await conn.run_sync(AnalyticsEvent.__table__.create, checkfirst=True)
+    await session.execute(
+        text(
+            "CREATE INDEX IF NOT EXISTS idx_analytics_events_record_date "
+            "ON analytics_events(record_date, event_type, telegram_id)"
+        )
+    )
+    await session.execute(
+        text(
+            "CREATE INDEX IF NOT EXISTS idx_analytics_events_created_at "
+            "ON analytics_events(created_at)"
+        )
+    )
+    await session.commit()
+
+
+def _analytics_meta_dump(meta: dict[str, Any] | None) -> str | None:
+    if not meta:
+        return None
+    try:
+        return json.dumps(meta, ensure_ascii=False, separators=(",", ":"))
+    except Exception:
+        return None
+
+
+async def log_analytics_event(
+    event_type: str,
+    *,
+    telegram_id: int | None = None,
+    record_date: datetime.date | None = None,
+    hour: int | None = None,
+    minute: int | None = None,
+    duration_minutes: int | None = None,
+    lesson_kind: str | None = None,
+    source_context: str | None = None,
+    related_slot_date: datetime.date | None = None,
+    related_slot_hour: int | None = None,
+    related_slot_minute: int | None = None,
+    meta: dict[str, Any] | None = None,
+    commit: bool = True,
+) -> AnalyticsEvent:
+    item = AnalyticsEvent(
+        event_type=event_type,
+        telegram_id=telegram_id,
+        record_date=record_date,
+        hour=hour,
+        minute=minute or 0,
+        duration_minutes=duration_minutes or SLOT_DURATION_MINUTES,
+        lesson_kind=lesson_kind,
+        source_context=source_context,
+        related_slot_date=related_slot_date,
+        related_slot_hour=related_slot_hour,
+        related_slot_minute=related_slot_minute or 0,
+        meta_json=_analytics_meta_dump(meta),
+        created_at=datetime.datetime.now().isoformat(),
+    )
+    session.add(item)
+    if commit:
+        await session.commit()
+    else:
+        await session.flush()
+    return item
+
+
+async def legacy_allow_times_for_date(date: datetime.date) -> set[tuple[int, int]]:
+    res = await session.execute(
+        select(RecordDate.hour, RecordDate.minute).where(
+            RecordDate.record_date == date,
+            RecordDate.kind == "allow",
+        )
+    )
+    return {(int(row.hour), int(row.minute)) for row in res}
+
+
+async def skipped_regular_lesson_ids_for_date(date: datetime.date) -> set[int]:
+    res = await session.execute(
+        select(RegularLessonException.regular_lesson_id).where(
+            RegularLessonException.exception_date == date,
+            RegularLessonException.action == "skip",
+        )
+    )
+    return {int(row[0]) for row in res.all() if row[0] is not None}
+
+
+async def is_regular_lesson_skipped(lesson_id: int, date: datetime.date) -> bool:
+    res = await session.execute(
+        select(RegularLessonException.id).where(
+            RegularLessonException.regular_lesson_id == lesson_id,
+            RegularLessonException.exception_date == date,
+            RegularLessonException.action == "skip",
+        )
+    )
+    return res.first() is not None
+
+
+async def create_regular_skip_exception(
+    regular_lesson_id: int,
+    exception_date: datetime.date,
+    note: str | None = None,
+) -> RegularLessonException:
+    exists = await session.execute(
+        select(RegularLessonException).where(
+            RegularLessonException.regular_lesson_id == regular_lesson_id,
+            RegularLessonException.exception_date == exception_date,
+            RegularLessonException.action == "skip",
+        )
+    )
+    item = exists.scalars().first()
+    if item:
+        if note is not None:
+            item.note = note
+        await session.commit()
+        return item
+
+    item = RegularLessonException(
+        regular_lesson_id=regular_lesson_id,
+        exception_date=exception_date,
+        action="skip",
+        note=note,
+        created_at=datetime.datetime.now().isoformat(),
+    )
+    session.add(item)
+    await session.commit()
+    return item
+
+
+async def find_regular_lesson_for_occurrence(
+    telegram_id: int,
+    date: datetime.date,
+    hour: int,
+    minute: int,
+) -> RegularLesson | None:
+    weekday = date.weekday()
+    res = await session.execute(
+        select(RegularLesson).where(
+            RegularLesson.telegram_id == telegram_id,
+            RegularLesson.day_of_week == weekday,
+            RegularLesson.hour == hour,
+            RegularLesson.minute == minute,
+        )
+    )
+    return res.scalars().first()
 
 
 async def deleting_records_older_7_days() -> None:
@@ -471,6 +679,25 @@ async def get_student_profile(telegram_id: int) -> StudentProfile | None:
     return await session.get(StudentProfile, telegram_id)
 
 
+async def get_miniapp_entry_message(telegram_id: int) -> tuple[int | None, int | None]:
+    profile = await session.get(StudentProfile, telegram_id)
+    if not profile:
+        return None, None
+    chat_id = int(profile.miniapp_entry_chat_id) if profile.miniapp_entry_chat_id is not None else None
+    message_id = int(profile.miniapp_entry_message_id) if profile.miniapp_entry_message_id is not None else None
+    return chat_id, message_id
+
+
+async def set_miniapp_entry_message(telegram_id: int, chat_id: int | None, message_id: int | None) -> None:
+    profile = await session.get(StudentProfile, telegram_id)
+    if profile is None:
+        profile = StudentProfile(telegram_id=telegram_id)
+        session.add(profile)
+    profile.miniapp_entry_chat_id = chat_id
+    profile.miniapp_entry_message_id = message_id
+    await session.commit()
+
+
 async def list_student_profiles() -> list[Any]:
     res = await session.execute(select(StudentProfile))
     return res.all()
@@ -546,6 +773,8 @@ async def is_slot_overlapping_local(
 ) -> bool:
     start = datetime.datetime.combine(date, datetime.time(hour, minute))
     end = start + datetime.timedelta(minutes=duration_minutes)
+    skipped_ids = await skipped_regular_lesson_ids_for_date(date)
+    allow_times = await legacy_allow_times_for_date(date)
 
     recs = await session.execute(
         select(RecordDate.id, RecordDate.hour, RecordDate.minute, RecordDate.duration_minutes).where(
@@ -564,12 +793,16 @@ async def is_slot_overlapping_local(
 
     weekday = date.weekday()
     regs = await session.execute(
-        select(RegularLesson.hour, RegularLesson.minute, RegularLesson.duration_minutes).where(
+        select(RegularLesson.id, RegularLesson.hour, RegularLesson.minute, RegularLesson.duration_minutes).where(
             RegularLesson.day_of_week == weekday,
             RegularLesson.telegram_id.is_not(None),
         )
     )
     for reg in regs:
+        if int(reg.id) in skipped_ids:
+            continue
+        if (int(reg.hour or 0), int(reg.minute or 0)) in allow_times:
+            continue
         reg_start = datetime.datetime.combine(date, datetime.time(reg.hour or 0, reg.minute or 0))
         reg_end = reg_start + datetime.timedelta(minutes=reg.duration_minutes or SLOT_DURATION_MINUTES)
         if _overlaps(start, end, reg_start, reg_end):
@@ -654,6 +887,30 @@ async def add_single_slot(
         booking_status="approved",
     )
     session.add(record)
+    await session.flush()
+    await log_analytics_event(
+        "booked",
+        telegram_id=telegram_id,
+        record_date=date,
+        hour=hour,
+        minute=minute,
+        duration_minutes=duration_minutes,
+        lesson_kind="single",
+        source_context="admin",
+        meta={"booking_status": "approved"},
+        commit=False,
+    )
+    await log_analytics_event(
+        "approved",
+        telegram_id=telegram_id,
+        record_date=date,
+        hour=hour,
+        minute=minute,
+        duration_minutes=duration_minutes,
+        lesson_kind="single",
+        source_context="admin",
+        commit=False,
+    )
     await session.commit()
     return True
 
@@ -678,6 +935,19 @@ async def add_pending_single_slot(
         approval_updated_at=datetime.datetime.now().isoformat(),
     )
     session.add(record)
+    await session.flush()
+    await log_analytics_event(
+        "booked",
+        telegram_id=telegram_id,
+        record_date=date,
+        hour=hour,
+        minute=minute,
+        duration_minutes=duration_minutes,
+        lesson_kind=kind,
+        source_context="miniapp",
+        meta={"booking_status": "pending"},
+        commit=False,
+    )
     await session.commit()
     return int(record.id)
 
@@ -744,9 +1014,32 @@ async def approve_pending_booking(record_id: int, admin_id: int) -> tuple[str, R
     except CalendarBackendError:
         return ("calendar_error", rec)
 
+    if rec.kind == "regular":
+        await ensure_regular_lesson_template(
+            telegram_id=rec.telegram_id,
+            date=rec.record_date,
+            hour=rec.hour,
+            minute=rec.minute,
+            duration_minutes=rec.duration_minutes or SLOT_DURATION_MINUTES,
+            full_name=profile.full_name if profile else None,
+            commit=False,
+        )
+
     rec.booking_status = "approved"
     rec.approval_admin_id = admin_id
     rec.approval_updated_at = datetime.datetime.now().isoformat()
+    await log_analytics_event(
+        "approved",
+        telegram_id=rec.telegram_id,
+        record_date=rec.record_date,
+        hour=rec.hour,
+        minute=rec.minute,
+        duration_minutes=rec.duration_minutes or SLOT_DURATION_MINUTES,
+        lesson_kind=rec.kind or "single",
+        source_context="admin",
+        meta={"admin_id": admin_id, "record_id": rec.id},
+        commit=False,
+    )
     await session.commit()
     return ("approved", rec)
 
@@ -764,6 +1057,18 @@ async def reject_pending_booking(record_id: int, admin_id: int) -> tuple[str, Re
     rec.booking_status = "rejected"
     rec.approval_admin_id = admin_id
     rec.approval_updated_at = datetime.datetime.now().isoformat()
+    await log_analytics_event(
+        "rejected",
+        telegram_id=rec.telegram_id,
+        record_date=rec.record_date,
+        hour=rec.hour,
+        minute=rec.minute,
+        duration_minutes=rec.duration_minutes or SLOT_DURATION_MINUTES,
+        lesson_kind=rec.kind or "single",
+        source_context="admin",
+        meta={"admin_id": admin_id, "record_id": rec.id},
+        commit=False,
+    )
     await session.commit()
     return ("rejected", rec)
 
@@ -776,21 +1081,14 @@ async def add_regular_slot(
     duration_minutes: int = SLOT_DURATION_MINUTES,
     full_name: str | None = None,
 ) -> None:
-    profile = await session.get(StudentProfile, telegram_id) if telegram_id else None
-    lesson_title = full_name or (profile.full_name if profile else None) or "Регулярное занятие"
-    lesson = RegularLesson(
+    await ensure_regular_lesson_template(
         telegram_id=telegram_id,
-        full_name=lesson_title,
-        username=None,
-        cost=None,
-        day_of_week=day_of_week,
-        lesson_date=None,
+        weekday=day_of_week,
         hour=hour,
         minute=minute,
         duration_minutes=duration_minutes,
+        full_name=full_name,
     )
-    session.add(lesson)
-    await session.commit()
 
     # Выгружаем новые регулярки в календарь сразу, чтобы слоты были забронированы
     try:
@@ -799,11 +1097,116 @@ async def add_regular_slot(
         logger.warning("Не удалось синхронизировать регулярку в календарь: %s", exc)
 
 
+async def find_regular_lesson_template(
+    telegram_id: int | None,
+    weekday: int,
+    hour: int,
+    minute: int,
+    duration_minutes: int = SLOT_DURATION_MINUTES,
+) -> RegularLesson | None:
+    if telegram_id is None:
+        return None
+    result = await session.execute(
+        select(RegularLesson).where(
+            RegularLesson.telegram_id == telegram_id,
+            RegularLesson.day_of_week == weekday,
+            RegularLesson.hour == hour,
+            RegularLesson.minute == minute,
+            RegularLesson.duration_minutes == duration_minutes,
+        )
+    )
+    return result.scalars().first()
+
+
+async def ensure_regular_lesson_template(
+    telegram_id: int | None,
+    hour: int,
+    minute: int,
+    duration_minutes: int = SLOT_DURATION_MINUTES,
+    weekday: int | None = None,
+    date: datetime.date | None = None,
+    full_name: str | None = None,
+    commit: bool = True,
+) -> RegularLesson | None:
+    if telegram_id is None:
+        return None
+
+    if weekday is None:
+        if date is None:
+            raise ValueError("weekday or date is required to materialize regular lesson template")
+        weekday = date.weekday()
+
+    existing = await find_regular_lesson_template(
+        telegram_id=telegram_id,
+        weekday=weekday,
+        hour=hour,
+        minute=minute,
+        duration_minutes=duration_minutes,
+    )
+    if existing:
+        return existing
+
+    profile = await session.get(StudentProfile, telegram_id)
+    lesson_title = full_name or (profile.full_name if profile else None) or "Регулярное занятие"
+    lesson = RegularLesson(
+        telegram_id=telegram_id,
+        full_name=lesson_title,
+        username=None,
+        cost=profile.price if profile else None,
+        day_of_week=weekday,
+        lesson_date=None,
+        hour=hour,
+        minute=minute,
+        duration_minutes=duration_minutes,
+    )
+    session.add(lesson)
+    if commit:
+        await session.commit()
+    else:
+        await session.flush()
+    return lesson
+
+
+async def backfill_missing_regular_templates() -> int:
+    await _reset_transaction_snapshot()
+    rows = await session.execute(
+        select(RecordDate).where(
+            RecordDate.telegram_id.is_not(None),
+            RecordDate.kind == "regular",
+            ((RecordDate.booking_status.is_(None)) | (RecordDate.booking_status == "approved")),
+        ).order_by(RecordDate.record_date, RecordDate.hour, RecordDate.minute)
+    )
+    created = 0
+    for rec in rows.scalars().all():
+        existing = await find_regular_lesson_template(
+            telegram_id=rec.telegram_id,
+            weekday=rec.record_date.weekday(),
+            hour=rec.hour,
+            minute=rec.minute,
+            duration_minutes=rec.duration_minutes or SLOT_DURATION_MINUTES,
+        )
+        if existing:
+            continue
+        lesson = await ensure_regular_lesson_template(
+            telegram_id=rec.telegram_id,
+            date=rec.record_date,
+            hour=rec.hour,
+            minute=rec.minute,
+            duration_minutes=rec.duration_minutes or SLOT_DURATION_MINUTES,
+        )
+        if lesson:
+            created += 1
+    return created
+
+
 async def delete_single_slot(
     telegram_id: int,
     date: datetime.date,
     hour: int,
     minute: int,
+    cancel_event_type: str | None = None,
+    source_context: str | None = None,
+    note: str | None = None,
 ) -> None:
     rec = await session.execute(
         select(RecordDate).where(
@@ -815,6 +1218,19 @@ async def delete_single_slot(
     )
     rec = rec.scalar()
     if rec:
+        if cancel_event_type:
+            await log_analytics_event(
+                cancel_event_type,
+                telegram_id=telegram_id,
+                record_date=date,
+                hour=hour,
+                minute=minute,
+                duration_minutes=rec.duration_minutes or SLOT_DURATION_MINUTES,
+                lesson_kind=rec.kind or "single",
+                source_context=source_context,
+                meta={"note": note} if note else None,
+                commit=False,
+            )
         await delete_events([rec.event_id])
         try:
             await delete_events_in_range(date, hour, minute, rec.duration_minutes or SLOT_DURATION_MINUTES)
@@ -830,6 +1246,9 @@ async def delete_regular_slot(
     hour: int,
     minute: int,
     delete_future_single: bool = True,
+    cancel_event_type: str | None = None,
+    source_context: str | None = None,
+    note: str | None = None,
 ) -> None:
     lessons = await session.execute(
         select(RegularLesson).where(
@@ -839,8 +1258,17 @@ async def delete_regular_slot(
             RegularLesson.minute == minute,
         )
     )
+    lesson_ids: list[int] = []
     for lesson in lessons.scalars():
+        lesson_ids.append(int(lesson.id))
         await session.delete(lesson)
+
+    if lesson_ids:
+        await session.execute(
+            delete(RegularLessonException).where(
+                RegularLessonException.regular_lesson_id.in_(lesson_ids)
+            )
+        )
 
     if delete_future_single:
         today = datetime.date.today()
@@ -853,6 +1281,19 @@ async def delete_regular_slot(
             )
         )
         for rec in records.scalars():
+            if cancel_event_type:
+                await log_analytics_event(
+                    cancel_event_type,
+                    telegram_id=telegram_id,
+                    record_date=rec.record_date,
+                    hour=rec.hour,
+                    minute=rec.minute,
+                    duration_minutes=rec.duration_minutes or SLOT_DURATION_MINUTES,
+                    lesson_kind=rec.kind or "regular",
+                    source_context=source_context,
+                    meta={"note": note or "", "series": True},
+                    commit=False,
+                )
             await delete_events([rec.event_id])
             try:
                 await delete_events_in_range(rec.record_date, rec.hour, rec.minute, rec.duration_minutes or SLOT_DURATION_MINUTES)
@@ -938,6 +1379,119 @@ async def cancel_regular_slot_with_allow(date: datetime.date, hour: int, minute:
         await ensure_allow_slot(date, hour, minute, duration, note=note)
     else:
         await ensure_allow_slot(date, hour, minute, SLOT_DURATION_MINUTES, note=note)
+
+
+async def cancel_regular_occurrence(
+    telegram_id: int,
+    date: datetime.date,
+    hour: int,
+    minute: int,
+    note: str | None = None,
+    cancel_event_type: str | None = None,
+    source_context: str | None = None,
+) -> bool:
+    lesson = await find_regular_lesson_for_occurrence(telegram_id, date, hour, minute)
+    if lesson is None:
+        return False
+
+    await create_regular_skip_exception(int(lesson.id), date, note=note)
+    await delete_single_slot(
+        telegram_id,
+        date,
+        hour,
+        minute,
+        cancel_event_type=cancel_event_type,
+        source_context=source_context,
+        note=note,
+    )
+    return True
+
+
+async def cancel_lesson_after_presence_decline(
+    telegram_id: int,
+    date: datetime.date,
+    hour: int,
+    minute: int,
+) -> bool:
+    """Отменяет занятие ученика после подтверждённого отказа.
+
+    Регулярное занятие отменяется только на указанную дату, разовое удаляется.
+    Возвращает ``False``, если активного занятия уже нет.
+    """
+    regular = await find_regular_lesson_for_occurrence(telegram_id, date, hour, minute)
+    if regular is not None:
+        if await is_regular_lesson_skipped(int(regular.id), date):
+            return False
+        await cancel_regular_occurrence(
+            telegram_id,
+            date,
+            hour,
+            minute,
+            note="Отменено учеником после подтверждения отсутствия",
+            cancel_event_type="canceled_by_client",
+            source_context="bot_presence",
+        )
+        return True
+
+    rec = await session.execute(
+        select(RecordDate.id).where(
+            RecordDate.telegram_id == telegram_id,
+            RecordDate.record_date == date,
+            RecordDate.hour == hour,
+            RecordDate.minute == minute,
+            RecordDate.kind.not_in(["block", "allow"]),
+            ((RecordDate.booking_status.is_(None)) | (RecordDate.booking_status == "approved")),
+        )
+    )
+    if rec.first() is None:
+        return False
+    await delete_single_slot(
+        telegram_id,
+        date,
+        hour,
+        minute,
+        cancel_event_type="canceled_by_client",
+        source_context="bot_presence",
+        note="Отменено учеником после подтверждения отсутствия",
+    )
+    return True
+
+
+async def last_lesson_before_slot(
+    telegram_id: int,
+    date: datetime.date,
+    hour: int,
+    minute: int,
+) -> tuple[datetime.date, int, int] | None:
+    result = await session.execute(
+        select(
+            RecordDate.record_date,
+            RecordDate.hour,
+            RecordDate.minute,
+        ).where(
+            RecordDate.telegram_id == telegram_id,
+            RecordDate.kind.not_in(["block", "allow"]),
+            ((RecordDate.booking_status.is_(None)) | (RecordDate.booking_status == "approved")),
+            (
+                (RecordDate.record_date < date)
+                | (
+                    (RecordDate.record_date == date)
+                    & (
+                        (RecordDate.hour < hour)
+                        | ((RecordDate.hour == hour) & (RecordDate.minute < minute))
+                    )
+                )
+            ),
+        ).order_by(
+            RecordDate.record_date.desc(),
+            RecordDate.hour.desc(),
+            RecordDate.minute.desc(),
+        )
+    )
+    row = result.first()
+    if row is None:
+        return None
+    return (row.record_date, int(row.hour), int(row.minute))
 
 
 async def del_record_all_day(date: datetime) -> None:
@@ -1056,6 +1610,353 @@ async def ensure_allow_slot(
     )
     session.add(allow)
     await session.commit()
+
+
+def _hhmm_to_minutes(value: str) -> int:
+    hour_s, minute_s = value.split(":")
+    return int(hour_s) * 60 + int(minute_s)
+
+
+def _minutes_to_hhmm(total_minutes: int) -> str:
+    return f"{total_minutes // 60:02d}:{total_minutes % 60:02d}"
+
+
+def working_minute_ranges_for_date(date: datetime.date) -> list[tuple[int, int]]:
+    ranges: list[tuple[int, int]] = []
+    for start, end in get_working_intervals_for_weekday(date.weekday()):
+        start_min = _hhmm_to_minutes(start)
+        end_min = _hhmm_to_minutes(end)
+        if end_min > start_min:
+            ranges.append((start_min, end_min))
+    return ranges
+
+
+def block_segments_for_date(
+    date: datetime.date,
+    all_day: bool,
+    start_minute: int | None = None,
+    end_minute: int | None = None,
+) -> list[tuple[int, int]]:
+    working_ranges = working_minute_ranges_for_date(date)
+    if not working_ranges:
+        return []
+    if all_day:
+        return working_ranges
+    if start_minute is None or end_minute is None or end_minute <= start_minute:
+        return []
+
+    segments: list[tuple[int, int]] = []
+    for work_start, work_end in working_ranges:
+        seg_start = max(work_start, start_minute)
+        seg_end = min(work_end, end_minute)
+        if seg_end > seg_start:
+            segments.append((seg_start, seg_end))
+    return segments
+
+
+async def migrate_legacy_full_day_block(date: datetime.date) -> int:
+    legacy_rows = await session.execute(
+        select(RecordDate).where(
+            RecordDate.record_date == date,
+            RecordDate.kind == "block",
+            RecordDate.hour == 0,
+            RecordDate.minute == 0,
+            RecordDate.telegram_id.is_not(None),
+        )
+    )
+    legacy_blocks = legacy_rows.scalars().all()
+    if not legacy_blocks:
+        return 0
+
+    segments = block_segments_for_date(date, all_day=True)
+    if not segments:
+        return 0
+
+    created = 0
+    note = next(((row.note or "").strip() for row in legacy_blocks if (row.note or "").strip()), "Резерв администратора")
+    for row in legacy_blocks:
+        await session.delete(row)
+    await session.commit()
+    created = await create_block_slots(date, segments, note=note)
+    return created
+
+
+async def create_block_slots(
+    date: datetime.date,
+    segments: list[tuple[int, int]],
+    note: str = "Резерв администратора",
+) -> int:
+    created = 0
+    changed = False
+    normalized_note = (note or "Резерв администратора").strip() or "Резерв администратора"
+    for seg_start, seg_end in segments:
+        minute_cursor = seg_start
+        while minute_cursor < seg_end:
+            hh = minute_cursor // 60
+            mm = minute_cursor % 60
+            exists_block = await session.execute(
+                select(RecordDate).where(
+                    RecordDate.record_date == date,
+                    RecordDate.hour == hh,
+                    RecordDate.minute == mm,
+                    RecordDate.kind == "block",
+                    RecordDate.telegram_id.is_(None),
+                )
+            )
+            block = exists_block.scalar_one_or_none()
+            if block:
+                if normalized_note and not (block.note or "").strip():
+                    block.note = normalized_note
+                    changed = True
+                minute_cursor += SLOT_STEP_MINUTES
+                continue
+
+            allow = await session.execute(
+                select(RecordDate.id).where(
+                    RecordDate.record_date == date,
+                    RecordDate.hour == hh,
+                    RecordDate.minute == mm,
+                    RecordDate.kind == "allow",
+                )
+            )
+            if allow.first():
+                minute_cursor += SLOT_STEP_MINUTES
+                continue
+
+            session.add(
+                RecordDate(
+                    telegram_id=None,
+                    record_date=date,
+                    hour=hh,
+                    minute=mm,
+                    duration_minutes=SLOT_STEP_MINUTES,
+                    kind="block",
+                    note=normalized_note,
+                    event_id=None,
+                )
+            )
+            created += 1
+            changed = True
+            minute_cursor += SLOT_STEP_MINUTES
+    if changed:
+        await session.commit()
+    return created
+
+
+async def list_blocks_for_date(date: datetime.date) -> list[dict[str, Any]]:
+    await migrate_legacy_full_day_block(date)
+    rows = await session.execute(
+        select(RecordDate).where(
+            RecordDate.record_date == date,
+            RecordDate.kind == "block",
+            RecordDate.telegram_id.is_(None),
+        ).order_by(RecordDate.hour.asc(), RecordDate.minute.asc(), RecordDate.id.asc())
+    )
+    items = []
+    for row in rows.scalars():
+        start_min = int(row.hour) * 60 + int(row.minute)
+        end_min = start_min + max(SLOT_STEP_MINUTES, int(row.duration_minutes or SLOT_STEP_MINUTES))
+        items.append(
+            {
+                "record_id": int(row.id),
+                "start_minute": start_min,
+                "end_minute": end_min,
+                "note": (row.note or "").strip() or None,
+            }
+        )
+    return items
+
+
+def merge_block_items(block_items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    merged: list[dict[str, Any]] = []
+    current: dict[str, Any] | None = None
+    for item in sorted(block_items, key=lambda x: (int(x["start_minute"]), int(x["end_minute"]))):
+        start_min = int(item["start_minute"])
+        end_min = int(item["end_minute"])
+        if current is None:
+            current = {
+                "start_minute": start_min,
+                "end_minute": end_min,
+                "note": item.get("note"),
+            }
+            continue
+        if start_min <= int(current["end_minute"]):
+            current["end_minute"] = max(int(current["end_minute"]), end_min)
+            if not current.get("note") and item.get("note"):
+                current["note"] = item["note"]
+            continue
+        merged.append(current)
+        current = {
+            "start_minute": start_min,
+            "end_minute": end_min,
+            "note": item.get("note"),
+        }
+    if current is not None:
+        merged.append(current)
+
+    result: list[dict[str, Any]] = []
+    for idx, item in enumerate(merged, start=1):
+        start_min = int(item["start_minute"])
+        end_min = int(item["end_minute"])
+        result.append(
+            {
+                "block_id": idx,
+                "start_time": _minutes_to_hhmm(start_min),
+                "end_time": _minutes_to_hhmm(end_min),
+                "start_minute": start_min,
+                "end_minute": end_min,
+                "duration": max(SLOT_STEP_MINUTES, end_min - start_min),
+                "note": item.get("note"),
+            }
+        )
+    return result
+
+
+async def list_block_ranges_for_date(date: datetime.date) -> list[dict[str, Any]]:
+    items = await list_blocks_for_date(date)
+    return merge_block_items(items)
+
+
+async def delete_blocks_in_segments(date: datetime.date, segments: list[tuple[int, int]]) -> int:
+    if not segments:
+        return 0
+    await migrate_legacy_full_day_block(date)
+    rows = await session.execute(
+        select(RecordDate).where(
+            RecordDate.record_date == date,
+            RecordDate.kind == "block",
+            RecordDate.telegram_id.is_(None),
+        )
+    )
+    to_delete = []
+    for row in rows.scalars():
+        start_min = int(row.hour) * 60 + int(row.minute)
+        end_min = start_min + max(SLOT_STEP_MINUTES, int(row.duration_minutes or SLOT_STEP_MINUTES))
+        for seg_start, seg_end in segments:
+            if start_min < seg_end and end_min > seg_start:
+                to_delete.append(row)
+                break
+    for row in to_delete:
+        await session.delete(row)
+    if to_delete:
+        await session.commit()
+    return len(to_delete)
+
+
+async def find_conflicting_lessons(
+    date: datetime.date,
+    segments: list[tuple[int, int]],
+) -> list[dict[str, Any]]:
+    if not segments:
+        return []
+
+    def _intersects(start_min: int, end_min: int) -> bool:
+        for seg_start, seg_end in segments:
+            if start_min < seg_end and end_min > seg_start:
+                return True
+        return False
+
+    records_rows = await session.execute(
+        select(
+            RecordDate.id,
+            RecordDate.telegram_id,
+            RecordDate.record_date,
+            RecordDate.hour,
+            RecordDate.minute,
+            RecordDate.duration_minutes,
+            RecordDate.kind,
+            RecordDate.booking_status,
+            StudentProfile.full_name,
+            StudentProfile.telephone,
+        )
+        .join(StudentProfile, StudentProfile.telegram_id == RecordDate.telegram_id, isouter=True)
+        .where(
+            RecordDate.record_date == date,
+            RecordDate.telegram_id.is_not(None),
+            RecordDate.kind.not_in(["block", "allow"]),
+            ((RecordDate.booking_status.is_(None)) | (RecordDate.booking_status.in_(["pending", "approved"]))),
+        )
+    )
+
+    conflicts: list[dict[str, Any]] = []
+    seen_slots: set[tuple[int | None, int, int]] = set()
+    blocked_or_allowed_rows = await session.execute(
+        select(RecordDate.hour, RecordDate.minute).where(
+            RecordDate.record_date == date,
+            RecordDate.kind.in_(["block", "allow"]),
+        )
+    )
+    suppressed_times = {(int(row.hour), int(row.minute)) for row in blocked_or_allowed_rows}
+
+    for row in records_rows:
+        start_min = int(row.hour) * 60 + int(row.minute)
+        end_min = start_min + int(row.duration_minutes or SLOT_DURATION_MINUTES)
+        if not _intersects(start_min, end_min):
+            continue
+        seen_slots.add((int(row.telegram_id), int(row.hour), int(row.minute)))
+        kind_value = (row.kind or "single").lower()
+        conflicts.append(
+            {
+                "source": "record",
+                "record_id": int(row.id),
+                "telegram_id": int(row.telegram_id),
+                "date": row.record_date.isoformat(),
+                "time": f"{int(row.hour):02d}:{int(row.minute):02d}",
+                "end_time": _minutes_to_hhmm(end_min),
+                "duration": int(row.duration_minutes or SLOT_DURATION_MINUTES),
+                "kind": "regular" if kind_value == "regular" else "single",
+                "full_name": row.full_name,
+                "phone": row.telephone,
+                "booking_status": row.booking_status or "approved",
+            }
+        )
+
+    weekday = date.weekday()
+    skipped_ids = await skipped_regular_lesson_ids_for_date(date)
+    regular_rows = await session.execute(
+        select(
+            RegularLesson.id,
+            RegularLesson.telegram_id,
+            RegularLesson.hour,
+            RegularLesson.minute,
+            RegularLesson.duration_minutes,
+            StudentProfile.full_name,
+            StudentProfile.telephone,
+        )
+        .join(StudentProfile, StudentProfile.telegram_id == RegularLesson.telegram_id, isouter=True)
+        .where(
+            RegularLesson.day_of_week == weekday,
+            RegularLesson.telegram_id.is_not(None),
+        )
+    )
+    for row in regular_rows:
+        if int(row.id) in skipped_ids:
+            continue
+        slot_key = (int(row.telegram_id), int(row.hour or 0), int(row.minute or 0))
+        time_key = (int(row.hour or 0), int(row.minute or 0))
+        if slot_key in seen_slots or time_key in suppressed_times:
+            continue
+        start_min = int(row.hour or 0) * 60 + int(row.minute or 0)
+        end_min = start_min + int(row.duration_minutes or SLOT_DURATION_MINUTES)
+        if not _intersects(start_min, end_min):
+            continue
+        conflicts.append(
+            {
+                "source": "regular_template",
+                "record_id": None,
+                "telegram_id": int(row.telegram_id),
+                "date": date.isoformat(),
+                "time": f"{int(row.hour or 0):02d}:{int(row.minute or 0):02d}",
+                "end_time": _minutes_to_hhmm(end_min),
+                "duration": int(row.duration_minutes or SLOT_DURATION_MINUTES),
+                "kind": "regular",
+                "full_name": row.full_name,
+                "phone": row.telephone,
+                "booking_status": "approved",
+            }
+        )
+
+    return sorted(conflicts, key=lambda item: (item["time"], item["telegram_id"]))
 
 
 async def view_clients() -> list[Any]:
@@ -1244,36 +2145,70 @@ async def soft_delete_user(telegram_id: int) -> bool:
 async def reserve_day(
         telegram_id: int, date: datetime, beginning_working_day: int, end_working_day: int, note: str = "Резерв администратора"
 ) -> int:
-    # Проверяем, не создан ли уже блок на этот день
-    exists = await session.execute(
-        select(RecordDate.id).where(
-            RecordDate.record_date == date,
-            RecordDate.kind == "block",
-            RecordDate.hour == 0,
-            RecordDate.minute == 0,
-        )
-    )
-    if exists.first():
-        return 1
-
-    try:
-        event_id = await create_full_day_block_event(date, note)
-    except CalendarBackendError:
+    _ = (telegram_id, beginning_working_day, end_working_day)
+    segments = block_segments_for_date(date, all_day=True)
+    if not segments:
         return 0
+    await migrate_legacy_full_day_block(date)
+    created = await create_block_slots(date, segments, note=note)
+    return 1 if created >= 0 else 0
 
-    record = RecordDate(
-        telegram_id=telegram_id,
-        record_date=date,
-        hour=0,
-        minute=0,
-        duration_minutes=SLOT_DURATION_MINUTES,
-        kind="block",
-        note=note,
-        event_id=event_id,
+
+async def list_date_availability_overrides(target_date: datetime.date) -> list[dict[str, Any]]:
+    rows = await session.execute(
+        select(DateAvailabilityOverride).where(
+            DateAvailabilityOverride.target_date == target_date,
+            DateAvailabilityOverride.mode == "extra_open",
+        ).order_by(DateAvailabilityOverride.start_minute, DateAvailabilityOverride.end_minute)
     )
-    session.add(record)
+    items: list[dict[str, Any]] = []
+    for row in rows.scalars().all():
+        items.append(
+            {
+                "id": int(row.id),
+                "date": target_date.isoformat(),
+                "start_time": f"{int(row.start_minute) // 60:02d}:{int(row.start_minute) % 60:02d}",
+                "end_time": f"{int(row.end_minute) // 60:02d}:{int(row.end_minute) % 60:02d}",
+                "note": row.note or "",
+                "mode": row.mode,
+            }
+        )
+    return items
+
+
+async def create_date_availability_override(
+    target_date: datetime.date,
+    start_minute: int,
+    end_minute: int,
+    note: str | None = None,
+) -> dict[str, Any]:
+    item = DateAvailabilityOverride(
+        target_date=target_date,
+        start_minute=start_minute,
+        end_minute=end_minute,
+        mode="extra_open",
+        note=(note or "").strip() or None,
+        created_at=datetime.datetime.now().isoformat(),
+    )
+    session.add(item)
     await session.commit()
-    return 1
+    return {
+        "id": int(item.id),
+        "date": target_date.isoformat(),
+        "start_time": f"{start_minute // 60:02d}:{start_minute % 60:02d}",
+        "end_time": f"{end_minute // 60:02d}:{end_minute % 60:02d}",
+        "note": item.note or "",
+        "mode": item.mode,
+    }
+
+
+async def delete_date_availability_override(item_id: int) -> bool:
+    item = await session.get(DateAvailabilityOverride, item_id)
+    if not item:
+        return False
+    await session.delete(item)
+    await session.commit()
+    return True
 
 
 async def mailing_for_day(date: datetime) -> list[Any]:
@@ -1308,6 +2243,7 @@ async def viewing_recordings_day_db(date: datetime, show_blocks: bool = False) -
         )
     )
     blocked_times = {(row.hour, row.minute): row.note for row in blocks}
+    skipped_ids = await skipped_regular_lesson_ids_for_date(target_date)
 
     singles = await session.execute(
         select(
@@ -1352,6 +2288,7 @@ async def viewing_recordings_day_db(date: datetime, show_blocks: bool = False) -
     weekday = target_date.weekday()
     regulars = await session.execute(
         select(
+            RegularLesson.id,
             StudentProfile.full_name,
             StudentProfile.telephone,
             StudentProfile.telegram_username,
@@ -1367,6 +2304,8 @@ async def viewing_recordings_day_db(date: datetime, show_blocks: bool = False) -
 
     seen_reg_slots: set[tuple[int | None, int, int]] = set()
     for row in regulars:
+        if int(row.id) in skipped_ids:
+            continue
         if (row.hour, row.minute) in blocked_times:
             continue
         key = (row.telegram_id, row.hour, row.minute)
@@ -1393,6 +2332,184 @@ async def viewing_recordings_day_db(date: datetime, show_blocks: bool = False) -
             result.append(("Резерв администратора", "", bh, bm, "Блок", note or "День недоступен", None, None, 0))
 
     return sorted(result, key=lambda r: (r[2], r[3]))
+
+
+async def admin_schedule_month_summary(
+    start_date: datetime.date,
+    end_date: datetime.date,
+    duration_minutes: int = SLOT_DURATION_MINUTES,
+) -> list[dict[str, Any]]:
+    month_dates = [
+        start_date + datetime.timedelta(days=offset)
+        for offset in range((end_date - start_date).days + 1)
+    ]
+    if not month_dates:
+        return []
+
+    today = datetime.date.today()
+    now_local = datetime.datetime.now(get_calendar_tz()).replace(tzinfo=None)
+    weekdays = sorted({target_date.weekday() for target_date in month_dates})
+
+    record_rows = (
+        await session.execute(
+            select(
+                RecordDate.record_date,
+                RecordDate.telegram_id,
+                RecordDate.hour,
+                RecordDate.minute,
+                RecordDate.duration_minutes,
+                RecordDate.kind,
+                RecordDate.booking_status,
+                RecordDate.event_id,
+            ).where(
+                RecordDate.record_date >= start_date,
+                RecordDate.record_date <= end_date,
+            )
+        )
+    ).all()
+
+    skipped_rows = (
+        await session.execute(
+            select(
+                RegularLessonException.exception_date,
+                RegularLessonException.regular_lesson_id,
+            ).where(
+                RegularLessonException.exception_date >= start_date,
+                RegularLessonException.exception_date <= end_date,
+                RegularLessonException.action == "skip",
+            )
+        )
+    ).all()
+
+    regular_rows = (
+        await session.execute(
+            select(
+                RegularLesson.id,
+                RegularLesson.day_of_week,
+                RegularLesson.telegram_id,
+                RegularLesson.hour,
+                RegularLesson.minute,
+                RegularLesson.duration_minutes,
+            ).where(
+                RegularLesson.day_of_week.in_(weekdays),
+                RegularLesson.telegram_id.is_not(None),
+            )
+        )
+    ).all()
+
+    records_by_date: dict[datetime.date, list[Any]] = defaultdict(list)
+    for row in record_rows:
+        records_by_date[row.record_date].append(row)
+
+    skipped_by_date: dict[datetime.date, set[int]] = defaultdict(set)
+    for row in skipped_rows:
+        if row.exception_date is not None and row.regular_lesson_id is not None:
+            skipped_by_date[row.exception_date].add(int(row.regular_lesson_id))
+
+    regulars_by_weekday: dict[int, list[Any]] = defaultdict(list)
+    for row in regular_rows:
+        regulars_by_weekday[int(row.day_of_week or 0)].append(row)
+
+    days: list[dict[str, Any]] = []
+    for target_date in month_dates:
+        rows = records_by_date.get(target_date, [])
+        blocked_times: set[tuple[int, int]] = set()
+        allow_times: set[tuple[int, int]] = set()
+        seen_slots: set[tuple[int | None, int, int]] = set()
+        busy_intervals: list[tuple[datetime.datetime, datetime.datetime]] = []
+        seen_intervals: set[tuple[datetime.datetime, datetime.datetime]] = set()
+        booked_count = 0
+
+        for row in rows:
+            hour = int(row.hour or 0)
+            minute = int(row.minute or 0)
+            duration = int(row.duration_minutes or SLOT_DURATION_MINUTES)
+            kind = (row.kind or "").lower()
+            status = (row.booking_status or "").lower()
+
+            if row.telegram_id is None and (
+                kind in {"block", "allow"} or (row.kind is None and row.event_id is None)
+            ):
+                blocked_times.add((hour, minute))
+
+            if kind == "allow":
+                allow_times.add((hour, minute))
+
+            if kind != "allow" and status != "rejected":
+                if kind == "block" and hour == 0 and minute == 0:
+                    start_dt = datetime.datetime.combine(target_date, datetime.time.min)
+                    end_dt = start_dt + datetime.timedelta(days=1)
+                else:
+                    start_dt = datetime.datetime.combine(target_date, datetime.time(hour, minute))
+                    end_dt = start_dt + datetime.timedelta(minutes=max(1, duration))
+                interval = (start_dt, end_dt)
+                if interval not in seen_intervals:
+                    seen_intervals.add(interval)
+                    busy_intervals.append(interval)
+
+            if row.telegram_id is not None and kind != "block":
+                slot_key = (int(row.telegram_id), hour, minute)
+                if slot_key not in seen_slots:
+                    seen_slots.add(slot_key)
+                    booked_count += 1
+
+        for reg in regulars_by_weekday.get(target_date.weekday(), []):
+            reg_id = int(reg.id)
+            hour = int(reg.hour or 0)
+            minute = int(reg.minute or 0)
+            duration = int(reg.duration_minutes or SLOT_DURATION_MINUTES)
+
+            if reg_id in skipped_by_date.get(target_date, set()):
+                continue
+            if (hour, minute) in blocked_times:
+                continue
+
+            slot_key = (int(reg.telegram_id), hour, minute)
+            if slot_key not in seen_slots:
+                seen_slots.add(slot_key)
+                booked_count += 1
+
+            if (hour, minute) in allow_times:
+                continue
+
+            start_dt = datetime.datetime.combine(target_date, datetime.time(hour, minute))
+            end_dt = start_dt + datetime.timedelta(minutes=max(1, duration))
+            interval = (start_dt, end_dt)
+            if interval not in seen_intervals:
+                seen_intervals.add(interval)
+                busy_intervals.append(interval)
+
+        busy_intervals.sort(key=lambda item: item[0])
+
+        if target_date < today:
+            free_count = 0
+        else:
+            free_count = 0
+            for hour, minute in slots_for_date(target_date, now_local):
+                start_dt = datetime.datetime.combine(target_date, datetime.time(hour, minute))
+                end_dt = start_dt + datetime.timedelta(minutes=duration_minutes)
+                overlaps_busy = False
+                for busy_start, busy_end in busy_intervals:
+                    if busy_start >= end_dt:
+                        break
+                    if _overlaps(start_dt, end_dt, busy_start, busy_end):
+                        overlaps_busy = True
+                        break
+                if not overlaps_busy:
+                    free_count += 1
+
+        days.append(
+            {
+                "date": target_date.isoformat(),
+                "booked_count": booked_count,
+                "free_count": free_count,
+                "has_booked": booked_count > 0,
+                "has_free": free_count > 0,
+                "past": target_date < today,
+            }
+        )
+
+    return days
 
 
 async def get_info_user(date: datetime, hour: int, minute: int) -> Any:
@@ -1423,17 +2540,22 @@ async def get_info_user(date: datetime, hour: int, minute: int) -> Any:
         return (picked[1], picked[2] or "single")
 
     # Если нет записи, ищем регулярку на этот день/время
+    target_date = date if isinstance(date, datetime.date) else None
     weekday = date.weekday() if isinstance(date, datetime.date) else date
+    allow_times = await legacy_allow_times_for_date(target_date) if target_date else set()
+    if target_date and (hour, minute) in allow_times:
+        return None
+    skipped_ids = await skipped_regular_lesson_ids_for_date(target_date) if target_date else set()
     reg = await session.execute(
-        select(RegularLesson.telegram_id, RegularLesson.day_of_week).where(
+        select(RegularLesson.id, RegularLesson.telegram_id, RegularLesson.day_of_week).where(
             RegularLesson.day_of_week == weekday,
             RegularLesson.hour == hour,
             RegularLesson.minute == minute,
         )
     )
-    reg_row = reg.one_or_none()
+    reg_row = next((row for row in reg.all() if int(row[0]) not in skipped_ids), None)
     if reg_row:
-        return (reg_row[0], "regular")
+        return (reg_row[1], "regular")
     return None
 
 
@@ -1463,17 +2585,21 @@ async def get_record_slot_info(
         return (kind, duration)
 
     weekday = date.weekday()
+    allow_times = await legacy_allow_times_for_date(date)
+    if (hour, minute) in allow_times:
+        return None
+    skipped_ids = await skipped_regular_lesson_ids_for_date(date)
     reg = await session.execute(
-        select(RegularLesson.duration_minutes).where(
+        select(RegularLesson.id, RegularLesson.duration_minutes).where(
             RegularLesson.telegram_id == telegram_id,
             RegularLesson.day_of_week == weekday,
             RegularLesson.hour == hour,
             RegularLesson.minute == minute,
         )
     )
-    reg_row = reg.scalar_one_or_none()
+    reg_row = next((row for row in reg.all() if int(row[0]) not in skipped_ids), None)
     if reg_row is not None:
-        return ("regular", reg_row or SLOT_DURATION_MINUTES)
+        return ("regular", reg_row[1] or SLOT_DURATION_MINUTES)
     return None
 
 
@@ -1486,6 +2612,7 @@ async def reschedule_single_slot(
     new_hour: int,
     new_minute: int,
     duration_minutes: int | None = None,
+    source_context: str | None = "admin",
 ) -> bool:
     """
     Перенос разовой записи на новый слот.
@@ -1534,17 +2661,54 @@ async def reschedule_single_slot(
     record.presence_status = None
     record.presence_last_reminder = None
     record.presence_message_id = None
+    await log_analytics_event(
+        "rescheduled_from",
+        telegram_id=telegram_id,
+        record_date=old_date,
+        hour=old_hour,
+        minute=old_minute,
+        duration_minutes=duration,
+        lesson_kind=record.kind or "single",
+        source_context=source_context,
+        related_slot_date=new_date,
+        related_slot_hour=new_hour,
+        related_slot_minute=new_minute,
+        commit=False,
+    )
+    await log_analytics_event(
+        "rescheduled_to",
+        telegram_id=telegram_id,
+        record_date=new_date,
+        hour=new_hour,
+        minute=new_minute,
+        duration_minutes=duration,
+        lesson_kind="single",
+        source_context=source_context,
+        related_slot_date=old_date,
+        related_slot_hour=old_hour,
+        related_slot_minute=old_minute,
+        commit=False,
+    )
     await session.commit()
     return True
 
 
-async def records_starting_at(date: datetime.date, hour: int, minute: int) -> list[Any]:
-    # Сначала берём записи из record_dates (разовые и развёрнутые регулярки)
+async def records_starting_at_details(date: datetime.date, hour: int, minute: int) -> list[dict[str, Any]]:
+    result: list[dict[str, Any]] = []
+    blocked_rows = await session.execute(
+        select(RecordDate.hour, RecordDate.minute).where(
+            RecordDate.record_date == date,
+            RecordDate.kind == "block",
+        )
+    )
+    blocked_times = {(int(row.hour), int(row.minute)) for row in blocked_rows}
+
     res = await session.execute(
         select(
             StudentProfile.telegram_id,
             StudentProfile.full_name,
             StudentProfile.telephone,
+            StudentProfile.price,
             RecordDate.hour,
             RecordDate.minute,
             RecordDate.duration_minutes,
@@ -1555,47 +2719,201 @@ async def records_starting_at(date: datetime.date, hour: int, minute: int) -> li
             RecordDate.record_date == date,
             RecordDate.hour == hour,
             RecordDate.minute == minute,
-            RecordDate.kind != "block",
+            RecordDate.kind.not_in(["block", "allow"]),
+            ((RecordDate.booking_status.is_(None)) | (RecordDate.booking_status == "approved")),
         )
     )
-    result = res.all()
-    seen = {(row.telegram_id, row.hour, row.minute) for row in result}
+    seen = set()
+    for row in res.all():
+        tg_id = int(row.telegram_id)
+        key = (tg_id, int(row.hour), int(row.minute))
+        seen.add(key)
+        last_lesson = await last_lesson_before_slot(tg_id, date, hour, minute)
+        duration_val = int(row.duration_minutes or SLOT_DURATION_MINUTES)
+        price_60 = int(row.price or 0)
+        result.append(
+            {
+                "telegram_id": tg_id,
+                "full_name": row.full_name,
+                "telephone": row.telephone,
+                "hour": int(row.hour),
+                "minute": int(row.minute),
+                "duration_minutes": duration_val,
+                "kind": "regular" if (row.kind or "single") == "regular" else "single",
+                "price_60": price_60,
+                "amount": max(0, int(round(price_60 * (duration_val / 60.0)))),
+                "last_lesson": last_lesson,
+            }
+        )
 
-    # Добавляем регулярки, если для слота нет записи
     weekday = date.weekday()
+    skipped_ids = await skipped_regular_lesson_ids_for_date(date)
+    allow_times = await legacy_allow_times_for_date(date)
     regs = await session.execute(
         select(
+            RegularLesson.id,
             RegularLesson.telegram_id,
             RegularLesson.hour,
             RegularLesson.minute,
             RegularLesson.duration_minutes,
             StudentProfile.full_name,
             StudentProfile.telephone,
+            StudentProfile.price,
         )
         .join(StudentProfile, StudentProfile.telegram_id == RegularLesson.telegram_id, isouter=True)
         .where(
             RegularLesson.day_of_week == weekday,
+            RegularLesson.telegram_id.is_not(None),
             RegularLesson.hour == hour,
             RegularLesson.minute == minute,
         )
     )
     for row in regs:
-        key = (row.telegram_id, row.hour, row.minute)
+        if int(row.id) in skipped_ids:
+            continue
+        time_key = (int(row.hour or 0), int(row.minute or 0))
+        if time_key in allow_times or time_key in blocked_times:
+            continue
+        tg_id = int(row.telegram_id)
+        key = (tg_id, int(row.hour or 0), int(row.minute or 0))
         if key in seen:
             continue
+        last_lesson = await last_lesson_before_slot(tg_id, date, hour, minute)
+        duration_val = int(row.duration_minutes or SLOT_DURATION_MINUTES)
+        price_60 = int(row.price or 0)
         result.append(
-            (
-                row.telegram_id,
-                row.full_name,
-                row.telephone,
-                row.hour,
-                row.minute,
-                row.duration_minutes or SLOT_DURATION_MINUTES,
-                "regular",
-            )
+            {
+                "telegram_id": tg_id,
+                "full_name": row.full_name,
+                "telephone": row.telephone,
+                "hour": int(row.hour or 0),
+                "minute": int(row.minute or 0),
+                "duration_minutes": duration_val,
+                "kind": "regular",
+                "price_60": price_60,
+                "amount": max(0, int(round(price_60 * (duration_val / 60.0)))),
+                "last_lesson": last_lesson,
+            }
+        )
+    return result
+
+
+async def records_starting_at(date: datetime.date, hour: int, minute: int) -> list[Any]:
+    details = await records_starting_at_details(date, hour, minute)
+    return [
+        (
+            item["telegram_id"],
+            item["full_name"],
+            item["telephone"],
+            item["hour"],
+            item["minute"],
+            item["duration_minutes"],
+            item["kind"],
+        )
+        for item in details
+    ]
+
+
+async def lessons_for_date_details(date: datetime.date) -> list[dict[str, Any]]:
+    result: list[dict[str, Any]] = []
+    blocked_rows = await session.execute(
+        select(RecordDate.hour, RecordDate.minute).where(
+            RecordDate.record_date == date,
+            RecordDate.kind == "block",
+        )
+    )
+    blocked_times = {(int(row.hour), int(row.minute)) for row in blocked_rows}
+
+    res = await session.execute(
+        select(
+            StudentProfile.telegram_id,
+            StudentProfile.full_name,
+            StudentProfile.telephone,
+            StudentProfile.price,
+            RecordDate.hour,
+            RecordDate.minute,
+            RecordDate.duration_minutes,
+            RecordDate.kind,
+        )
+        .join(StudentProfile, StudentProfile.telegram_id == RecordDate.telegram_id)
+        .where(
+            RecordDate.record_date == date,
+            ((RecordDate.kind.is_(None)) | (RecordDate.kind.not_in(["block", "allow"]))),
+            ((RecordDate.booking_status.is_(None)) | (RecordDate.booking_status == "approved")),
+        )
+    )
+    seen = set()
+    for row in res.all():
+        tg_id = int(row.telegram_id)
+        hour = int(row.hour or 0)
+        minute = int(row.minute or 0)
+        key = (tg_id, hour, minute)
+        seen.add(key)
+        duration_val = int(row.duration_minutes or SLOT_DURATION_MINUTES)
+        price_60 = int(row.price or 0)
+        result.append(
+            {
+                "telegram_id": tg_id,
+                "full_name": row.full_name,
+                "telephone": row.telephone,
+                "hour": hour,
+                "minute": minute,
+                "duration_minutes": duration_val,
+                "kind": "regular" if (row.kind or "single") == "regular" else "single",
+                "price_60": price_60,
+                "amount": max(0, int(round(price_60 * (duration_val / 60.0)))),
+            }
         )
 
-    return result
+    weekday = date.weekday()
+    skipped_ids = await skipped_regular_lesson_ids_for_date(date)
+    allow_times = await legacy_allow_times_for_date(date)
+    regs = await session.execute(
+        select(
+            RegularLesson.id,
+            RegularLesson.telegram_id,
+            RegularLesson.hour,
+            RegularLesson.minute,
+            RegularLesson.duration_minutes,
+            StudentProfile.full_name,
+            StudentProfile.telephone,
+            StudentProfile.price,
+        )
+        .join(StudentProfile, StudentProfile.telegram_id == RegularLesson.telegram_id, isouter=True)
+        .where(
+            RegularLesson.day_of_week == weekday,
+            RegularLesson.telegram_id.is_not(None),
+        )
+    )
+    for row in regs:
+        if int(row.id) in skipped_ids:
+            continue
+        hour = int(row.hour or 0)
+        minute = int(row.minute or 0)
+        time_key = (hour, minute)
+        if time_key in allow_times or time_key in blocked_times:
+            continue
+        tg_id = int(row.telegram_id)
+        key = (tg_id, hour, minute)
+        if key in seen:
+            continue
+        duration_val = int(row.duration_minutes or SLOT_DURATION_MINUTES)
+        price_60 = int(row.price or 0)
+        result.append(
+            {
+                "telegram_id": tg_id,
+                "full_name": row.full_name,
+                "telephone": row.telephone,
+                "hour": hour,
+                "minute": minute,
+                "duration_minutes": duration_val,
+                "kind": "regular",
+                "price_60": price_60,
+                "amount": max(0, int(round(price_60 * (duration_val / 60.0)))),
+            }
+        )
+
+    return sorted(result, key=lambda item: (item["hour"], item["minute"], item["full_name"] or ""))
 
 
 async def lessons_for_date(date: datetime.date) -> list[Any]:
@@ -1625,8 +2943,22 @@ async def lessons_for_date(date: datetime.date) -> list[Any]:
         ))
 
     weekday = date.weekday()
+    skipped_ids = await skipped_regular_lesson_ids_for_date(date)
+    allow_times = await legacy_allow_times_for_date(date)
+    block_rows = await session.execute(
+        select(RecordDate.hour, RecordDate.minute).where(
+            RecordDate.record_date == date,
+            RecordDate.telegram_id.is_(None),
+            (
+                (RecordDate.kind.in_(["block", "allow"]))
+                | ((RecordDate.kind.is_(None)) & (RecordDate.event_id.is_(None)))
+            ),
+        )
+    )
+    blocked_times = {(int(row.hour or 0), int(row.minute or 0)) for row in block_rows}
     regular = await session.execute(
         select(
+            RegularLesson.id,
             RegularLesson.telegram_id,
             RegularLesson.hour,
             RegularLesson.minute,
@@ -1634,6 +2966,12 @@ async def lessons_for_date(date: datetime.date) -> list[Any]:
         ).where(RegularLesson.day_of_week == weekday)
     )
     for row in regular:
+        if int(row.id) in skipped_ids:
+            continue
+        if (int(row.hour or 0), int(row.minute or 0)) in blocked_times:
+            continue
+        if (int(row.hour or 0), int(row.minute or 0)) in allow_times:
+            continue
         key = (row.telegram_id, row.hour, row.minute)
         if key in seen_slots:
             continue
@@ -1674,6 +3012,9 @@ async def get_lesson_kind(date: datetime.date, hour: int, minute: int, telegram_
         return "single"
 
     weekday = date.weekday()
+    if (hour, minute) in await legacy_allow_times_for_date(date):
+        return None
+    skipped_ids = await skipped_regular_lesson_ids_for_date(date)
     reg = await session.execute(
         select(RegularLesson.id).where(
             RegularLesson.day_of_week == weekday,
@@ -1682,7 +3023,7 @@ async def get_lesson_kind(date: datetime.date, hour: int, minute: int, telegram_
             RegularLesson.telegram_id == telegram_id,
         )
     )
-    if reg.first():
+    if next((row for row in reg.all() if int(row[0]) not in skipped_ids), None):
         return "regular"
     return None
 
@@ -1897,6 +3238,625 @@ async def payments_timeseries_for_range(
     return items
 
 
+async def client_revenue_share_for_range(
+    start_date: datetime.date,
+    end_date: datetime.date,
+    limit: int = 6,
+) -> dict[str, Any]:
+    res = await session.execute(
+        select(
+            Payment.telegram_id,
+            func.coalesce(StudentProfile.full_name, Payment.full_name),
+            func.sum(
+                case(
+                    (Payment.status == "paid", func.coalesce(Payment.amount, 0)),
+                    else_=0,
+                )
+            ),
+            func.count(Payment.id),
+        )
+        .join(StudentProfile, StudentProfile.telegram_id == Payment.telegram_id, isouter=True)
+        .where(
+            Payment.lesson_date >= start_date,
+            Payment.lesson_date <= end_date,
+            Payment.status != "canceled",
+            Payment.telegram_id.is_not(None),
+            ((StudentProfile.is_deleted.is_(None)) | (StudentProfile.is_deleted == 0) | (StudentProfile.telegram_id.is_(None))),
+        )
+        .group_by(Payment.telegram_id, func.coalesce(StudentProfile.full_name, Payment.full_name))
+        .order_by(
+            func.sum(
+                case(
+                    (Payment.status == "paid", func.coalesce(Payment.amount, 0)),
+                    else_=0,
+                )
+            ).desc(),
+            func.count(Payment.id).desc(),
+        )
+    )
+
+    rows = res.all()
+    total_paid = sum(int(row[2] or 0) for row in rows)
+    if total_paid <= 0:
+        return {"total_paid": 0, "items": []}
+
+    top_rows = rows[:max(1, limit)]
+    items: list[dict[str, Any]] = []
+    for row in top_rows:
+        paid_amount = int(row[2] or 0)
+        if paid_amount <= 0:
+            continue
+        items.append(
+            {
+                "telegram_id": int(row[0]) if row[0] is not None else None,
+                "full_name": row[1] or (str(row[0]) if row[0] is not None else "—"),
+                "paid_amount": paid_amount,
+                "lessons_count": int(row[3] or 0),
+                "share_pct": round((paid_amount / total_paid) * 100.0, 2),
+            }
+        )
+
+    others_amount = max(0, total_paid - sum(int(item["paid_amount"]) for item in items))
+    if others_amount > 0:
+        items.append(
+            {
+                "telegram_id": None,
+                "full_name": "Остальные",
+                "paid_amount": others_amount,
+                "lessons_count": sum(int(row[3] or 0) for row in rows[len(top_rows):]),
+                "share_pct": round((others_amount / total_paid) * 100.0, 2),
+            }
+        )
+
+    return {
+        "total_paid": total_paid,
+        "items": items,
+    }
+
+
+def _safe_ratio(part: int | float, total: int | float) -> float:
+    total_num = float(total or 0)
+    if total_num <= 0:
+        return 0.0
+    return round((float(part or 0) / total_num) * 100.0, 2)
+
+
+def _client_display_name(row_name: str | None, tg_id: int | None) -> str:
+    return row_name or (str(tg_id) if tg_id is not None else "—")
+
+
+async def client_ltv_leaderboard(limit: int = 8) -> list[dict[str, Any]]:
+    res = await session.execute(
+        select(
+            Payment.telegram_id,
+            func.coalesce(StudentProfile.full_name, Payment.full_name),
+            func.sum(case((Payment.status == "paid", func.coalesce(Payment.amount, 0)), else_=0)),
+            func.count(Payment.id),
+            func.min(Payment.lesson_date),
+            func.max(Payment.lesson_date),
+        )
+        .join(StudentProfile, StudentProfile.telegram_id == Payment.telegram_id, isouter=True)
+        .where(
+            Payment.status != "canceled",
+            Payment.telegram_id.is_not(None),
+        )
+        .group_by(Payment.telegram_id, func.coalesce(StudentProfile.full_name, Payment.full_name))
+        .order_by(
+            func.sum(case((Payment.status == "paid", func.coalesce(Payment.amount, 0)), else_=0)).desc(),
+            func.count(Payment.id).desc(),
+        )
+    )
+    items: list[dict[str, Any]] = []
+    for row in res.all()[:max(1, limit)]:
+        total_revenue = int(row[2] or 0)
+        total_lessons = int(row[3] or 0)
+        items.append(
+            {
+                "telegram_id": int(row[0]) if row[0] is not None else None,
+                "full_name": _client_display_name(row[1], int(row[0]) if row[0] is not None else None),
+                "total_revenue": total_revenue,
+                "total_lessons": total_lessons,
+                "avg_revenue_per_lesson": int(round(total_revenue / total_lessons)) if total_lessons > 0 else 0,
+                "first_lesson": row[4].isoformat() if row[4] else None,
+                "last_lesson": row[5].isoformat() if row[5] else None,
+            }
+        )
+    return items
+
+
+async def retention_overview(max_cohorts: int = 6) -> dict[str, Any]:
+    res = await session.execute(
+        select(
+            Payment.telegram_id,
+            Payment.lesson_date,
+        )
+        .where(
+            Payment.status != "canceled",
+            Payment.telegram_id.is_not(None),
+        )
+        .order_by(Payment.telegram_id.asc(), Payment.lesson_date.asc(), Payment.hour.asc(), Payment.minute.asc(), Payment.id.asc())
+    )
+    lessons_by_client: dict[int, list[datetime.date]] = defaultdict(list)
+    for tg_id, lesson_date in res.all():
+        if tg_id is None or lesson_date is None:
+            continue
+        lessons_by_client[int(tg_id)].append(lesson_date)
+
+    checkpoints = (2, 4, 8)
+    totals = {weeks: 0 for weeks in checkpoints}
+    retained = {weeks: 0 for weeks in checkpoints}
+    cohorts: dict[str, dict[str, Any]] = {}
+
+    for tg_id, lesson_dates in lessons_by_client.items():
+        if not lesson_dates:
+            continue
+        first_date = lesson_dates[0]
+        month_key = first_date.strftime("%Y-%m")
+        cohort = cohorts.setdefault(
+            month_key,
+            {
+                "cohort": month_key,
+                "clients": 0,
+                "retained_2w": 0,
+                "retained_4w": 0,
+                "retained_8w": 0,
+            },
+        )
+        cohort["clients"] += 1
+        for weeks in checkpoints:
+            totals[weeks] += 1
+            retained_flag = any(date_value >= (first_date + datetime.timedelta(weeks=weeks)) for date_value in lesson_dates[1:])
+            if retained_flag:
+                retained[weeks] += 1
+                cohort[f"retained_{weeks}w"] += 1
+
+    cohort_items = sorted(cohorts.values(), key=lambda item: item["cohort"], reverse=True)[:max_cohorts]
+    for item in cohort_items:
+        clients = int(item.get("clients") or 0)
+        for weeks in checkpoints:
+            item[f"retention_{weeks}w_pct"] = _safe_ratio(int(item.get(f"retained_{weeks}w") or 0), clients)
+
+    return {
+        "summary": {
+            f"retention_{weeks}w_pct": _safe_ratio(retained[weeks], totals[weeks])
+            for weeks in checkpoints
+        },
+        "cohorts": cohort_items,
+        "clients_total": sum(int(item.get("clients") or 0) for item in cohorts.values()),
+    }
+
+
+async def revenue_drivers_for_ranges(
+    current_from: datetime.date,
+    current_to: datetime.date,
+    previous_from: datetime.date,
+    previous_to: datetime.date,
+    limit: int = 5,
+) -> dict[str, Any]:
+    cur_clients = await client_activity_for_range(current_from, current_to)
+    prev_clients = await client_activity_for_range(previous_from, previous_to)
+    cur_map = {int(item["telegram_id"]): item for item in cur_clients if item.get("telegram_id") is not None}
+    prev_map = {int(item["telegram_id"]): item for item in prev_clients if item.get("telegram_id") is not None}
+    all_ids = sorted(set(cur_map) | set(prev_map))
+
+    gainers: list[dict[str, Any]] = []
+    decliners: list[dict[str, Any]] = []
+    groups = {"new": 0, "churned": 0, "grew": 0, "declined": 0}
+
+    for tg_id in all_ids:
+        cur_item = cur_map.get(tg_id)
+        prev_item = prev_map.get(tg_id)
+        cur_paid = int((cur_item or {}).get("paid_amount") or 0)
+        prev_paid = int((prev_item or {}).get("paid_amount") or 0)
+        delta = cur_paid - prev_paid
+        label = _client_display_name(
+            (cur_item or prev_item or {}).get("full_name"),
+            tg_id,
+        )
+        row = {
+            "telegram_id": tg_id,
+            "full_name": label,
+            "paid_now": cur_paid,
+            "paid_prev": prev_paid,
+            "delta_abs": delta,
+        }
+        if prev_paid == 0 and cur_paid > 0:
+            row["group"] = "new"
+            groups["new"] += 1
+            gainers.append(row)
+        elif cur_paid == 0 and prev_paid > 0:
+            row["group"] = "churned"
+            groups["churned"] += 1
+            decliners.append(row)
+        elif delta > 0:
+            row["group"] = "grew"
+            groups["grew"] += 1
+            gainers.append(row)
+        elif delta < 0:
+            row["group"] = "declined"
+            groups["declined"] += 1
+            decliners.append(row)
+
+    gainers.sort(key=lambda item: (item["delta_abs"], item["paid_now"]), reverse=True)
+    decliners.sort(key=lambda item: (item["delta_abs"], item["paid_prev"]))
+    return {
+        "summary": groups,
+        "gainers": gainers[:max(1, limit)],
+        "decliners": decliners[:max(1, limit)],
+    }
+
+
+async def _schedule_state_for_range(
+    start_date: datetime.date,
+    end_date: datetime.date,
+) -> dict[datetime.date, dict[str, Any]]:
+    all_dates = [start_date + datetime.timedelta(days=offset) for offset in range((end_date - start_date).days + 1)]
+    if not all_dates:
+        return {}
+    weekdays = sorted({item.weekday() for item in all_dates})
+
+    record_rows = (
+        await session.execute(
+            select(
+                RecordDate.record_date,
+                RecordDate.telegram_id,
+                RecordDate.hour,
+                RecordDate.minute,
+                RecordDate.duration_minutes,
+                RecordDate.kind,
+                RecordDate.booking_status,
+                RecordDate.event_id,
+            ).where(
+                RecordDate.record_date >= start_date,
+                RecordDate.record_date <= end_date,
+            )
+        )
+    ).all()
+    skipped_rows = (
+        await session.execute(
+            select(
+                RegularLessonException.exception_date,
+                RegularLessonException.regular_lesson_id,
+            ).where(
+                RegularLessonException.exception_date >= start_date,
+                RegularLessonException.exception_date <= end_date,
+                RegularLessonException.action == "skip",
+            )
+        )
+    ).all()
+    regular_rows = (
+        await session.execute(
+            select(
+                RegularLesson.id,
+                RegularLesson.day_of_week,
+                RegularLesson.telegram_id,
+                RegularLesson.hour,
+                RegularLesson.minute,
+                RegularLesson.duration_minutes,
+            ).where(
+                RegularLesson.day_of_week.in_(weekdays),
+                RegularLesson.telegram_id.is_not(None),
+            )
+        )
+    ).all()
+
+    records_by_date: dict[datetime.date, list[Any]] = defaultdict(list)
+    for row in record_rows:
+        records_by_date[row.record_date].append(row)
+
+    skipped_by_date: dict[datetime.date, set[int]] = defaultdict(set)
+    for row in skipped_rows:
+        if row.exception_date is not None and row.regular_lesson_id is not None:
+            skipped_by_date[row.exception_date].add(int(row.regular_lesson_id))
+
+    regulars_by_weekday: dict[int, list[Any]] = defaultdict(list)
+    for row in regular_rows:
+        regulars_by_weekday[int(row.day_of_week or 0)].append(row)
+
+    state: dict[datetime.date, dict[str, Any]] = {}
+    for target_date in all_dates:
+        rows = records_by_date.get(target_date, [])
+        blocked_times: set[tuple[int, int]] = set()
+        allow_times: set[tuple[int, int]] = set()
+        busy_intervals: list[tuple[datetime.datetime, datetime.datetime]] = []
+        seen_intervals: set[tuple[datetime.datetime, datetime.datetime]] = set()
+
+        for row in rows:
+            hour = int(row.hour or 0)
+            minute = int(row.minute or 0)
+            duration = int(row.duration_minutes or SLOT_DURATION_MINUTES)
+            kind = (row.kind or "").lower()
+            status = (row.booking_status or "").lower()
+
+            if row.telegram_id is None and (
+                kind in {"block", "allow"} or (row.kind is None and row.event_id is None)
+            ):
+                blocked_times.add((hour, minute))
+            if kind == "allow":
+                allow_times.add((hour, minute))
+            if kind != "allow" and status != "rejected":
+                start_dt = datetime.datetime.combine(target_date, datetime.time(hour, minute))
+                end_dt = start_dt + datetime.timedelta(minutes=max(1, duration))
+                interval = (start_dt, end_dt)
+                if interval not in seen_intervals:
+                    seen_intervals.add(interval)
+                    busy_intervals.append(interval)
+
+        for reg in regulars_by_weekday.get(target_date.weekday(), []):
+            reg_id = int(reg.id)
+            hour = int(reg.hour or 0)
+            minute = int(reg.minute or 0)
+            duration = int(reg.duration_minutes or SLOT_DURATION_MINUTES)
+            if reg_id in skipped_by_date.get(target_date, set()):
+                continue
+            if (hour, minute) in blocked_times or (hour, minute) in allow_times:
+                continue
+            start_dt = datetime.datetime.combine(target_date, datetime.time(hour, minute))
+            end_dt = start_dt + datetime.timedelta(minutes=max(1, duration))
+            interval = (start_dt, end_dt)
+            if interval not in seen_intervals:
+                seen_intervals.add(interval)
+                busy_intervals.append(interval)
+
+        busy_intervals.sort(key=lambda item: item[0])
+        state[target_date] = {
+            "busy_intervals": busy_intervals,
+            "blocked_times": blocked_times,
+            "allow_times": allow_times,
+        }
+    return state
+
+
+async def occupancy_snapshot(
+    start_date: datetime.date,
+    end_date: datetime.date,
+) -> dict[str, Any]:
+    state = await _schedule_state_for_range(start_date, end_date)
+    weekday_buckets = {
+        idx: {"weekday": idx, "available": 0, "occupied": 0}
+        for idx in range(7)
+    }
+    hour_buckets: dict[int, dict[str, Any]] = {}
+    heatmap: list[dict[str, Any]] = []
+
+    for target_date, date_state in state.items():
+        day_slots = slots_for_date(target_date, None)
+        busy_intervals = date_state["busy_intervals"]
+        for hour, minute in day_slots:
+            weekday_idx = target_date.weekday()
+            hour_bucket = hour_buckets.setdefault(hour, {"hour": hour, "available": 0, "occupied": 0})
+            weekday_buckets[weekday_idx]["available"] += 1
+            hour_bucket["available"] += 1
+            start_dt = datetime.datetime.combine(target_date, datetime.time(hour, minute))
+            end_dt = start_dt + datetime.timedelta(minutes=SLOT_DURATION_MINUTES)
+            occupied = any(_overlaps(start_dt, end_dt, busy_start, busy_end) for busy_start, busy_end in busy_intervals)
+            if occupied:
+                weekday_buckets[weekday_idx]["occupied"] += 1
+                hour_bucket["occupied"] += 1
+
+    weekday_items = []
+    for idx in range(7):
+        item = weekday_buckets[idx]
+        occupancy_pct = _safe_ratio(item["occupied"], item["available"])
+        weekday_items.append({**item, "occupancy_pct": occupancy_pct})
+
+    hour_items = []
+    for hour in sorted(hour_buckets):
+        item = hour_buckets[hour]
+        occupancy_pct = _safe_ratio(item["occupied"], item["available"])
+        hour_items.append({**item, "occupancy_pct": occupancy_pct})
+
+    for weekday_item in weekday_items:
+        for hour_item in hour_items:
+            available = 0
+            occupied = 0
+            for target_date, date_state in state.items():
+                if target_date.weekday() != weekday_item["weekday"]:
+                    continue
+                for slot_hour, slot_minute in slots_for_date(target_date, None):
+                    if slot_hour != hour_item["hour"]:
+                        continue
+                    available += 1
+                    start_dt = datetime.datetime.combine(target_date, datetime.time(slot_hour, slot_minute))
+                    end_dt = start_dt + datetime.timedelta(minutes=SLOT_DURATION_MINUTES)
+                    if any(_overlaps(start_dt, end_dt, busy_start, busy_end) for busy_start, busy_end in date_state["busy_intervals"]):
+                        occupied += 1
+            occupancy_pct = _safe_ratio(occupied, available)
+            if occupancy_pct < 35:
+                level = "underloaded"
+            elif occupancy_pct > 75:
+                level = "overloaded"
+            else:
+                level = "normal"
+            heatmap.append(
+                {
+                    "weekday": weekday_item["weekday"],
+                    "hour": hour_item["hour"],
+                    "available": available,
+                    "occupied": occupied,
+                    "occupancy_pct": occupancy_pct,
+                    "level": level,
+                }
+            )
+
+    return {
+        "weekday": weekday_items,
+        "hour": hour_items,
+        "heatmap": heatmap,
+    }
+
+
+async def analytics_event_breakdown(
+    start_date: datetime.date,
+    end_date: datetime.date,
+) -> dict[str, Any]:
+    res = await session.execute(
+        select(AnalyticsEvent.event_type, func.count(AnalyticsEvent.id))
+        .where(
+            AnalyticsEvent.record_date >= start_date,
+            AnalyticsEvent.record_date <= end_date,
+        )
+        .group_by(AnalyticsEvent.event_type)
+    )
+    counts = {str(event_type): int(count or 0) for event_type, count in res.all()}
+    booked_base = max(1, int(counts.get("booked", 0)) + int(counts.get("approved", 0)))
+    canceled_client = int(counts.get("canceled_by_client", 0))
+    canceled_admin = int(counts.get("canceled_by_admin", 0))
+    rescheduled = int(counts.get("rescheduled_from", 0))
+    no_show = int(counts.get("presence_no", 0))
+    return {
+        "counts": {
+            "canceled_by_client": canceled_client,
+            "canceled_by_admin": canceled_admin,
+            "rescheduled": rescheduled,
+            "no_show": no_show,
+            "presence_yes": int(counts.get("presence_yes", 0)),
+            "presence_no": no_show,
+        },
+        "rates": {
+            "cancel_client_pct": _safe_ratio(canceled_client, booked_base),
+            "cancel_admin_pct": _safe_ratio(canceled_admin, booked_base),
+            "reschedule_pct": _safe_ratio(rescheduled, booked_base),
+            "no_show_pct": _safe_ratio(no_show, booked_base),
+        },
+        "coverage_note": "Полная cancel/no-show аналитика собирается с момента внедрения analytics_events без исторического backfill.",
+    }
+
+
+async def repeat_booking_summary() -> dict[str, Any]:
+    res = await session.execute(
+        select(Payment.telegram_id, func.count(Payment.id))
+        .where(
+            Payment.status != "canceled",
+            Payment.telegram_id.is_not(None),
+        )
+        .group_by(Payment.telegram_id)
+    )
+    total_clients = 0
+    returned_clients = 0
+    for tg_id, lessons_count in res.all():
+        if tg_id is None:
+            continue
+        total_clients += 1
+        if int(lessons_count or 0) >= 2:
+            returned_clients += 1
+    return {
+        "clients_total": total_clients,
+        "returned_clients": returned_clients,
+        "second_lesson_conversion_pct": _safe_ratio(returned_clients, total_clients),
+    }
+
+
+async def regular_vs_single_summary(
+    start_date: datetime.date,
+    end_date: datetime.date,
+) -> dict[str, Any]:
+    payments_res = await session.execute(
+        select(
+            Payment.telegram_id,
+            Payment.lesson_date,
+            Payment.hour,
+            Payment.minute,
+            Payment.amount,
+            Payment.status,
+        ).where(
+            Payment.lesson_date >= start_date,
+            Payment.lesson_date <= end_date,
+            Payment.status != "canceled",
+        )
+    )
+    payment_rows = payments_res.all()
+    if not payment_rows:
+        return {
+            "single": {"revenue": 0, "lessons": 0, "paid_lessons": 0, "debt_ratio_pct": 0},
+            "regular": {"revenue": 0, "lessons": 0, "paid_lessons": 0, "debt_ratio_pct": 0},
+        }
+
+    dates = sorted({row.lesson_date for row in payment_rows if row.lesson_date is not None})
+    weekdays = sorted({item.weekday() for item in dates})
+    records = (
+        await session.execute(
+            select(
+                RecordDate.record_date,
+                RecordDate.telegram_id,
+                RecordDate.hour,
+                RecordDate.minute,
+                RecordDate.kind,
+            ).where(
+                RecordDate.record_date >= start_date,
+                RecordDate.record_date <= end_date,
+            )
+        )
+    ).all()
+    record_kinds = {
+        (row.record_date, int(row.telegram_id), int(row.hour or 0), int(row.minute or 0)): (row.kind or "single")
+        for row in records
+        if row.telegram_id is not None
+    }
+    regulars = (
+        await session.execute(
+            select(
+                RegularLesson.telegram_id,
+                RegularLesson.day_of_week,
+                RegularLesson.hour,
+                RegularLesson.minute,
+            ).where(
+                RegularLesson.day_of_week.in_(weekdays),
+                RegularLesson.telegram_id.is_not(None),
+            )
+        )
+    ).all()
+    regular_keys = {
+        (int(row.telegram_id), int(row.day_of_week or 0), int(row.hour or 0), int(row.minute or 0))
+        for row in regulars
+        if row.telegram_id is not None
+    }
+
+    summary = {
+        "single": {"revenue": 0, "lessons": 0, "paid_lessons": 0},
+        "regular": {"revenue": 0, "lessons": 0, "paid_lessons": 0},
+    }
+    for row in payment_rows:
+        tg_id = int(row.telegram_id) if row.telegram_id is not None else None
+        hour = int(row.hour or 0)
+        minute = int(row.minute or 0)
+        if tg_id is not None and record_kinds.get((row.lesson_date, tg_id, hour, minute)) == "regular":
+            kind = "regular"
+        elif tg_id is not None and (tg_id, row.lesson_date.weekday(), hour, minute) in regular_keys:
+            kind = "regular"
+        else:
+            kind = "single"
+        summary[kind]["lessons"] += 1
+        if str(row.status) == "paid":
+            summary[kind]["paid_lessons"] += 1
+            summary[kind]["revenue"] += int(row.amount or 0)
+
+    for item in summary.values():
+        lessons = int(item["lessons"] or 0)
+        paid_lessons = int(item["paid_lessons"] or 0)
+        item["debt_ratio_pct"] = _safe_ratio(max(0, lessons - paid_lessons), lessons)
+        item["revenue_share_pct"] = 0.0
+        item["lessons_share_pct"] = 0.0
+
+    total_revenue = sum(int(item["revenue"] or 0) for item in summary.values())
+    total_lessons = sum(int(item["lessons"] or 0) for item in summary.values())
+    for item in summary.values():
+        item["revenue_share_pct"] = _safe_ratio(int(item["revenue"] or 0), total_revenue)
+        item["lessons_share_pct"] = _safe_ratio(int(item["lessons"] or 0), total_lessons)
+    return summary
+
+
+async def analytics_event_log_coverage() -> dict[str, Any]:
+    res = await session.execute(
+        select(func.min(AnalyticsEvent.created_at), func.count(AnalyticsEvent.id))
+    )
+    first_created_at, total = res.one()
+    return {
+        "tracked_from": first_created_at,
+        "events_total": int(total or 0),
+    }
+
+
 async def last_lessons_for_clients(client_ids: list[int]) -> dict[int, dict[str, Any]]:
     """
     Последнее проведенное занятие (по payments, без canceled) для списка клиентов.
@@ -1941,21 +3901,57 @@ async def add_payment(
         status: str,
         source: str | None = None,
 ) -> Payment:
-    pay = Payment(
-        telegram_id=telegram_id,
-        full_name=full_name,
-        lesson_date=lesson_date,
-        hour=hour,
-        minute=minute,
-        duration_minutes=duration_minutes,
-        amount=amount,
-        status=status,
-        created_at=datetime.datetime.now().isoformat(),
-        source=source or "",
-    )
-    session.add(pay)
-    await session.commit()
-    return pay
+    for attempt in range(3):
+        pay = Payment(
+            telegram_id=telegram_id,
+            full_name=full_name,
+            lesson_date=lesson_date,
+            hour=hour,
+            minute=minute,
+            duration_minutes=duration_minutes,
+            amount=amount,
+            status=status,
+            created_at=datetime.datetime.now().isoformat(),
+            source=source or "",
+        )
+        session.add(pay)
+        try:
+            lesson_kind = await get_lesson_kind(lesson_date, hour, minute, telegram_id) if telegram_id is not None else None
+            close_event = {
+                "paid": "lesson_closed_paid",
+                "unpaid": "lesson_closed_unpaid",
+                "canceled": "lesson_closed_canceled",
+            }.get(status)
+            if close_event:
+                await log_analytics_event(
+                    close_event,
+                    telegram_id=telegram_id,
+                    record_date=lesson_date,
+                    hour=hour,
+                    minute=minute,
+                    duration_minutes=duration_minutes,
+                    lesson_kind=lesson_kind,
+                    source_context="admin" if (source or "").startswith("lesson_close") or source == "balance" else "bot",
+                    meta={"amount": amount, "source": source or ""},
+                    commit=False,
+                )
+            await session.commit()
+            return pay
+        except IntegrityError as exc:
+            await session.rollback()
+            if "payments.id" in str(exc).lower() and attempt < 2:
+                logger.warning(
+                    "retrying payment insert after payments.id conflict: tg=%s date=%s time=%02d:%02d attempt=%s",
+                    telegram_id,
+                    lesson_date,
+                    hour,
+                    minute,
+                    attempt + 1,
+                )
+                continue
+            raise
+
+    raise RuntimeError("unreachable")
 
 
 async def find_payment(
@@ -2001,6 +3997,26 @@ async def update_payment(
         pay.status = status
     if source is not None:
         pay.source = source
+    if status is not None:
+        lesson_kind = await get_lesson_kind(pay.lesson_date, pay.hour, pay.minute, pay.telegram_id) if pay.telegram_id is not None else None
+        close_event = {
+            "paid": "lesson_closed_paid",
+            "unpaid": "lesson_closed_unpaid",
+            "canceled": "lesson_closed_canceled",
+        }.get(status)
+        if close_event:
+            await log_analytics_event(
+                close_event,
+                telegram_id=pay.telegram_id,
+                record_date=pay.lesson_date,
+                hour=pay.hour,
+                minute=pay.minute,
+                duration_minutes=pay.duration_minutes or SLOT_DURATION_MINUTES,
+                lesson_kind=lesson_kind,
+                source_context="admin",
+                meta={"payment_id": pay.id, "amount": pay.amount, "source": pay.source or ""},
+                commit=False,
+            )
     await session.commit()
 
 
@@ -2015,6 +4031,19 @@ async def mark_payment_paid(payment_id: int) -> bool:
     pay = await session.get(Payment, payment_id)
     if pay:
         pay.status = "paid"
+        lesson_kind = await get_lesson_kind(pay.lesson_date, pay.hour, pay.minute, pay.telegram_id) if pay.telegram_id is not None else None
+        await log_analytics_event(
+            "lesson_closed_paid",
+            telegram_id=pay.telegram_id,
+            record_date=pay.lesson_date,
+            hour=pay.hour,
+            minute=pay.minute,
+            duration_minutes=pay.duration_minutes or SLOT_DURATION_MINUTES,
+            lesson_kind=lesson_kind,
+            source_context="admin",
+            meta={"payment_id": pay.id, "amount": pay.amount, "source": pay.source or ""},
+            commit=False,
+        )
         await session.commit()
         return True
     return False
@@ -2024,4 +4053,23 @@ async def mark_payment_status(payment_id: int, status: str) -> None:
     pay = await session.get(Payment, payment_id)
     if pay:
         pay.status = status
+        lesson_kind = await get_lesson_kind(pay.lesson_date, pay.hour, pay.minute, pay.telegram_id) if pay.telegram_id is not None else None
+        close_event = {
+            "paid": "lesson_closed_paid",
+            "unpaid": "lesson_closed_unpaid",
+            "canceled": "lesson_closed_canceled",
+        }.get(status)
+        if close_event:
+            await log_analytics_event(
+                close_event,
+                telegram_id=pay.telegram_id,
+                record_date=pay.lesson_date,
+                hour=pay.hour,
+                minute=pay.minute,
+                duration_minutes=pay.duration_minutes or SLOT_DURATION_MINUTES,
+                lesson_kind=lesson_kind,
+                source_context="admin",
+                meta={"payment_id": pay.id, "amount": pay.amount, "source": pay.source or ""},
+                commit=False,
+            )
         await session.commit()

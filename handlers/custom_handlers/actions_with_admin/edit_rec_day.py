@@ -146,9 +146,19 @@ async def edit_record_day_4(message: types.Message, state: FSMContext) -> None:
     ok = False
     try:
         if kind == "regular":
-            await transactions.cancel_regular_slot_with_allow(
-                old_date, old_hour, old_minute, note="Перенос занятия"
+            canceled = await transactions.cancel_regular_occurrence(
+                telegram_id,
+                old_date,
+                old_hour,
+                old_minute,
+                note="Перенос занятия",
+                cancel_event_type="rescheduled_from",
+                source_context="admin",
             )
+            if not canceled:
+                await transactions.cancel_regular_slot_with_allow(
+                    old_date, old_hour, old_minute, note="Перенос занятия"
+                )
             ok = await transactions.add_single_slot(
                 telegram_id,
                 new_date,
@@ -156,6 +166,20 @@ async def edit_record_day_4(message: types.Message, state: FSMContext) -> None:
                 new_minute,
                 duration_minutes=duration,
             )
+            if ok:
+                await transactions.log_analytics_event(
+                    "rescheduled_to",
+                    telegram_id=telegram_id,
+                    record_date=new_date,
+                    hour=new_hour,
+                    minute=new_minute,
+                    duration_minutes=duration,
+                    lesson_kind="single",
+                    source_context="admin",
+                    related_slot_date=old_date,
+                    related_slot_hour=old_hour,
+                    related_slot_minute=old_minute,
+                )
         else:
             ok = await transactions.reschedule_single_slot(
                 telegram_id,
@@ -166,6 +190,7 @@ async def edit_record_day_4(message: types.Message, state: FSMContext) -> None:
                 new_hour,
                 new_minute,
                 duration_minutes=duration,
+                source_context="admin",
             )
     except Exception as exc:  # pylint: disable=broad-except
         logger.exception("Ошибка переноса записи: %s", exc)

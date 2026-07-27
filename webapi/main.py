@@ -10,19 +10,31 @@ from typing import Any
 
 from aiogram.exceptions import TelegramBadRequest
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
-from fastapi import Depends, FastAPI, Header, HTTPException, Query
+from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import select, text
 
 from config_data.config import ADMINS_TELEGRAM_ID
 from database import transactions
-from database.connect import session
+from database.connect import (
+    bind_request_session_scope,
+    close_db,
+    remove_session,
+    reset_request_session_scope,
+    rollback_session,
+    session,
+)
 from database.models import RecordDate, StudentProfile
 from loader import bot
 from utils.calendar_backend import get_busy_intervals, get_calendar_tz
 from utils.schedule import WEEK_SCHEDULE, is_time_in_schedule, slots_for_date
 from webapi.auth import issue_session_token, verify_init_data, verify_session_token
+from webapi.probes import router as probes_router
 from webapi.schemas import (
+    AdminBlockCreateIn,
+    AdminBlockDeleteIn,
+    AdminExtraAvailabilityIn,
+    AdminBlockPreviewIn,
     AdminUserPatchIn,
     AuthIn,
     BookIn,
@@ -40,6 +52,7 @@ from webapi.schemas import (
 
 logger = logging.getLogger(__name__)
 app = FastAPI(title="Lesson Record MiniApp API", version="1.0.0")
+app.state.ready = False
 ADMIN_MINIAPP_APPROVALS_ENABLED = os.getenv("ADMIN_MINIAPP_APPROVALS_ENABLED", "1").strip().lower() in {"1", "true", "yes", "on"}
 ADMIN_BOT_LEGACY_ENABLED = os.getenv("ADMIN_BOT_LEGACY_ENABLED", "1").strip().lower() in {"1", "true", "yes", "on"}
 MINI_APP_URL = os.getenv("MINI_APP_URL", "http://localhost:5173")
@@ -51,6 +64,22 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+app.include_router(probes_router)
+
+
+@app.middleware("http")
+async def db_session_middleware(request: Request, call_next):
+    if request.url.path in {"/health", "/ready"}:
+        return await call_next(request)
+    scope_token = bind_request_session_scope()
+    try:
+        return await call_next(request)
+    except Exception:
+        await rollback_session()
+        raise
+    finally:
+        await remove_session()
+        reset_request_session_scope(scope_token)
 
 
 def _parse_hhmm(value: str) -> tuple[int, int]:
@@ -129,10 +158,95 @@ def _parse_time_to_minutes(hhmm: str) -> int:
     return hh * 60 + mm
 
 
+def _minutes_to_hhmm(total_minutes: int) -> str:
+    return f"{total_minutes // 60:02d}:{total_minutes % 60:02d}"
+
+
+def _block_reason_from_template(template: str | None, custom: str | None) -> str:
+    custom_text = (custom or "").strip()
+    if custom_text:
+        return custom_text
+    mapping = {
+        "illness": "Заболел",
+        "business_trip": "Срочная командировка",
+        "force_majeure": "Форс-мажор",
+    }
+    return mapping.get((template or "").strip(), "изменение расписания")
+
+
+def _normalize_block_payload(
+    date_value: datetime.date,
+    all_day: bool,
+    start_time: str | None,
+    end_time: str | None,
+) -> dict[str, Any]:
+    if all_day:
+        segments = transactions.block_segments_for_date(date_value, all_day=True)
+        if not segments:
+            raise HTTPException(status_code=422, detail={"code": "NO_WORKING_INTERVALS"})
+        first_start = min(seg[0] for seg in segments)
+        last_end = max(seg[1] for seg in segments)
+        return {
+            "all_day": True,
+            "segments": segments,
+            "start_minute": first_start,
+            "end_minute": last_end,
+            "start_time": _minutes_to_hhmm(first_start),
+            "end_time": _minutes_to_hhmm(last_end),
+        }
+
+    if not start_time or not end_time:
+        raise HTTPException(status_code=422, detail={"code": "TIME_RANGE_REQUIRED"})
+    start_minute = _parse_time_to_minutes(start_time)
+    end_minute = _parse_time_to_minutes(end_time)
+    if end_minute <= start_minute:
+        raise HTTPException(status_code=422, detail={"code": "INVALID_INTERVAL_RANGE"})
+    if start_minute % 5 or end_minute % 5:
+        raise HTTPException(status_code=422, detail={"code": "INVALID_TIME_STEP"})
+
+    segments = transactions.block_segments_for_date(
+        date_value,
+        all_day=False,
+        start_minute=start_minute,
+        end_minute=end_minute,
+    )
+    if not segments:
+        raise HTTPException(status_code=422, detail={"code": "OUTSIDE_WORKING_HOURS"})
+    covered = sum(max(0, seg_end - seg_start) for seg_start, seg_end in segments)
+    if covered != (end_minute - start_minute):
+        raise HTTPException(status_code=422, detail={"code": "OUTSIDE_WORKING_HOURS"})
+    return {
+        "all_day": False,
+        "segments": segments,
+        "start_minute": start_minute,
+        "end_minute": end_minute,
+        "start_time": _minutes_to_hhmm(start_minute),
+        "end_time": _minutes_to_hhmm(end_minute),
+    }
+
+
 def _safe_delta_pct(now_value: int, prev_value: int) -> float:
     if prev_value == 0:
         return 100.0 if now_value > 0 else 0.0
     return round(((now_value - prev_value) / prev_value) * 100.0, 2)
+
+
+def _trend_name(delta: int) -> str:
+    if delta > 0:
+        return "progress"
+    if delta < 0:
+        return "regress"
+    return "stagnation"
+
+
+def _combined_signal(revenue_delta: int, lessons_delta: int) -> str:
+    if revenue_delta == 0 and lessons_delta == 0:
+        return "stagnation"
+    if revenue_delta >= 0 and lessons_delta >= 0 and (revenue_delta > 0 or lessons_delta > 0):
+        return "progress"
+    if revenue_delta <= 0 and lessons_delta <= 0 and (revenue_delta < 0 or lessons_delta < 0):
+        return "regress"
+    return "mixed"
 
 
 def _period_bounds(anchor_date: datetime.date, mode: str) -> tuple[datetime.date, datetime.date, datetime.date, datetime.date]:
@@ -155,7 +269,20 @@ def _period_bounds(anchor_date: datetime.date, mode: str) -> tuple[datetime.date
         prev_from = prev_to.replace(day=1)
         return current_from, current_to, prev_from, prev_to
 
-    raise HTTPException(status_code=422, detail={"code": "INVALID_MODE", "message": "mode must be week or month"})
+    if mode == "quarter":
+        quarter_start_month = ((anchor_date.month - 1) // 3) * 3 + 1
+        current_from = datetime.date(anchor_date.year, quarter_start_month, 1)
+        next_quarter_month = quarter_start_month + 3
+        next_quarter_year = anchor_date.year + (1 if next_quarter_month > 12 else 0)
+        next_quarter_month = ((next_quarter_month - 1) % 12) + 1
+        next_quarter = datetime.date(next_quarter_year, next_quarter_month, 1)
+        current_to = next_quarter - datetime.timedelta(days=1)
+        prev_to = current_from - datetime.timedelta(days=1)
+        prev_quarter_start_month = ((prev_to.month - 1) // 3) * 3 + 1
+        prev_from = datetime.date(prev_to.year, prev_quarter_start_month, 1)
+        return current_from, current_to, prev_from, prev_to
+
+    raise HTTPException(status_code=422, detail={"code": "INVALID_MODE", "message": "mode must be week, month or quarter"})
 
 
 def _normalized_days_payload(days: list[Any]) -> list[dict[str, Any]]:
@@ -334,11 +461,18 @@ async def startup() -> None:
                     {"weekday": int(weekday), "start_minute": int(start_min), "end_minute": int(end_min)},
                 )
     await session.commit()
+    await remove_session()
 
 
-@app.get("/health")
-async def health() -> dict[str, str]:
-    return {"status": "ok"}
+@app.on_event("shutdown")
+async def shutdown() -> None:
+    app.state.ready = False
+    await close_db()
+
+
+@app.on_event("startup")
+async def mark_ready() -> None:
+    app.state.ready = True
 
 
 @app.post("/api/webapp/auth/telegram")
@@ -551,7 +685,15 @@ async def user_bookings(user: dict[str, Any] = Depends(get_current_user)) -> dic
 async def user_cancel(payload: BookIn, user: dict[str, Any] = Depends(get_current_user)) -> dict[str, Any]:
     telegram_id = int(user["sub"])
     hh, mm = _parse_hhmm(payload.time)
-    await transactions.delete_single_slot(telegram_id, payload.date, hh, mm)
+    await transactions.delete_single_slot(
+        telegram_id,
+        payload.date,
+        hh,
+        mm,
+        cancel_event_type="canceled_by_client",
+        source_context="miniapp",
+        note="Отменено пользователем",
+    )
     return {"status": "ok"}
 
 
@@ -926,7 +1068,17 @@ async def admin_add_regular(payload: RegularLessonIn, admin: dict[str, Any] = De
 async def admin_patch_lesson(lesson_id: int, payload: SingleLessonIn, admin: dict[str, Any] = Depends(require_admin)) -> dict[str, Any]:
     _ = lesson_id
     hh, mm = _parse_hhmm(payload.time)
-    await transactions.reschedule_single_slot(payload.telegram_id, payload.date, hh, mm, payload.date, hh, mm, payload.duration)
+    await transactions.reschedule_single_slot(
+        payload.telegram_id,
+        payload.date,
+        hh,
+        mm,
+        payload.date,
+        hh,
+        mm,
+        payload.duration,
+        source_context="admin",
+    )
     await _audit(int(admin["sub"]), "update", "lesson", {"lesson_id": lesson_id, **payload.model_dump()})
     return {"status": "ok"}
 
@@ -944,7 +1096,16 @@ async def admin_del_lesson(
     hh, mm = _parse_hhmm(time)
 
     if scope == "all_regular":
-        await transactions.delete_regular_slot(telegram_id, date.weekday(), hh, mm, delete_future_single=True)
+        await transactions.delete_regular_slot(
+            telegram_id,
+            date.weekday(),
+            hh,
+            mm,
+            delete_future_single=True,
+            cancel_event_type="canceled_by_admin",
+            source_context="admin",
+            note="Удалено администратором",
+        )
         await _audit(
             int(admin["sub"]),
             "delete",
@@ -956,7 +1117,17 @@ async def admin_del_lesson(
     # Для регулярки удаляем только конкретный день и оставляем серию.
     slot_kind = await transactions.get_lesson_kind(date, hh, mm, telegram_id)
     if slot_kind == "regular":
-        await transactions.cancel_regular_slot_with_allow(date, hh, mm, note="Отменено администратором")
+        canceled = await transactions.cancel_regular_occurrence(
+            telegram_id,
+            date,
+            hh,
+            mm,
+            note="Отменено администратором",
+            cancel_event_type="canceled_by_admin",
+            source_context="admin",
+        )
+        if not canceled:
+            await transactions.cancel_regular_slot_with_allow(date, hh, mm, note="Отменено администратором")
         await _audit(
             int(admin["sub"]),
             "delete",
@@ -965,7 +1136,15 @@ async def admin_del_lesson(
         )
         return {"status": "ok", "scope": scope}
 
-    await transactions.delete_single_slot(telegram_id, date, hh, mm)
+    await transactions.delete_single_slot(
+        telegram_id,
+        date,
+        hh,
+        mm,
+        cancel_event_type="canceled_by_admin",
+        source_context="admin",
+        note="Удалено администратором",
+    )
     await _audit(
         int(admin["sub"]),
         "delete",
@@ -1066,7 +1245,15 @@ async def admin_apply_work_schedule_impact(
         rec = await transactions.get_record_by_id(int(record_id))
         if not rec or rec.telegram_id is None:
             continue
-        await transactions.delete_single_slot(int(rec.telegram_id), rec.record_date, int(rec.hour), int(rec.minute))
+        await transactions.delete_single_slot(
+            int(rec.telegram_id),
+            rec.record_date,
+            int(rec.hour),
+            int(rec.minute),
+            cancel_event_type="canceled_by_admin",
+            source_context="admin",
+            note=f"Отменено из-за изменения рабочего расписания: {reason}",
+        )
         deleted += 1
 
         if payload.notify_users:
@@ -1179,6 +1366,156 @@ async def admin_schedule_day(date: datetime.date, _: dict[str, Any] = Depends(re
     }
 
 
+async def _admin_block_preview(payload: AdminBlockPreviewIn) -> dict[str, Any]:
+    normalized = _normalize_block_payload(payload.date, bool(payload.all_day), payload.start_time, payload.end_time)
+    current_blocks = await transactions.list_block_ranges_for_date(payload.date)
+    conflicts = await transactions.find_conflicting_lessons(payload.date, normalized["segments"])
+    return {
+        "date": payload.date.isoformat(),
+        "all_day": bool(normalized["all_day"]),
+        "start_time": normalized["start_time"],
+        "end_time": normalized["end_time"],
+        "segments": normalized["segments"],
+        "current_blocks": current_blocks,
+        "conflicts": conflicts,
+        "conflicts_total": len(conflicts),
+    }
+
+
+@app.get("/api/admin/blocks")
+async def admin_get_blocks(date: datetime.date, _: dict[str, Any] = Depends(require_admin)) -> dict[str, Any]:
+    blocks = await transactions.list_block_ranges_for_date(date)
+    return {"date": date.isoformat(), "blocks": blocks}
+
+
+@app.post("/api/admin/blocks/preview")
+async def admin_preview_blocks(
+    payload: AdminBlockPreviewIn,
+    _: dict[str, Any] = Depends(require_admin),
+) -> dict[str, Any]:
+    preview = await _admin_block_preview(payload)
+    preview.pop("segments", None)
+    return preview
+
+
+@app.post("/api/admin/blocks")
+async def admin_create_blocks(
+    payload: AdminBlockCreateIn,
+    admin: dict[str, Any] = Depends(require_admin),
+) -> dict[str, Any]:
+    preview = await _admin_block_preview(payload)
+    segments = preview.pop("segments", [])
+    reason = _block_reason_from_template(payload.notify_reason_template, payload.notify_reason_custom)
+    note = (payload.note or "").strip() or "Резерв администратора"
+    canceled = 0
+    notified = 0
+
+    if payload.strategy == "block_and_cancel_notify":
+        for item in preview["conflicts"]:
+            hh, mm = _parse_hhmm(item["time"])
+            if item["kind"] == "regular":
+                canceled_now = await transactions.cancel_regular_occurrence(
+                    int(item["telegram_id"]),
+                    payload.date,
+                    hh,
+                    mm,
+                    note=f"Отменено из-за брони администратора: {reason}",
+                    cancel_event_type="canceled_by_admin",
+                    source_context="admin",
+                )
+                if not canceled_now and item["source"] == "record":
+                    await transactions.delete_single_slot(
+                        int(item["telegram_id"]),
+                        payload.date,
+                        hh,
+                        mm,
+                        cancel_event_type="canceled_by_admin",
+                        source_context="admin",
+                        note=f"Отменено из-за брони администратора: {reason}",
+                    )
+            elif item["source"] == "record":
+                await transactions.delete_single_slot(
+                    int(item["telegram_id"]),
+                    payload.date,
+                    hh,
+                    mm,
+                    cancel_event_type="canceled_by_admin",
+                    source_context="admin",
+                    note=f"Отменено из-за брони администратора: {reason}",
+                )
+            canceled += 1
+            try:
+                await bot.send_message(
+                    chat_id=int(item["telegram_id"]),
+                    text=(
+                        "❗Занятие отменено администратором\n"
+                        f"Дата: {payload.date.isoformat()}\n"
+                        f"Время: {item['time']}\n"
+                        f"Причина: {reason}\n"
+                        "Пожалуйста, выберите новый слот в Mini App."
+                    ),
+                )
+                notified += 1
+            except Exception as exc:  # pylint: disable=broad-except
+                logger.warning("failed to notify canceled lesson for block telegram_id=%s: %s", item["telegram_id"], exc)
+
+    created = await transactions.create_block_slots(payload.date, segments, note=note)
+    blocks = await transactions.list_block_ranges_for_date(payload.date)
+    await _audit(
+        int(admin["sub"]),
+        "create",
+        "block",
+        {
+            "date": payload.date.isoformat(),
+            "all_day": payload.all_day,
+            "start_time": preview["start_time"],
+            "end_time": preview["end_time"],
+            "strategy": payload.strategy,
+            "created": created,
+            "canceled": canceled,
+            "notified": notified,
+        },
+    )
+    return {
+        "status": "ok",
+        "date": payload.date.isoformat(),
+        "created": created,
+        "canceled": canceled,
+        "notified": notified,
+        "strategy": payload.strategy,
+        "reason": reason if payload.strategy == "block_and_cancel_notify" else None,
+        "blocks": blocks,
+    }
+
+
+@app.delete("/api/admin/blocks")
+async def admin_delete_blocks(
+    payload: AdminBlockDeleteIn,
+    admin: dict[str, Any] = Depends(require_admin),
+) -> dict[str, Any]:
+    normalized = _normalize_block_payload(payload.date, bool(payload.all_day), payload.start_time, payload.end_time)
+    deleted = await transactions.delete_blocks_in_segments(payload.date, normalized["segments"])
+    blocks = await transactions.list_block_ranges_for_date(payload.date)
+    await _audit(
+        int(admin["sub"]),
+        "delete",
+        "block",
+        {
+            "date": payload.date.isoformat(),
+            "all_day": payload.all_day,
+            "start_time": normalized["start_time"],
+            "end_time": normalized["end_time"],
+            "deleted": deleted,
+        },
+    )
+    return {
+        "status": "ok",
+        "date": payload.date.isoformat(),
+        "deleted": deleted,
+        "blocks": blocks,
+    }
+
+
 @app.get("/api/admin/schedule/free")
 async def admin_schedule_free(
     date: datetime.date,
@@ -1190,6 +1527,67 @@ async def admin_schedule_free(
     return {"date": date.isoformat(), "duration": duration, "slots": free}
 
 
+@app.get("/api/admin/schedule/extra")
+async def admin_schedule_extra(date: datetime.date, _: dict[str, Any] = Depends(require_admin)) -> dict[str, Any]:
+    items = await transactions.list_date_availability_overrides(date)
+    return {"date": date.isoformat(), "items": items}
+
+
+@app.post("/api/admin/schedule/extra")
+async def admin_create_schedule_extra(
+    payload: AdminExtraAvailabilityIn,
+    admin: dict[str, Any] = Depends(require_admin),
+) -> dict[str, Any]:
+    start_minute = _parse_time_to_minutes(payload.start_time)
+    end_minute = _parse_time_to_minutes(payload.end_time)
+    if end_minute <= start_minute:
+        raise HTTPException(status_code=422, detail="INVALID_TIME_RANGE")
+
+    item = await transactions.create_date_availability_override(
+        target_date=payload.date,
+        start_minute=start_minute,
+        end_minute=end_minute,
+        note=payload.note,
+    )
+    await _audit(
+        int(admin["sub"]),
+        "create",
+        "extra_availability",
+        {"date": payload.date.isoformat(), "start_time": payload.start_time, "end_time": payload.end_time, "note": payload.note or ""},
+    )
+    return {
+        "status": "ok",
+        "date": payload.date.isoformat(),
+        "item": item,
+        "items": await transactions.list_date_availability_overrides(payload.date),
+        "slots": [s["time"] for s in await _available_slots_for_date(payload.date) if s.get("available")],
+    }
+
+
+@app.delete("/api/admin/schedule/extra/{item_id}")
+async def admin_delete_schedule_extra(
+    item_id: int,
+    date: datetime.date,
+    admin: dict[str, Any] = Depends(require_admin),
+) -> dict[str, Any]:
+    deleted = await transactions.delete_date_availability_override(item_id)
+    if not deleted:
+        raise HTTPException(status_code=404, detail="EXTRA_AVAILABILITY_NOT_FOUND")
+    await _audit(
+        int(admin["sub"]),
+        "delete",
+        "extra_availability",
+        {"item_id": item_id, "date": date.isoformat()},
+    )
+    return {
+        "status": "ok",
+        "date": date.isoformat(),
+        "deleted": True,
+        "items": await transactions.list_date_availability_overrides(date),
+        "slots": [s["time"] for s in await _available_slots_for_date(date) if s.get("available")],
+    }
+
+
 @app.get("/api/admin/schedule/month")
 async def admin_schedule_month(
     month: str = Query(..., pattern=r"^\d{4}-\d{2}$"),
@@ -1198,28 +1596,13 @@ async def admin_schedule_month(
 ) -> dict[str, Any]:
     year, mon = month.split("-")
     y, m = int(year), int(mon)
-    today = datetime.date.today()
-    days: list[dict[str, Any]] = []
-
-    for day in range(1, calendar.monthrange(y, m)[1] + 1):
-        d = datetime.date(y, m, day)
-        booked_items = await transactions.viewing_recordings_day_db(d, show_blocks=False)
-        booked_count = len(booked_items)
-        if d < today:
-            free_count = 0
-        else:
-            slots = await _available_slots_for_date(d, duration)
-            free_count = sum(1 for s in slots if s.get("available"))
-        days.append(
-            {
-                "date": d.isoformat(),
-                "booked_count": booked_count,
-                "free_count": free_count,
-                "has_booked": booked_count > 0,
-                "has_free": free_count > 0,
-                "past": d < today,
-            }
-        )
+    start_date = datetime.date(y, m, 1)
+    end_date = datetime.date(y, m, calendar.monthrange(y, m)[1])
+    days = await transactions.admin_schedule_month_summary(
+        start_date=start_date,
+        end_date=end_date,
+        duration_minutes=duration,
+    )
     return {"month": month, "duration": duration, "days": days}
 
 
@@ -1594,7 +1977,7 @@ async def stats_month(year: int, month: int, _: dict[str, Any] = Depends(require
 @app.get("/api/admin/analytics/overview")
 async def analytics_overview(
     anchor_date: datetime.date,
-    mode: str = Query(default="week", pattern=r"^(week|month)$"),
+    mode: str = Query(default="week", pattern=r"^(week|month|quarter)$"),
     _: dict[str, Any] = Depends(require_admin),
 ) -> dict[str, Any]:
     current_from, current_to, prev_from, prev_to = _period_bounds(anchor_date, mode)
@@ -1673,7 +2056,7 @@ async def analytics_overview(
 @app.get("/api/admin/analytics/clients-delta")
 async def analytics_clients_delta(
     anchor_date: datetime.date,
-    mode: str = Query(default="week", pattern=r"^(week|month)$"),
+    mode: str = Query(default="week", pattern=r"^(week|month|quarter)$"),
     _: dict[str, Any] = Depends(require_admin),
 ) -> dict[str, Any]:
     current_from, current_to, prev_from, prev_to = _period_bounds(anchor_date, mode)
@@ -1717,16 +2100,135 @@ async def analytics_clients_delta(
 @app.get("/api/admin/analytics/timeseries")
 async def analytics_timeseries(
     anchor_date: datetime.date,
-    mode: str = Query(default="week", pattern=r"^(week|month)$"),
+    mode: str = Query(default="week", pattern=r"^(week|month|quarter)$"),
+    _: dict[str, Any] = Depends(require_admin),
+) -> dict[str, Any]:
+    current_from, current_to, prev_from, prev_to = _period_bounds(anchor_date, mode)
+    current_points = await transactions.payments_timeseries_for_range(current_from, current_to)
+    previous_points = await transactions.payments_timeseries_for_range(prev_from, prev_to)
+
+    points: list[dict[str, Any]] = []
+    signal_counts = {
+        "progress": 0,
+        "regress": 0,
+        "stagnation": 0,
+        "mixed": 0,
+    }
+    for idx, point in enumerate(current_points):
+        prev_point = previous_points[idx] if idx < len(previous_points) else None
+        previous_paid = int(prev_point.get("paid_amount", 0)) if prev_point else 0
+        previous_lessons = int(prev_point.get("lessons_done", 0)) if prev_point else 0
+        revenue_delta = int(point.get("paid_amount", 0)) - previous_paid
+        lessons_delta = int(point.get("lessons_done", 0)) - previous_lessons
+        signal = _combined_signal(revenue_delta, lessons_delta)
+        signal_counts[signal] += 1
+        points.append(
+            {
+                **point,
+                "previous_date": prev_point.get("date") if prev_point else None,
+                "previous_paid_amount": previous_paid,
+                "previous_lessons_done": previous_lessons,
+                "revenue_delta_abs": revenue_delta,
+                "lessons_delta_abs": lessons_delta,
+                "revenue_trend": _trend_name(revenue_delta),
+                "lessons_trend": _trend_name(lessons_delta),
+                "signal": signal,
+            }
+        )
+
+    return {
+        "period": {
+            "mode": mode,
+            "current_from": current_from.isoformat(),
+            "current_to": current_to.isoformat(),
+            "previous_from": prev_from.isoformat(),
+            "previous_to": prev_to.isoformat(),
+        },
+        "points": points,
+        "summary": signal_counts,
+    }
+
+
+@app.get("/api/admin/analytics/revenue-share")
+async def analytics_revenue_share(
+    anchor_date: datetime.date,
+    mode: str = Query(default="week", pattern=r"^(week|month|quarter)$"),
     _: dict[str, Any] = Depends(require_admin),
 ) -> dict[str, Any]:
     current_from, current_to, _, _ = _period_bounds(anchor_date, mode)
-    points = await transactions.payments_timeseries_for_range(current_from, current_to)
+    share = await transactions.client_revenue_share_for_range(current_from, current_to)
     return {
         "period": {
             "mode": mode,
             "current_from": current_from.isoformat(),
             "current_to": current_to.isoformat(),
         },
-        "points": points,
+        **share,
+    }
+
+
+@app.get("/api/admin/analytics/overview-v2")
+async def analytics_overview_v2(
+    anchor_date: datetime.date,
+    mode: str = Query(default="week", pattern=r"^(week|month|quarter)$"),
+    _: dict[str, Any] = Depends(require_admin),
+) -> dict[str, Any]:
+    current_from, current_to, prev_from, prev_to = _period_bounds(anchor_date, mode)
+    current_summary = await transactions.payments_summary_for_range(current_from, current_to)
+    previous_summary = await transactions.payments_summary_for_range(prev_from, prev_to)
+    revenue_share = await transactions.client_revenue_share_for_range(current_from, current_to)
+    ltv = await transactions.client_ltv_leaderboard()
+    retention = await transactions.retention_overview()
+    revenue_drivers = await transactions.revenue_drivers_for_ranges(current_from, current_to, prev_from, prev_to)
+    occupancy = await transactions.occupancy_snapshot(current_from, current_to)
+    cancellations = await transactions.analytics_event_breakdown(current_from, current_to)
+    repeat_booking = await transactions.repeat_booking_summary()
+    regular_vs_single = await transactions.regular_vs_single_summary(current_from, current_to)
+    event_coverage = await transactions.analytics_event_log_coverage()
+
+    paid_now = int(current_summary.get("earned_total", 0))
+    paid_prev = int(previous_summary.get("earned_total", 0))
+    lessons_now = int(current_summary.get("lessons_total", 0))
+    lessons_prev = int(previous_summary.get("lessons_total", 0))
+
+    return {
+        "period": {
+            "mode": mode,
+            "current_from": current_from.isoformat(),
+            "current_to": current_to.isoformat(),
+            "previous_from": prev_from.isoformat(),
+            "previous_to": prev_to.isoformat(),
+        },
+        "executive": {
+            "kpi": {
+                "paid_now": paid_now,
+                "paid_prev": paid_prev,
+                "paid_delta_abs": paid_now - paid_prev,
+                "paid_delta_pct": _safe_delta_pct(paid_now, paid_prev),
+                "lessons_now": lessons_now,
+                "lessons_prev": lessons_prev,
+                "lessons_delta_abs": lessons_now - lessons_prev,
+                "avg_check_now": int(round(paid_now / max(1, int(current_summary.get("lessons_paid", 0) or 0)))) if int(current_summary.get("lessons_paid", 0) or 0) > 0 else 0,
+            },
+            "revenue_drivers": revenue_drivers,
+        },
+        "client_value": {
+            "revenue_share": revenue_share,
+            "ltv_leaderboard": ltv,
+            "repeat_booking": repeat_booking,
+        },
+        "retention": retention,
+        "schedule_economics": {
+            "occupancy_by_weekday": occupancy.get("weekday", []),
+            "occupancy_by_hour": occupancy.get("hour", []),
+            "load_heatmap": occupancy.get("heatmap", []),
+        },
+        "stability": {
+            "cancellations": cancellations,
+            "regular_vs_single": regular_vs_single,
+        },
+        "limitations": {
+            "cancel_history_note": cancellations.get("coverage_note"),
+            "event_tracking": event_coverage,
+        },
     }
