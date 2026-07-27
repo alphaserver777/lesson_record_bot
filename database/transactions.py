@@ -1407,6 +1407,56 @@ async def cancel_regular_occurrence(
     return True
 
 
+async def cancel_lesson_after_presence_decline(
+    telegram_id: int,
+    date: datetime.date,
+    hour: int,
+    minute: int,
+) -> bool:
+    """Отменяет занятие ученика после подтверждённого отказа.
+
+    Регулярное занятие отменяется только на указанную дату, разовое удаляется.
+    Возвращает ``False``, если активного занятия уже нет.
+    """
+    regular = await find_regular_lesson_for_occurrence(telegram_id, date, hour, minute)
+    if regular is not None:
+        if await is_regular_lesson_skipped(int(regular.id), date):
+            return False
+        await cancel_regular_occurrence(
+            telegram_id,
+            date,
+            hour,
+            minute,
+            note="Отменено учеником после подтверждения отсутствия",
+            cancel_event_type="canceled_by_client",
+            source_context="bot_presence",
+        )
+        return True
+
+    rec = await session.execute(
+        select(RecordDate.id).where(
+            RecordDate.telegram_id == telegram_id,
+            RecordDate.record_date == date,
+            RecordDate.hour == hour,
+            RecordDate.minute == minute,
+            RecordDate.kind.not_in(["block", "allow"]),
+            ((RecordDate.booking_status.is_(None)) | (RecordDate.booking_status == "approved")),
+        )
+    )
+    if rec.first() is None:
+        return False
+    await delete_single_slot(
+        telegram_id,
+        date,
+        hour,
+        minute,
+        cancel_event_type="canceled_by_client",
+        source_context="bot_presence",
+        note="Отменено учеником после подтверждения отсутствия",
+    )
+    return True
+
+
 async def last_lesson_before_slot(
     telegram_id: int,
     date: datetime.date,
