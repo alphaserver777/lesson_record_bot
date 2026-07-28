@@ -5,7 +5,7 @@ import json
 import logging
 from typing import Any
 
-from sqlalchemy import case, delete, func, select, text, update
+from sqlalchemy import case, delete, func, or_, select, text, update
 from sqlalchemy.exc import IntegrityError
 
 from database.connect import Base, engine, session
@@ -49,6 +49,14 @@ def _compose_full_name(first_name: str | None, last_name: str | None) -> str | N
     if not first and not last:
         return None
     return " ".join([last, first]).strip()
+
+
+def _regular_lesson_started_by(target_date: datetime.date):
+    """Условие активности регулярной серии на указанную дату."""
+    return or_(
+        RegularLesson.lesson_date.is_(None),
+        RegularLesson.lesson_date <= target_date,
+    )
 
 
 async def init_db() -> None:
@@ -211,6 +219,7 @@ async def pending_presence_for_date(date: datetime.date) -> list[Any]:
         ).where(
             RegularLesson.day_of_week == weekday,
             RegularLesson.telegram_id.is_not(None),
+            _regular_lesson_started_by(target_date),
         )
     )
     new_records: list[tuple] = []
@@ -559,6 +568,7 @@ async def find_regular_lesson_for_occurrence(
             RegularLesson.day_of_week == weekday,
             RegularLesson.hour == hour,
             RegularLesson.minute == minute,
+            _regular_lesson_started_by(date),
         )
     )
     return res.scalars().first()
@@ -796,6 +806,7 @@ async def is_slot_overlapping_local(
         select(RegularLesson.id, RegularLesson.hour, RegularLesson.minute, RegularLesson.duration_minutes).where(
             RegularLesson.day_of_week == weekday,
             RegularLesson.telegram_id.is_not(None),
+            _regular_lesson_started_by(date),
         )
     )
     for reg in regs:
@@ -1154,7 +1165,7 @@ async def ensure_regular_lesson_template(
         username=None,
         cost=profile.price if profile else None,
         day_of_week=weekday,
-        lesson_date=None,
+        lesson_date=date,
         hour=hour,
         minute=minute,
         duration_minutes=duration_minutes,
@@ -1927,6 +1938,7 @@ async def find_conflicting_lessons(
         .where(
             RegularLesson.day_of_week == weekday,
             RegularLesson.telegram_id.is_not(None),
+            _regular_lesson_started_by(date),
         )
     )
     for row in regular_rows:
@@ -2339,7 +2351,10 @@ async def viewing_recordings_day_db(date: datetime, show_blocks: bool = False) -
             RegularLesson.duration_minutes,
         )
         .join(StudentProfile, StudentProfile.telegram_id == RegularLesson.telegram_id, isouter=True)
-        .where(RegularLesson.day_of_week == weekday)
+        .where(
+            RegularLesson.day_of_week == weekday,
+            _regular_lesson_started_by(target_date),
+        )
     )
 
     seen_reg_slots: set[tuple[int | None, int, int]] = set()
@@ -2811,6 +2826,7 @@ async def records_starting_at_details(date: datetime.date, hour: int, minute: in
             RegularLesson.telegram_id.is_not(None),
             RegularLesson.hour == hour,
             RegularLesson.minute == minute,
+            _regular_lesson_started_by(date),
         )
     )
     for row in regs:
@@ -2928,6 +2944,7 @@ async def lessons_for_date_details(date: datetime.date) -> list[dict[str, Any]]:
         .where(
             RegularLesson.day_of_week == weekday,
             RegularLesson.telegram_id.is_not(None),
+            _regular_lesson_started_by(date),
         )
     )
     for row in regs:
@@ -3008,7 +3025,10 @@ async def lessons_for_date(date: datetime.date) -> list[Any]:
             RegularLesson.hour,
             RegularLesson.minute,
             RegularLesson.duration_minutes,
-        ).where(RegularLesson.day_of_week == weekday)
+        ).where(
+            RegularLesson.day_of_week == weekday,
+            _regular_lesson_started_by(date),
+        )
     )
     for row in regular:
         if int(row.id) in skipped_ids:
