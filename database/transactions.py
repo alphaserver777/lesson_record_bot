@@ -2154,6 +2154,46 @@ async def reserve_day(
     return 1 if created >= 0 else 0
 
 
+async def is_day_reserved(date: datetime.date) -> bool:
+    """Проверяет, перекрыта ли блокировками вся рабочая часть дня."""
+    target_date = date.date() if isinstance(date, datetime.datetime) else date
+    working_segments = block_segments_for_date(target_date, all_day=True)
+    if not working_segments:
+        return False
+
+    await migrate_legacy_full_day_block(target_date)
+    rows = await session.execute(
+        select(RecordDate.hour, RecordDate.minute, RecordDate.duration_minutes).where(
+            RecordDate.record_date == target_date,
+            RecordDate.kind == "block",
+            RecordDate.telegram_id.is_(None),
+        )
+    )
+    blocked_segments = sorted(
+        (
+            int(row.hour or 0) * 60 + int(row.minute or 0),
+            int(row.hour or 0) * 60 + int(row.minute or 0) + max(1, int(row.duration_minutes or SLOT_STEP_MINUTES)),
+        )
+        for row in rows
+    )
+    if not blocked_segments:
+        return False
+
+    for work_start, work_end in working_segments:
+        covered_until = work_start
+        for block_start, block_end in blocked_segments:
+            if block_end <= covered_until:
+                continue
+            if block_start > covered_until:
+                break
+            covered_until = max(covered_until, block_end)
+            if covered_until >= work_end:
+                break
+        if covered_until < work_end:
+            return False
+    return True
+
+
 async def list_date_availability_overrides(target_date: datetime.date) -> list[dict[str, Any]]:
     rows = await session.execute(
         select(DateAvailabilityOverride).where(
