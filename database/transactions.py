@@ -2713,6 +2713,7 @@ async def records_starting_at_details(date: datetime.date, hour: int, minute: in
             RecordDate.minute,
             RecordDate.duration_minutes,
             RecordDate.kind,
+            RecordDate.presence_status,
         )
         .join(StudentProfile, StudentProfile.telegram_id == RecordDate.telegram_id)
         .where(
@@ -2728,6 +2729,10 @@ async def records_starting_at_details(date: datetime.date, hour: int, minute: in
         tg_id = int(row.telegram_id)
         key = (tg_id, int(row.hour), int(row.minute))
         seen.add(key)
+        # Отказ ученика должен подавлять краткие напоминания. Запись остаётся
+        # в seen, чтобы не подставить вместо неё регулярный шаблон.
+        if row.presence_status == "no":
+            continue
         last_lesson = await last_lesson_before_slot(tg_id, date, hour, minute)
         duration_val = int(row.duration_minutes or SLOT_DURATION_MINUTES)
         price_60 = int(row.price or 0)
