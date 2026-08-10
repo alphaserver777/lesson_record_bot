@@ -241,6 +241,14 @@ export function AdminView({ token }) {
     setSuccess('Карточка клиента обновлена')
   }
 
+  async function changeContactOpportunityStage(opportunityId, stage) {
+    const contactId = selectedContact?.contact?.id
+    if (!contactId) return
+    await api(`/api/admin/leads/${opportunityId}`, { token, method: 'PATCH', body: { stage } })
+    await Promise.all([selectContact(contactId), loadContacts(contactsPage, contactQuery), loadLeads()])
+    setSuccess('Этап воронки обновлён')
+  }
+
   async function createLead() {
     const payload = Object.fromEntries(Object.entries(leadForm).filter(([, value]) => String(value || '').trim() !== ''))
     await api('/api/admin/leads', { token, method: 'POST', body: payload })
@@ -1469,7 +1477,7 @@ export function AdminView({ token }) {
 
                 <h3>Сделки</h3>
                 {selectedContact.opportunities?.length ? <ul className="list list-compact">{selectedContact.opportunities.map(item => (
-                  <li key={item.id}><strong>{item.direction || 'Направление не указано'}</strong><small>{item.source} · {item.stage}{item.next_contact_at ? ` · следующий контакт: ${item.next_contact_at}` : ''}</small></li>
+                  <li key={item.id} className="contact-opportunity-row"><div><strong>{item.direction || 'Направление не указано'}</strong><small>{item.source}{item.next_contact_at ? ` · следующий контакт: ${item.next_contact_at}` : ''}</small></div><select className="input" value={item.stage} onChange={e => changeContactOpportunityStage(item.id, e.target.value).catch(err => setError(normalizeErrorMessage(err.message || err)))}>{FUNNEL_STAGES.map(([stage, label]) => <option key={stage} value={stage}>{label}</option>)}</select></li>
                 ))}</ul> : <small>Коммерческих сделок пока нет.</small>}
 
                 <h3>Ближайшая история занятий</h3>

@@ -935,6 +935,20 @@ body {
   color: #aeb6c7;
 }
 
+.contact-opportunity-row {
+  gap: 10px;
+}
+
+.contact-opportunity-row > div {
+  min-width: 0;
+}
+
+.contact-opportunity-row .input {
+  width: 145px;
+  min-height: 34px;
+  font-size: 12px;
+}
+
 @media (max-width: 920px) {
   .contacts-workspace {
     grid-template-columns: 1fr;
