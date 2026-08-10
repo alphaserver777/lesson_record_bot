@@ -665,6 +665,37 @@ body {
   grid-template-columns: repeat(5, minmax(0, 1fr));
 }
 
+.bottom-nav-six {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.detail-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(145px, 1fr));
+  gap: 10px;
+  margin: 12px 0 18px;
+}
+
+.detail-grid > div {
+  min-height: 66px;
+  padding: 12px;
+  border: 1px solid rgba(94, 99, 112, 0.34);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.025);
+  display: grid;
+  gap: 4px;
+}
+
+.detail-grid small,
+.detail-grid strong {
+  overflow-wrap: anywhere;
+}
+
+.empty-state {
+  margin-top: 12px;
+  color: var(--muted, #a9a9b0);
+}
+
 .bottom-item {
   border: 0;
   background: transparent;
@@ -2004,7 +2035,8 @@ body {
   }
 
   .bottom-nav-two,
-  .bottom-nav-five {
+  .bottom-nav-five,
+  .bottom-nav-six {
     grid-template-columns: none;
   }
 

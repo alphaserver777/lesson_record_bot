@@ -12,7 +12,7 @@ from aiogram.exceptions import TelegramBadRequest
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
-from sqlalchemy import select, text
+from sqlalchemy import func, or_, select, text
 
 from config_data.config import ADMINS_TELEGRAM_ID
 from database import transactions
@@ -849,6 +849,123 @@ def _split_contact_name(full_name: str | None) -> tuple[str | None, str | None]:
     if len(parts) > 1:
         return " ".join(parts[1:]), parts[0]
     return (parts[0], None) if parts else (None, None)
+
+
+def _contact_out(
+    contact: Contact,
+    identity: TelegramIdentity | None,
+    profile: StudentProfile | None,
+    opportunities_count: int = 0,
+) -> dict[str, Any]:
+    display_name = _contact_name(contact) or _profile_display_name(profile)
+    return {
+        "id": contact.id,
+        "full_name": display_name or "Без имени",
+        "first_name": contact.first_name,
+        "last_name": contact.last_name,
+        "telephone": contact.telephone,
+        "status": contact.status,
+        "is_archived": bool(contact.is_archived),
+        "preferred_channel": contact.preferred_channel,
+        "telegram_id": identity.telegram_id if identity else None,
+        "telegram_username": identity.username if identity else None,
+        "is_student": profile is not None,
+        "direction": profile.direction if profile else None,
+        "balance_lessons": int(profile.balance_lessons or 0) if profile else 0,
+        "price": int(profile.price or 0) if profile else 0,
+        "opportunities_count": int(opportunities_count or 0),
+        "created_at": contact.created_at,
+        "updated_at": contact.updated_at,
+    }
+
+
+@app.get("/api/admin/contacts")
+async def admin_list_contacts(
+    query: str | None = None,
+    status: str | None = None,
+    page: int = 1,
+    page_size: int = 30,
+    _: dict[str, Any] = Depends(require_admin),
+) -> dict[str, Any]:
+    """Unified directory: a person appears once regardless of lifecycle."""
+    stmt = (
+        select(Contact, TelegramIdentity, StudentProfile, func.count(Opportunity.id).label("opportunities_count"))
+        .outerjoin(TelegramIdentity, TelegramIdentity.contact_id == Contact.id)
+        .outerjoin(StudentProfile, StudentProfile.contact_id == Contact.id)
+        .outerjoin(Opportunity, Opportunity.contact_id == Contact.id)
+        .group_by(Contact.id, TelegramIdentity.id, StudentProfile.telegram_id)
+        .order_by(Contact.is_archived.asc(), Contact.updated_at.desc(), Contact.id.desc())
+    )
+    if status:
+        stmt = stmt.where(Contact.status == status)
+    if query and query.strip():
+        pattern = f"%{query.strip()}%"
+        stmt = stmt.where(or_(
+            Contact.first_name.ilike(pattern),
+            Contact.last_name.ilike(pattern),
+            Contact.telephone.ilike(pattern),
+            TelegramIdentity.username.ilike(pattern),
+        ))
+    rows = (await session.execute(stmt)).all()
+    total = len(rows)
+    safe_page = max(1, page)
+    safe_size = min(max(1, page_size), 100)
+    start = (safe_page - 1) * safe_size
+    return {
+        "items": [_contact_out(contact, identity, profile, count) for contact, identity, profile, count in rows[start:start + safe_size]],
+        "total": total,
+        "page": safe_page,
+        "page_size": safe_size,
+    }
+
+
+@app.get("/api/admin/contacts/{contact_id}")
+async def admin_contact_detail(contact_id: int, _: dict[str, Any] = Depends(require_admin)) -> dict[str, Any]:
+    row = (
+        await session.execute(
+            select(Contact, TelegramIdentity, StudentProfile)
+            .outerjoin(TelegramIdentity, TelegramIdentity.contact_id == Contact.id)
+            .outerjoin(StudentProfile, StudentProfile.contact_id == Contact.id)
+            .where(Contact.id == contact_id)
+        )
+    ).one_or_none()
+    if row is None:
+        raise HTTPException(status_code=404, detail={"code": "NOT_FOUND", "message": "Контакт не найден"})
+    contact, identity, profile = row
+    opportunities = (
+        await session.execute(select(Opportunity).where(Opportunity.contact_id == contact.id).order_by(Opportunity.updated_at.desc()))
+    ).scalars().all()
+    telegram_id = identity.telegram_id if identity else None
+    lessons: list[dict[str, Any]] = []
+    payments: list[dict[str, Any]] = []
+    if telegram_id is not None:
+        lesson_rows = (
+            await session.execute(
+                select(RecordDate)
+                .where(RecordDate.telegram_id == telegram_id)
+                .order_by(RecordDate.record_date.desc(), RecordDate.hour.desc(), RecordDate.minute.desc())
+                .limit(12)
+            )
+        ).scalars().all()
+        lessons = [{
+            "date": item.record_date.isoformat(), "time": f"{int(item.hour):02d}:{int(item.minute or 0):02d}",
+            "duration": item.duration_minutes or 60, "kind": item.kind or "single",
+            "booking_status": item.booking_status or "approved", "presence_status": item.presence_status,
+        } for item in lesson_rows]
+        payment_rows = await session.execute(text("""
+            SELECT lesson_date, amount, status, source
+            FROM payments WHERE telegram_id = :telegram_id
+            ORDER BY lesson_date DESC, id DESC LIMIT 12
+        """), {"telegram_id": telegram_id})
+        payments = [{"date": str(item[0]), "amount": int(item[1] or 0), "status": item[2], "source": item[3]} for item in payment_rows.all()]
+    paid_total = sum(item["amount"] for item in payments if item["status"] == "paid")
+    return {
+        "contact": _contact_out(contact, identity, profile, len(opportunities)),
+        "opportunities": [_lead_out(item, contact, identity) for item in opportunities],
+        "lessons": lessons,
+        "payments": payments,
+        "paid_total_recent": paid_total,
+    }
 
 
 def _lead_out(lead: Opportunity, contact: Contact, identity: TelegramIdentity | None = None) -> dict[str, Any]:

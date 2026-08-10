@@ -65,7 +65,7 @@ function buildRevenueDonut(items) {
 
 export function AdminView({ token }) {
   const [activeTab, setActiveTab] = useState('records')
-  const [manageSection, setManageSection] = useState('clients')
+  const [manageSection, setManageSection] = useState('finance')
   const [error, setError] = useState('')
   const [success, setSuccess] = useState('')
   const [analyticsMode, setAnalyticsMode] = useState('week')
@@ -81,6 +81,11 @@ export function AdminView({ token }) {
   const [usersPage, setUsersPage] = useState(1)
   const [users, setUsers] = useState([])
   const [usersTotal, setUsersTotal] = useState(0)
+  const [contactQuery, setContactQuery] = useState('')
+  const [contacts, setContacts] = useState([])
+  const [contactsTotal, setContactsTotal] = useState(0)
+  const [contactsPage, setContactsPage] = useState(1)
+  const [selectedContact, setSelectedContact] = useState(null)
   const [clientOptions, setClientOptions] = useState([])
   const [clientSearch, setClientSearch] = useState('')
   const [selectedUser, setSelectedUser] = useState(null)
@@ -161,6 +166,7 @@ export function AdminView({ token }) {
   const adminTabs = [
     ['records', 'Записи', '▥'],
     ['work_schedule', 'Расписание', '▦'],
+    ['contacts', 'Контакты', '◌'],
     ['manage', 'Управление', '◫'],
     ['leads', 'Воронка', '◉'],
     ['analytics', 'Аналитика', '◷'],
@@ -185,6 +191,18 @@ export function AdminView({ token }) {
     ])
     setLeads(list.items || [])
     setLeadSummary(summary || null)
+  }
+
+  async function loadContacts(page = contactsPage, q = contactQuery) {
+    const path = `/api/admin/contacts?page=${page}&page_size=20${q ? `&query=${encodeURIComponent(q)}` : ''}`
+    const data = await api(path, { token })
+    setContacts(data.items || [])
+    setContactsTotal(data.total || 0)
+  }
+
+  async function selectContact(contactId) {
+    const data = await api(`/api/admin/contacts/${contactId}`, { token })
+    setSelectedContact(data)
   }
 
   async function createLead() {
@@ -740,6 +758,10 @@ export function AdminView({ token }) {
   useEffect(() => {
     if (activeTab === 'leads') loadLeads().catch(e => setError(normalizeErrorMessage(e.message || e)))
   }, [activeTab])
+
+  useEffect(() => {
+    if (activeTab === 'contacts') loadContacts().catch(e => setError(normalizeErrorMessage(e.message || e)))
+  }, [activeTab, contactsPage])
 
   const filteredClients = (clientOptions || [])
     .filter(c => {
@@ -1318,11 +1340,74 @@ export function AdminView({ token }) {
           </div>
         ) : null}
 
+        {activeTab === 'contacts' ? (
+          <div className="stack">
+            <Card title="Контакты" subtitle="Единый реестр лидов и учеников">
+              <div className="custom-row">
+                <input
+                  className="input"
+                  value={contactQuery}
+                  onChange={e => setContactQuery(e.target.value)}
+                  placeholder="Имя, телефон или Telegram username"
+                />
+                <button className="btn" onClick={() => { setContactsPage(1); loadContacts(1, contactQuery).catch(e => setError(normalizeErrorMessage(e.message || e))) }}>
+                  Поиск
+                </button>
+              </div>
+              <div className="mini-actions-row">
+                <button className="btn secondary" disabled={contactsPage <= 1} onClick={() => setContactsPage(page => Math.max(1, page - 1))}>← Стр.</button>
+                <button className="btn secondary" disabled={contacts.length < 20} onClick={() => setContactsPage(page => page + 1)}>Стр. →</button>
+              </div>
+              <small>Всего: {contactsTotal}</small>
+              <ul className="list list-compact">
+                {contacts.map(contact => (
+                  <li key={contact.id} className="user-list-item">
+                    <button className="btn secondary" onClick={() => selectContact(contact.id).catch(e => setError(normalizeErrorMessage(e.message || e)))}>
+                      {contact.full_name}
+                    </button>
+                    <small className="user-last-lesson">
+                      {[contact.telephone, contact.telegram_username ? `@${contact.telegram_username}` : '', contact.is_student ? 'ученик' : 'лид', contact.opportunities_count ? `${contact.opportunities_count} сделк.` : ''].filter(Boolean).join(' · ')}
+                    </small>
+                  </li>
+                ))}
+              </ul>
+              {!contacts.length ? <div className="empty-state">Контактов пока нет.</div> : null}
+            </Card>
+
+            {selectedContact ? (
+              <Card title={selectedContact.contact?.full_name || 'Карточка контакта'} subtitle="Контакт 360°: воронка, занятия и оплаты">
+                <div className="detail-grid">
+                  <div><small>Телефон</small><strong>{selectedContact.contact?.telephone || '—'}</strong></div>
+                  <div><small>Telegram</small><strong>{selectedContact.contact?.telegram_username ? `@${selectedContact.contact.telegram_username}` : (selectedContact.contact?.telegram_id || 'не привязан')}</strong></div>
+                  <div><small>Роль</small><strong>{selectedContact.contact?.is_student ? 'Ученик' : 'Лид'}</strong></div>
+                  <div><small>Направление</small><strong>{selectedContact.contact?.direction || '—'}</strong></div>
+                  <div><small>Баланс занятий</small><strong>{selectedContact.contact?.balance_lessons ?? 0}</strong></div>
+                  <div><small>Оплаты (последние 12)</small><strong>{formatMoneyShort(selectedContact.paid_total_recent)}</strong></div>
+                </div>
+
+                <h3>Сделки</h3>
+                {selectedContact.opportunities?.length ? <ul className="list list-compact">{selectedContact.opportunities.map(item => (
+                  <li key={item.id}><strong>{item.direction || 'Направление не указано'}</strong><small>{item.source} · {item.stage}{item.next_contact_at ? ` · следующий контакт: ${item.next_contact_at}` : ''}</small></li>
+                ))}</ul> : <small>Коммерческих сделок пока нет.</small>}
+
+                <h3>Ближайшая история занятий</h3>
+                {selectedContact.lessons?.length ? <ul className="list list-compact">{selectedContact.lessons.map((item, index) => (
+                  <li key={`${item.date}-${item.time}-${index}`}><strong>{item.date} · {item.time}</strong><small>{item.duration} мин · {item.booking_status}</small></li>
+                ))}</ul> : <small>Занятий пока нет.</small>}
+
+                <h3>Последние оплаты</h3>
+                {selectedContact.payments?.length ? <ul className="list list-compact">{selectedContact.payments.map((item, index) => (
+                  <li key={`${item.date}-${index}`}><strong>{item.date}</strong><small>{formatMoneyShort(item.amount)} · {item.status}</small></li>
+                ))}</ul> : <small>Оплат пока нет.</small>}
+              </Card>
+            ) : null}
+          </div>
+        ) : null}
+
         {activeTab === 'manage' ? (
           <div className="stack">
             <Card title="Управление" subtitle="Клиенты, финансы, рассылки">
               <div className="segmented">
-                <button className={manageSection === 'clients' ? 'seg active' : 'seg'} onClick={() => setManageSection('clients')}>Клиенты</button>
                 <button className={manageSection === 'finance' ? 'seg active' : 'seg'} onClick={() => setManageSection('finance')}>Финансы</button>
                 <button className={manageSection === 'broadcast' ? 'seg active' : 'seg'} onClick={() => setManageSection('broadcast')}>Рассылки</button>
               </div>
@@ -1930,7 +2015,7 @@ export function AdminView({ token }) {
         />
       </div>
 
-      <nav className="bottom-nav bottom-nav-five">
+      <nav className="bottom-nav bottom-nav-six">
         {adminTabs.map(([key, label, icon]) => (
           <button key={key} className={`bottom-item ${activeTab === key ? 'active' : ''}`} onClick={() => setActiveTab(key)}>
             <span className="bottom-ico">{icon}</span>
