@@ -10,6 +10,7 @@ class RecordDate(Base):
     __table_args__ = {'extend_existing': True}
 
     id = Column(Integer, primary_key=True)
+    contact_id = Column(Integer, ForeignKey("contacts.id", ondelete="SET NULL"), nullable=True, index=True)
     telegram_id = Column(BigInteger, ForeignKey("student_profiles.telegram_id", ondelete="CASCADE"), nullable=True)
     record_date = Column(Date, nullable=False)
     hour = Column(Integer, nullable=False)
@@ -31,6 +32,7 @@ class RegularLesson(Base):
     __table_args__ = {'extend_existing': True}
 
     id = Column(Integer, primary_key=True)
+    contact_id = Column(Integer, ForeignKey("contacts.id", ondelete="SET NULL"), nullable=True, index=True)
     telegram_id = Column(BigInteger, ForeignKey("student_profiles.telegram_id", ondelete="SET NULL"), nullable=True)
     full_name = Column(String(100), nullable=False)
     username = Column(String(100), nullable=True)
@@ -211,6 +213,7 @@ class Payment(Base):
     __table_args__ = {'extend_existing': True}
 
     id = Column(Integer, primary_key=True)
+    contact_id = Column(Integer, ForeignKey("contacts.id", ondelete="SET NULL"), nullable=True, index=True)
     telegram_id = Column(BigInteger, ForeignKey("student_profiles.telegram_id", ondelete="SET NULL"), nullable=True)
     full_name = Column(String(100), nullable=True)
     lesson_date = Column(Date, nullable=False)
@@ -228,6 +231,7 @@ class AnalyticsEvent(Base):
     __table_args__ = {"extend_existing": True}
 
     id = Column(Integer, primary_key=True)
+    contact_id = Column(Integer, ForeignKey("contacts.id", ondelete="SET NULL"), nullable=True, index=True)
     event_type = Column(String(40), nullable=False)
     telegram_id = Column(BigInteger, ForeignKey("student_profiles.telegram_id", ondelete="SET NULL"), nullable=True)
     record_date = Column(Date, nullable=True)
