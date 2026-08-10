@@ -2269,10 +2269,10 @@ body {
   }
 
   .mini-layout {
-    width: min(1720px, calc(100vw - 48px));
+    width: calc(100vw - 32px);
     max-width: none;
     min-height: 100vh;
-    margin: 0 auto;
+    margin: 0 16px;
     padding: 28px 0 48px 188px;
   }
 
@@ -2444,7 +2444,7 @@ body {
     position: fixed;
     top: 28px;
     bottom: 28px;
-    left: max(24px, calc((100vw - 1720px) / 2));
+    left: 24px;
     transform: none;
     width: 164px;
     height: auto;
@@ -2473,6 +2473,19 @@ body {
 
   .admin-layout.nav-collapsed .bottom-item span:last-child {
     display: none;
+  }
+
+  .contacts-workspace:not(.has-selection) .funnel-board {
+    min-height: calc(100vh - 400px);
+  }
+
+  .contacts-workspace:not(.has-selection) .funnel-columns,
+  .contacts-workspace:not(.has-selection) .funnel-column {
+    min-height: calc(100vh - 478px);
+  }
+
+  .contacts-workspace:not(.has-selection) .funnel-cards {
+    max-height: calc(100vh - 542px);
   }
 
   .nav-collapse-toggle {

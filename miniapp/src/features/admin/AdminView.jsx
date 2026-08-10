@@ -191,7 +191,6 @@ export function AdminView({ token }) {
     ['work_schedule', 'Расписание', '▦'],
     ['contacts', 'Клиенты', '◌'],
     ['manage', 'Управление', '◫'],
-    ['leads', 'Воронка', '◉'],
     ['analytics', 'Аналитика', '◷'],
   ]
 
