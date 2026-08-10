@@ -743,7 +743,7 @@ body {
 }
 
 .funnel-column {
-  min-height: 138px;
+  min-height: 176px;
   padding: 10px;
   border: 1px solid rgba(94, 99, 112, 0.25);
   border-radius: 12px;
@@ -772,6 +772,9 @@ body {
   display: grid;
   gap: 7px;
   margin-top: 10px;
+  max-height: 238px;
+  overflow-y: auto;
+  padding-right: 3px;
 }
 
 .funnel-card {
@@ -2141,7 +2144,7 @@ body {
   }
 
   .mini-layout {
-    width: min(1440px, calc(100vw - 64px));
+    width: min(1720px, calc(100vw - 48px));
     max-width: none;
     min-height: 100vh;
     margin: 0 auto;
@@ -2223,7 +2226,7 @@ body {
   }
 
   .admin-layout .stack {
-    max-width: 1180px;
+    max-width: none;
   }
 
   .admin-layout .analytics-stack {
@@ -2285,7 +2288,7 @@ body {
     position: fixed;
     top: 28px;
     bottom: 28px;
-    left: max(24px, calc((100vw - 1440px) / 2));
+    left: max(24px, calc((100vw - 1720px) / 2));
     transform: none;
     width: 164px;
     height: auto;
