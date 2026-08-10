@@ -7,6 +7,19 @@ import { Pill } from '../../shared/ui/Pill'
 import { ToastViewport } from '../../shared/ui/ToastViewport'
 
 const ANALYTICS_SHARE_COLORS = ['#67e8a5', '#7aa8ff', '#f6b95a', '#ff8ba7', '#91f1ff', '#c29bff', '#868b98']
+const FUNNEL_STAGES = [
+  ['new', 'Новые'],
+  ['qualified', 'Квалификация'],
+  ['diagnostic_booked', 'Диагностика'],
+  ['diagnostic_done', 'После диагностики'],
+  ['offer_sent', 'Предложение'],
+  ['won', 'Оплата / ученик'],
+  ['lost', 'Неактуально'],
+]
+
+function funnelStageLabel(stage) {
+  return FUNNEL_STAGES.find(([key]) => key === stage)?.[1] || 'Новые'
+}
 
 function formatMoneyShort(value) {
   return `${Number(value || 0).toLocaleString('ru-RU')} ₽`
@@ -83,9 +96,13 @@ export function AdminView({ token }) {
   const [usersTotal, setUsersTotal] = useState(0)
   const [contactQuery, setContactQuery] = useState('')
   const [contacts, setContacts] = useState([])
+  const [contactsBoard, setContactsBoard] = useState([])
   const [contactsTotal, setContactsTotal] = useState(0)
   const [contactsPage, setContactsPage] = useState(1)
   const [selectedContact, setSelectedContact] = useState(null)
+  const [contactEdit, setContactEdit] = useState({
+    first_name: '', last_name: '', telephone: '', status: 'active', preferred_channel: 'telegram', direction: '',
+  })
   const [clientOptions, setClientOptions] = useState([])
   const [clientSearch, setClientSearch] = useState('')
   const [selectedUser, setSelectedUser] = useState(null)
@@ -195,14 +212,33 @@ export function AdminView({ token }) {
 
   async function loadContacts(page = contactsPage, q = contactQuery) {
     const path = `/api/admin/contacts?page=${page}&page_size=20${q ? `&query=${encodeURIComponent(q)}` : ''}`
-    const data = await api(path, { token })
+    const boardPath = `/api/admin/contacts?page=1&page_size=100${q ? `&query=${encodeURIComponent(q)}` : ''}`
+    const [data, board] = await Promise.all([api(path, { token }), api(boardPath, { token })])
     setContacts(data.items || [])
     setContactsTotal(data.total || 0)
+    setContactsBoard(board.items || [])
   }
 
   async function selectContact(contactId) {
     const data = await api(`/api/admin/contacts/${contactId}`, { token })
     setSelectedContact(data)
+    const contact = data.contact || {}
+    setContactEdit({
+      first_name: contact.first_name || '',
+      last_name: contact.last_name || '',
+      telephone: contact.telephone || '',
+      status: contact.status || 'active',
+      preferred_channel: contact.preferred_channel || 'telegram',
+      direction: contact.direction || '',
+    })
+  }
+
+  async function saveContact() {
+    const contactId = selectedContact?.contact?.id
+    if (!contactId) return
+    await api(`/api/admin/contacts/${contactId}`, { token, method: 'PATCH', body: contactEdit })
+    await Promise.all([selectContact(contactId), loadContacts(contactsPage, contactQuery)])
+    setSuccess('Карточка клиента обновлена')
   }
 
   async function createLead() {
@@ -1358,29 +1394,75 @@ export function AdminView({ token }) {
                 <button className="btn secondary" disabled={contactsPage <= 1} onClick={() => setContactsPage(page => Math.max(1, page - 1))}>← Стр.</button>
                 <button className="btn secondary" disabled={contacts.length < 20} onClick={() => setContactsPage(page => page + 1)}>Стр. →</button>
               </div>
-              <small>Всего: {contactsTotal}</small>
-              <ul className="list list-compact">
-                {contacts.map(contact => (
-                  <li key={contact.id} className="user-list-item">
-                    <button className="btn secondary" onClick={() => selectContact(contact.id).catch(e => setError(normalizeErrorMessage(e.message || e)))}>
-                      {contact.full_name}
-                    </button>
-                    <small className="user-last-lesson">
-                      {[contact.telephone, contact.telegram_username ? `@${contact.telegram_username}` : '', contact.is_student ? 'ученик' : 'лид', contact.opportunities_count ? `${contact.opportunities_count} сделк.` : ''].filter(Boolean).join(' · ')}
-                    </small>
-                  </li>
-                ))}
-              </ul>
-              {!contacts.length ? <div className="empty-state">Клиентов пока нет.</div> : null}
             </Card>
 
-            {selectedContact ? (
-              <Card title={selectedContact.contact?.full_name || 'Карточка контакта'} subtitle="Контакт 360°: воронка, занятия и оплаты">
+            <section className="funnel-board" aria-label="Воронка клиентов">
+              <div className="funnel-board-head"><div><small>CRM-воронка</small><h2>Клиенты по этапам</h2></div><small>Нажмите клиента, чтобы открыть карточку справа</small></div>
+              <div className="funnel-columns">
+                {FUNNEL_STAGES.map(([stage, label]) => {
+                  const stageContacts = contactsBoard.filter(contact => contact.current_stage === stage)
+                  return (
+                    <div className="funnel-column" key={stage}>
+                      <div className="funnel-column-head"><strong>{label}</strong><span>{stageContacts.length}</span></div>
+                      <div className="funnel-cards">
+                        {stageContacts.map(contact => (
+                          <button className="funnel-card" key={contact.id} onClick={() => selectContact(contact.id).catch(e => setError(normalizeErrorMessage(e.message || e)))}>
+                            <strong>{contact.full_name}</strong>
+                            <small>{contact.direction || contact.current_source || (contact.is_student ? 'ученик' : 'без направления')}</small>
+                          </button>
+                        ))}
+                        {!stageContacts.length ? <small className="funnel-empty">Пусто</small> : null}
+                      </div>
+                    </div>
+                  )
+                })}
+              </div>
+            </section>
+
+            <div className="contacts-workspace">
+              <section className="contacts-table-panel">
+                <div className="contacts-table-meta">Всего: {contactsTotal}</div>
+                <div className="contacts-table-scroll">
+                  <table className="contacts-table">
+                    <thead>
+                      <tr><th>Клиент</th><th>Телефон</th><th>Telegram</th><th>Этап</th><th>Направление</th><th>Сделки</th></tr>
+                    </thead>
+                    <tbody>
+                      {contacts.map(contact => (
+                        <tr key={contact.id} className={selectedContact?.contact?.id === contact.id ? 'selected' : ''} onClick={() => selectContact(contact.id).catch(e => setError(normalizeErrorMessage(e.message || e)))}>
+                          <td><strong>{contact.full_name}</strong></td>
+                          <td>{contact.telephone || '—'}</td>
+                          <td>{contact.telegram_username ? `@${contact.telegram_username}` : (contact.telegram_id || '—')}</td>
+                          <td><span className={`contact-badge ${contact.current_stage === 'won' ? 'student' : 'lead'}`}>{funnelStageLabel(contact.current_stage)}</span></td>
+                          <td>{contact.direction || '—'}</td>
+                          <td>{contact.opportunities_count || '—'}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+                {!contacts.length ? <div className="empty-state">Клиентов пока нет.</div> : null}
+              </section>
+
+              <aside className="contact-side-panel">
+                {selectedContact ? (
+                  <>
+                    <div className="contact-panel-head">
+                      <div><small>Карточка клиента</small><h2>{selectedContact.contact?.full_name || 'Без имени'}</h2></div>
+                      <span className={`contact-badge ${selectedContact.contact?.is_student ? 'student' : 'lead'}`}>{selectedContact.contact?.is_student ? 'Ученик' : 'Лид'}</span>
+                    </div>
+                    <div className="contact-edit-form">
+                      <label>Имя<input className="input" value={contactEdit.first_name} onChange={e => setContactEdit(value => ({ ...value, first_name: e.target.value }))} /></label>
+                      <label>Фамилия<input className="input" value={contactEdit.last_name} onChange={e => setContactEdit(value => ({ ...value, last_name: e.target.value }))} /></label>
+                      <label className="contact-field-wide">Телефон<input className="input" value={contactEdit.telephone} onChange={e => setContactEdit(value => ({ ...value, telephone: e.target.value }))} /></label>
+                      <label>Статус<select className="input" value={contactEdit.status} onChange={e => setContactEdit(value => ({ ...value, status: e.target.value }))}><option value="lead">Лид</option><option value="active">Активный</option><option value="student">Ученик</option><option value="archived">Архив</option></select></label>
+                      <label>Канал связи<select className="input" value={contactEdit.preferred_channel} onChange={e => setContactEdit(value => ({ ...value, preferred_channel: e.target.value }))}><option value="telegram">Telegram</option><option value="phone">Телефон</option></select></label>
+                      {selectedContact.contact?.is_student ? <label className="contact-field-wide">Направление<input className="input" value={contactEdit.direction} onChange={e => setContactEdit(value => ({ ...value, direction: e.target.value }))} placeholder="DevOps, ИБ, Хакер" /></label> : null}
+                    </div>
+                    <button className="btn contact-save" onClick={() => saveContact().catch(e => setError(normalizeErrorMessage(e.message || e)))}>Сохранить изменения</button>
+
                 <div className="detail-grid">
-                  <div><small>Телефон</small><strong>{selectedContact.contact?.telephone || '—'}</strong></div>
                   <div><small>Telegram</small><strong>{selectedContact.contact?.telegram_username ? `@${selectedContact.contact.telegram_username}` : (selectedContact.contact?.telegram_id || 'не привязан')}</strong></div>
-                  <div><small>Роль</small><strong>{selectedContact.contact?.is_student ? 'Ученик' : 'Лид'}</strong></div>
-                  <div><small>Направление</small><strong>{selectedContact.contact?.direction || '—'}</strong></div>
                   <div><small>Баланс занятий</small><strong>{selectedContact.contact?.balance_lessons ?? 0}</strong></div>
                   <div><small>Оплаты (последние 12)</small><strong>{formatMoneyShort(selectedContact.paid_total_recent)}</strong></div>
                 </div>
@@ -1399,8 +1481,10 @@ export function AdminView({ token }) {
                 {selectedContact.payments?.length ? <ul className="list list-compact">{selectedContact.payments.map((item, index) => (
                   <li key={`${item.date}-${index}`}><strong>{item.date}</strong><small>{formatMoneyShort(item.amount)} · {item.status}</small></li>
                 ))}</ul> : <small>Оплат пока нет.</small>}
-              </Card>
-            ) : null}
+                  </>
+                ) : <div className="contact-panel-empty"><strong>Выберите клиента</strong><small>Нажмите строку в таблице, чтобы открыть карточку справа.</small></div>}
+              </aside>
+            </div>
           </div>
         ) : null}
 

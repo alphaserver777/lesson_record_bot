@@ -707,6 +707,245 @@ body {
   color: var(--muted, #a9a9b0);
 }
 
+.contacts-workspace {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(330px, 0.72fr);
+  gap: 16px;
+  align-items: start;
+}
+
+.funnel-board {
+  border: 1px solid rgba(94, 99, 112, 0.38);
+  border-radius: 16px;
+  padding: 15px;
+  background: rgba(19, 22, 30, 0.72);
+}
+
+.funnel-board-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  align-items: end;
+  margin-bottom: 13px;
+}
+
+.funnel-board-head h2 {
+  margin: 3px 0 0;
+  font-size: 19px;
+}
+
+.funnel-columns {
+  display: grid;
+  grid-template-columns: repeat(7, minmax(165px, 1fr));
+  gap: 10px;
+  overflow-x: auto;
+  padding-bottom: 4px;
+}
+
+.funnel-column {
+  min-height: 138px;
+  padding: 10px;
+  border: 1px solid rgba(94, 99, 112, 0.25);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.02);
+}
+
+.funnel-column-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  align-items: center;
+  color: #cbd4e4;
+  font-size: 12px;
+}
+
+.funnel-column-head span {
+  min-width: 23px;
+  text-align: center;
+  padding: 3px 6px;
+  border-radius: 999px;
+  color: #9ec0ff;
+  background: rgba(88, 139, 234, 0.17);
+}
+
+.funnel-cards {
+  display: grid;
+  gap: 7px;
+  margin-top: 10px;
+}
+
+.funnel-card {
+  width: 100%;
+  padding: 9px;
+  border: 1px solid rgba(94, 99, 112, 0.3);
+  border-radius: 9px;
+  background: #252936;
+  color: #e0e6f1;
+  text-align: left;
+  cursor: pointer;
+}
+
+.funnel-card:hover {
+  border-color: rgba(121, 170, 255, 0.8);
+  background: #2a3141;
+}
+
+.funnel-card strong,
+.funnel-card small {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.funnel-card small,
+.funnel-empty {
+  margin-top: 4px;
+  color: #9da7b7;
+  font-size: 11px;
+}
+
+.contacts-table-panel,
+.contact-side-panel {
+  border: 1px solid rgba(94, 99, 112, 0.38);
+  border-radius: 16px;
+  background: rgba(19, 22, 30, 0.72);
+}
+
+.contacts-table-meta {
+  padding: 12px 14px;
+  color: #aeb6c7;
+  font-size: 13px;
+  border-bottom: 1px solid rgba(94, 99, 112, 0.26);
+}
+
+.contacts-table-scroll {
+  overflow: auto;
+  max-height: min(68vh, 690px);
+}
+
+.contacts-table {
+  width: 100%;
+  min-width: 680px;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+
+.contacts-table th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  padding: 12px 10px;
+  text-align: left;
+  color: #9fa8ba;
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  background: #1c202a;
+}
+
+.contacts-table td {
+  padding: 12px 10px;
+  border-top: 1px solid rgba(94, 99, 112, 0.2);
+  color: #c7cedb;
+  white-space: nowrap;
+}
+
+.contacts-table tbody tr {
+  cursor: pointer;
+  transition: background 140ms ease;
+}
+
+.contacts-table tbody tr:hover,
+.contacts-table tbody tr.selected {
+  background: rgba(104, 152, 236, 0.13);
+}
+
+.contacts-table tbody tr.selected td:first-child {
+  box-shadow: inset 3px 0 0 #79aaff;
+}
+
+.contact-badge {
+  display: inline-flex;
+  padding: 4px 7px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 800;
+}
+
+.contact-badge.student {
+  color: #83e8bd;
+  background: rgba(47, 176, 122, 0.14);
+}
+
+.contact-badge.lead {
+  color: #9fc1ff;
+  background: rgba(88, 139, 234, 0.17);
+}
+
+.contact-side-panel {
+  position: sticky;
+  top: 20px;
+  padding: 16px;
+  max-height: calc(100vh - 48px);
+  overflow: auto;
+}
+
+.contact-panel-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  align-items: flex-start;
+  margin-bottom: 16px;
+}
+
+.contact-panel-head h2 {
+  margin: 4px 0 0;
+  font-size: 22px;
+}
+
+.contact-edit-form {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+}
+
+.contact-edit-form label {
+  display: grid;
+  gap: 5px;
+  color: #aeb6c7;
+  font-size: 12px;
+}
+
+.contact-field-wide {
+  grid-column: 1 / -1;
+}
+
+.contact-save {
+  width: 100%;
+  margin: 12px 0 4px;
+}
+
+.contact-panel-empty {
+  min-height: 220px;
+  display: grid;
+  align-content: center;
+  gap: 8px;
+  color: #aeb6c7;
+}
+
+@media (max-width: 920px) {
+  .contacts-workspace {
+    grid-template-columns: 1fr;
+  }
+
+  .contact-side-panel {
+    position: static;
+    max-height: none;
+  }
+}
+
 .bottom-item {
   border: 0;
   background: transparent;

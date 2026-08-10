@@ -124,6 +124,15 @@ class LeadPatchIn(LeadCreateIn):
     stage: str | None = Field(default=None, pattern=r"^(new|qualified|diagnostic_booked|diagnostic_done|offer_sent|won|lost)$")
 
 
+class ContactPatchIn(BaseModel):
+    first_name: str | None = Field(default=None, max_length=100)
+    last_name: str | None = Field(default=None, max_length=100)
+    telephone: str | None = Field(default=None, max_length=20)
+    status: str | None = Field(default=None, max_length=24)
+    preferred_channel: str | None = Field(default=None, max_length=20)
+    direction: str | None = Field(default=None, max_length=100)
+
+
 class WorkIntervalIn(BaseModel):
     start: str = Field(pattern=r"^\d{2}:\d{2}$")
     end: str = Field(pattern=r"^\d{2}:\d{2}$")

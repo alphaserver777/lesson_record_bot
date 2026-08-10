@@ -45,6 +45,7 @@ from webapi.schemas import (
     TelegramWidgetAuthIn,
     BookIn,
     BroadcastIn,
+    ContactPatchIn,
     LessonCloseIn,
     LessonCloseBulkIn,
     LeadCreateIn,
@@ -856,6 +857,8 @@ def _contact_out(
     identity: TelegramIdentity | None,
     profile: StudentProfile | None,
     opportunities_count: int = 0,
+    current_stage: str | None = None,
+    current_source: str | None = None,
 ) -> dict[str, Any]:
     display_name = _contact_name(contact) or _profile_display_name(profile)
     return {
@@ -874,6 +877,8 @@ def _contact_out(
         "balance_lessons": int(profile.balance_lessons or 0) if profile else 0,
         "price": int(profile.price or 0) if profile else 0,
         "opportunities_count": int(opportunities_count or 0),
+        "current_stage": current_stage or ("won" if profile is not None else "new"),
+        "current_source": current_source,
         "created_at": contact.created_at,
         "updated_at": contact.updated_at,
     }
@@ -888,8 +893,31 @@ async def admin_list_contacts(
     _: dict[str, Any] = Depends(require_admin),
 ) -> dict[str, Any]:
     """Unified directory: a person appears once regardless of lifecycle."""
+    latest_opportunity_stage = (
+        select(Opportunity.stage)
+        .where(Opportunity.contact_id == Contact.id)
+        .order_by(Opportunity.updated_at.desc(), Opportunity.id.desc())
+        .limit(1)
+        .correlate(Contact)
+        .scalar_subquery()
+    )
+    latest_opportunity_source = (
+        select(Opportunity.source)
+        .where(Opportunity.contact_id == Contact.id)
+        .order_by(Opportunity.updated_at.desc(), Opportunity.id.desc())
+        .limit(1)
+        .correlate(Contact)
+        .scalar_subquery()
+    )
     stmt = (
-        select(Contact, TelegramIdentity, StudentProfile, func.count(Opportunity.id).label("opportunities_count"))
+        select(
+            Contact,
+            TelegramIdentity,
+            StudentProfile,
+            func.count(Opportunity.id).label("opportunities_count"),
+            latest_opportunity_stage.label("current_stage"),
+            latest_opportunity_source.label("current_source"),
+        )
         .outerjoin(TelegramIdentity, TelegramIdentity.contact_id == Contact.id)
         .outerjoin(StudentProfile, StudentProfile.contact_id == Contact.id)
         .outerjoin(Opportunity, Opportunity.contact_id == Contact.id)
@@ -912,7 +940,10 @@ async def admin_list_contacts(
     safe_size = min(max(1, page_size), 100)
     start = (safe_page - 1) * safe_size
     return {
-        "items": [_contact_out(contact, identity, profile, count) for contact, identity, profile, count in rows[start:start + safe_size]],
+        "items": [
+            _contact_out(contact, identity, profile, count, current_stage, current_source)
+            for contact, identity, profile, count, current_stage, current_source in rows[start:start + safe_size]
+        ],
         "total": total,
         "page": safe_page,
         "page_size": safe_size,
@@ -966,6 +997,31 @@ async def admin_contact_detail(contact_id: int, _: dict[str, Any] = Depends(requ
         "payments": payments,
         "paid_total_recent": paid_total,
     }
+
+
+@app.patch("/api/admin/contacts/{contact_id}")
+async def admin_patch_contact(
+    contact_id: int,
+    payload: ContactPatchIn,
+    admin: dict[str, Any] = Depends(require_admin),
+) -> dict[str, Any]:
+    contact = await session.get(Contact, contact_id)
+    if contact is None:
+        raise HTTPException(status_code=404, detail={"code": "NOT_FOUND", "message": "Контакт не найден"})
+    updates = payload.model_dump(exclude_unset=True)
+    direction = updates.pop("direction", None)
+    for field, value in updates.items():
+        setattr(contact, field, value)
+    if direction is not None:
+        profile = (
+            await session.execute(select(StudentProfile).where(StudentProfile.contact_id == contact.id))
+        ).scalar_one_or_none()
+        if profile is not None:
+            profile.direction = direction
+    contact.updated_at = datetime.datetime.now(datetime.timezone.utc).isoformat()
+    await session.commit()
+    await _audit(int(admin["sub"]), "update", "contact", {"contact_id": contact.id, **payload.model_dump(exclude_unset=True)})
+    return {"status": "ok"}
 
 
 def _lead_out(lead: Opportunity, contact: Contact, identity: TelegramIdentity | None = None) -> dict[str, Any]:
