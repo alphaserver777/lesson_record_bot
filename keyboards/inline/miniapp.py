@@ -7,7 +7,7 @@ def open_miniapp_kb(mini_app_url: str) -> types.InlineKeyboardMarkup:
         inline_keyboard=[
             [
                 types.InlineKeyboardButton(
-                    text="🚀 Открыть Mini App",
+                    text="🚀 Открыть личный кабинет",
                     web_app=types.WebAppInfo(url=mini_app_url),
                 )
             ],

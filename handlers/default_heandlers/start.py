@@ -43,7 +43,7 @@ async def start_command(message: [types.CallbackQuery, types.Message], state: FS
 
     text = (
         "<b>Бот работает в режиме уведомлений.</b>\n"
-        "Запись, расписание и админ-управление теперь в Mini App."
+        "Запись, расписание и управление доступны в личном кабинете."
     )
 
     kb = open_miniapp_kb(MINI_APP_URL)
