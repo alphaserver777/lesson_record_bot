@@ -72,6 +72,7 @@ class StudentProfile(Base):
     __table_args__ = {"extend_existing": True}
 
     telegram_id = Column(BigInteger, primary_key=True)
+    contact_id = Column(Integer, ForeignKey("contacts.id", ondelete="SET NULL"), nullable=True, unique=True, index=True)
     full_name = Column(String(100), nullable=True)
     first_name = Column(String(100), nullable=True)
     last_name = Column(String(100), nullable=True)
@@ -131,6 +132,63 @@ class Lead(Base):
     paid_amount = Column(Integer, nullable=True)
     lost_reason = Column(String(255), nullable=True)
     next_contact_at = Column(String(50), nullable=True)
+    notes = Column(String(1000), nullable=True)
+    created_at = Column(String(50), nullable=False)
+    updated_at = Column(String(50), nullable=False)
+
+
+class Contact(Base):
+    """Canonical person record independent from authentication and lifecycle."""
+
+    __tablename__ = "contacts"
+
+    id = Column(Integer, primary_key=True)
+    first_name = Column(String(100), nullable=True)
+    last_name = Column(String(100), nullable=True)
+    telephone = Column(String(20), nullable=True, index=True)
+    preferred_channel = Column(String(20), nullable=False, default="telegram")
+    status = Column(String(24), nullable=False, default="active", index=True)
+    is_archived = Column(Boolean, nullable=False, default=False, index=True)
+    created_at = Column(String(50), nullable=False)
+    updated_at = Column(String(50), nullable=False)
+
+
+class TelegramIdentity(Base):
+    """Telegram authentication and delivery identity for a contact."""
+
+    __tablename__ = "telegram_identities"
+
+    id = Column(Integer, primary_key=True)
+    contact_id = Column(Integer, ForeignKey("contacts.id", ondelete="CASCADE"), nullable=False, unique=True, index=True)
+    telegram_id = Column(BigInteger, nullable=False, unique=True, index=True)
+    username = Column(String(100), nullable=True)
+    last_login_at = Column(String(50), nullable=True)
+    entry_chat_id = Column(BigInteger, nullable=True)
+    entry_message_id = Column(Integer, nullable=True)
+    created_at = Column(String(50), nullable=False)
+    updated_at = Column(String(50), nullable=False)
+
+
+class Opportunity(Base):
+    """Commercial request linked to one canonical contact."""
+
+    __tablename__ = "opportunities"
+
+    id = Column(Integer, primary_key=True)
+    contact_id = Column(Integer, ForeignKey("contacts.id", ondelete="CASCADE"), nullable=False, index=True)
+    legacy_lead_id = Column(Integer, nullable=True, unique=True, index=True)
+    source = Column(String(80), nullable=False, default="direct", index=True)
+    utm_medium = Column(String(80), nullable=True)
+    utm_campaign = Column(String(120), nullable=True)
+    utm_content = Column(String(120), nullable=True)
+    direction = Column(String(80), nullable=True)
+    goal = Column(String(500), nullable=True)
+    stage = Column(String(32), nullable=False, default="new", index=True)
+    diagnostic_at = Column(String(50), nullable=True)
+    offer_amount = Column(Integer, nullable=True)
+    paid_amount = Column(Integer, nullable=True)
+    lost_reason = Column(String(255), nullable=True)
+    next_contact_at = Column(String(50), nullable=True, index=True)
     notes = Column(String(1000), nullable=True)
     created_at = Column(String(50), nullable=False)
     updated_at = Column(String(50), nullable=False)

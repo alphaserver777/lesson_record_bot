@@ -24,7 +24,7 @@ from database.connect import (
     rollback_session,
     session,
 )
-from database.models import Lead, RecordDate, StudentProfile
+from database.models import Contact, Opportunity, RecordDate, StudentProfile, TelegramIdentity
 from loader import bot
 from utils.calendar_backend import get_busy_intervals, get_calendar_tz
 from utils.schedule import WEEK_SCHEDULE, is_time_in_schedule, refresh_schedule_cache, slots_for_date
@@ -840,10 +840,23 @@ async def admin_patch_user(
     }
 
 
-def _lead_out(lead: Lead) -> dict[str, Any]:
+def _contact_name(contact: Contact) -> str:
+    return " ".join(part for part in (contact.last_name, contact.first_name) if part).strip()
+
+
+def _split_contact_name(full_name: str | None) -> tuple[str | None, str | None]:
+    parts = [part for part in (full_name or "").strip().split() if part]
+    if len(parts) > 1:
+        return " ".join(parts[1:]), parts[0]
+    return (parts[0], None) if parts else (None, None)
+
+
+def _lead_out(lead: Opportunity, contact: Contact, identity: TelegramIdentity | None = None) -> dict[str, Any]:
     return {
-        "id": lead.id, "telegram_id": lead.telegram_id, "full_name": lead.full_name,
-        "telephone": lead.telephone, "source": lead.source, "utm_medium": lead.utm_medium,
+        "id": lead.id, "contact_id": contact.id,
+        "telegram_id": identity.telegram_id if identity else None,
+        "full_name": _contact_name(contact), "telephone": contact.telephone,
+        "source": lead.source, "utm_medium": lead.utm_medium,
         "utm_campaign": lead.utm_campaign, "utm_content": lead.utm_content,
         "direction": lead.direction, "goal": lead.goal, "stage": lead.stage,
         "diagnostic_at": lead.diagnostic_at, "offer_amount": lead.offer_amount,
@@ -855,39 +868,95 @@ def _lead_out(lead: Lead) -> dict[str, Any]:
 
 @app.get("/api/admin/leads")
 async def admin_list_leads(_: dict[str, Any] = Depends(require_admin)) -> dict[str, Any]:
-    result = await session.execute(select(Lead).order_by(Lead.updated_at.desc(), Lead.id.desc()))
-    return {"items": [_lead_out(item) for item in result.scalars().all()]}
+    result = await session.execute(
+        select(Opportunity, Contact, TelegramIdentity)
+        .join(Contact, Contact.id == Opportunity.contact_id)
+        .outerjoin(TelegramIdentity, TelegramIdentity.contact_id == Contact.id)
+        .order_by(Opportunity.updated_at.desc(), Opportunity.id.desc())
+    )
+    return {"items": [_lead_out(opportunity, contact, identity) for opportunity, contact, identity in result.all()]}
 
 
 @app.post("/api/admin/leads")
 async def admin_create_lead(payload: LeadCreateIn, admin: dict[str, Any] = Depends(require_admin)) -> dict[str, Any]:
-    if payload.telegram_id is not None and not await transactions.get_student_profile(payload.telegram_id):
-        raise HTTPException(status_code=422, detail={"code": "PROFILE_NOT_FOUND", "message": "Сначала подтвердите Telegram-профиль ученика"})
     now = datetime.datetime.now(datetime.timezone.utc).isoformat()
-    lead = Lead(**payload.model_dump(), created_at=now, updated_at=now)
+    identity = None
+    contact = None
+    if payload.telegram_id is not None:
+        identity = (
+            await session.execute(select(TelegramIdentity).where(TelegramIdentity.telegram_id == payload.telegram_id))
+        ).scalar_one_or_none()
+        if identity is None:
+            raise HTTPException(status_code=422, detail={"code": "PROFILE_NOT_FOUND", "message": "Сначала подтвердите Telegram-профиль ученика"})
+        contact = await session.get(Contact, identity.contact_id)
+    if contact is None and payload.telephone:
+        matches = (
+            await session.execute(select(Contact).where(Contact.telephone == payload.telephone).limit(2))
+        ).scalars().all()
+        if len(matches) == 1:
+            contact = matches[0]
+    if contact is None:
+        first_name, last_name = _split_contact_name(payload.full_name)
+        contact = Contact(
+            first_name=first_name,
+            last_name=last_name,
+            telephone=payload.telephone,
+            preferred_channel="telegram" if identity else "phone",
+            status="lead",
+            is_archived=False,
+            created_at=now,
+            updated_at=now,
+        )
+        session.add(contact)
+        await session.flush()
+    lead_data = payload.model_dump(exclude={"telegram_id", "full_name", "telephone"})
+    lead = Opportunity(contact_id=contact.id, **lead_data, created_at=now, updated_at=now)
     session.add(lead)
     await session.commit()
     await session.refresh(lead)
     await _audit(int(admin["sub"]), "create", "lead", {"lead_id": lead.id, "source": lead.source})
-    return {"item": _lead_out(lead)}
+    return {"item": _lead_out(lead, contact, identity)}
 
 
 @app.patch("/api/admin/leads/{lead_id}")
 async def admin_patch_lead(lead_id: int, payload: LeadPatchIn, admin: dict[str, Any] = Depends(require_admin)) -> dict[str, Any]:
-    lead = await session.get(Lead, lead_id)
+    lead = await session.get(Opportunity, lead_id)
     if not lead:
         raise HTTPException(status_code=404, detail={"code": "NOT_FOUND", "message": "Лид не найден"})
-    for key, value in payload.model_dump(exclude_unset=True).items():
+    contact = await session.get(Contact, lead.contact_id)
+    if not contact:
+        raise HTTPException(status_code=409, detail={"code": "CONTACT_NOT_FOUND", "message": "Контакт лида не найден"})
+    updates = payload.model_dump(exclude_unset=True)
+    if "full_name" in updates:
+        contact.first_name, contact.last_name = _split_contact_name(updates.pop("full_name"))
+    if "telephone" in updates:
+        contact.telephone = updates.pop("telephone")
+    if "telegram_id" in updates:
+        telegram_id = updates.pop("telegram_id")
+        if telegram_id is not None:
+            identity = (
+                await session.execute(select(TelegramIdentity).where(TelegramIdentity.telegram_id == telegram_id))
+            ).scalar_one_or_none()
+            if identity is None:
+                raise HTTPException(status_code=422, detail={"code": "PROFILE_NOT_FOUND", "message": "Telegram-профиль не найден"})
+            lead.contact_id = identity.contact_id
+            contact = await session.get(Contact, identity.contact_id)
+    for key, value in updates.items():
         setattr(lead, key, value)
-    lead.updated_at = datetime.datetime.now(datetime.timezone.utc).isoformat()
+    now = datetime.datetime.now(datetime.timezone.utc).isoformat()
+    contact.updated_at = now
+    lead.updated_at = now
     await session.commit()
     await _audit(int(admin["sub"]), "update", "lead", {"lead_id": lead.id, "stage": lead.stage})
-    return {"item": _lead_out(lead)}
+    identity = (
+        await session.execute(select(TelegramIdentity).where(TelegramIdentity.contact_id == contact.id))
+    ).scalar_one_or_none()
+    return {"item": _lead_out(lead, contact, identity)}
 
 
 @app.get("/api/admin/leads/summary")
 async def admin_leads_summary(_: dict[str, Any] = Depends(require_admin)) -> dict[str, Any]:
-    result = await session.execute(select(Lead))
+    result = await session.execute(select(Opportunity))
     items = result.scalars().all()
     by_source: dict[str, dict[str, int]] = {}
     for lead in items:
