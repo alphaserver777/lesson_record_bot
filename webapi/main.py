@@ -25,7 +25,7 @@ from database.connect import (
     rollback_session,
     session,
 )
-from database.models import Contact, FunnelStage, Opportunity, RecordDate, StudentProfile, TelegramIdentity
+from database.models import Contact, FunnelStage, MarketingCampaign, MarketingExpense, MarketingSource, Opportunity, OpportunityStageEvent, Payment, RecordDate, StudentProfile, TelegramIdentity
 from loader import bot
 from utils.calendar_backend import get_busy_intervals, get_calendar_tz
 from utils.schedule import WEEK_SCHEDULE, is_time_in_schedule, refresh_schedule_cache, slots_for_date
@@ -55,6 +55,9 @@ from webapi.schemas import (
     LeadCreateIn,
     LeadPatchIn,
     ManualPaymentIn,
+    MarketingCampaignIn,
+    MarketingExpenseIn,
+    OpportunityMarketingPatchIn,
     RegularLessonIn,
     SingleLessonIn,
     UserProfileIn,
@@ -907,7 +910,7 @@ async def _funnel_stages() -> list[FunnelStage]:
 
 
 def _stage_out(stage: FunnelStage) -> dict[str, Any]:
-    return {"key": stage.key, "name": stage.name, "sort_order": stage.sort_order}
+    return {"key": stage.key, "name": stage.name, "sort_order": stage.sort_order, "metric_role": stage.metric_role}
 
 
 @app.get("/api/admin/funnel/stages")
@@ -1190,9 +1193,14 @@ async def admin_set_contact_funnel_stage(
             updated_at=now,
         )
         session.add(opportunity)
+        await session.flush()
+        session.add(OpportunityStageEvent(opportunity_id=opportunity.id, from_stage=None, to_stage=payload.stage, occurred_at=now, actor_id=int(admin["sub"]), source="kanban"))
     else:
+        previous_stage = opportunity.stage
         opportunity.stage = payload.stage
         opportunity.updated_at = now
+        if previous_stage != payload.stage:
+            session.add(OpportunityStageEvent(opportunity_id=opportunity.id, from_stage=previous_stage, to_stage=payload.stage, occurred_at=now, actor_id=int(admin["sub"]), source="kanban"))
     contact.updated_at = now
     await session.commit()
     await _audit(int(admin["sub"]), "move", "opportunity", {"contact_id": contact.id, "opportunity_id": opportunity.id, "stage": payload.stage})
@@ -1207,7 +1215,8 @@ def _lead_out(lead: Opportunity, contact: Contact, identity: TelegramIdentity | 
         "source": lead.source, "utm_medium": lead.utm_medium,
         "utm_campaign": lead.utm_campaign, "utm_content": lead.utm_content,
         "direction": lead.direction, "goal": lead.goal, "stage": lead.stage,
-        "diagnostic_at": lead.diagnostic_at, "offer_amount": lead.offer_amount,
+        "diagnostic_at": lead.diagnostic_at, "diagnostic_scheduled_at": lead.diagnostic_scheduled_at,
+        "diagnostic_held_at": lead.diagnostic_held_at, "offer_amount": lead.offer_amount,
         "paid_amount": lead.paid_amount, "lost_reason": lead.lost_reason,
         "next_contact_at": lead.next_contact_at, "notes": lead.notes,
         "created_at": lead.created_at, "updated_at": lead.updated_at,
@@ -1252,6 +1261,9 @@ async def admin_create_lead(payload: LeadCreateIn, admin: dict[str, Any] = Depen
             preferred_channel="telegram" if identity else "phone",
             status="lead",
             is_archived=False,
+            acquisition_source=payload.source.strip().lower() if payload.source.strip().lower() in {"avito", "youtube", "telegram", "referral", "site", "direct", "other"} else "other",
+            acquisition_campaign=payload.utm_campaign,
+            acquired_at=datetime.date.today(),
             created_at=now,
             updated_at=now,
         )
@@ -1263,6 +1275,8 @@ async def admin_create_lead(payload: LeadCreateIn, admin: dict[str, Any] = Depen
     lead_data["stage"] = lead_data["stage"] if lead_data["stage"] in stage_keys else stages[0].key
     lead = Opportunity(contact_id=contact.id, **lead_data, created_at=now, updated_at=now)
     session.add(lead)
+    await session.flush()
+    session.add(OpportunityStageEvent(opportunity_id=lead.id, from_stage=None, to_stage=lead.stage, occurred_at=now, actor_id=int(admin["sub"]), source="create"))
     await session.commit()
     await session.refresh(lead)
     await _audit(int(admin["sub"]), "create", "lead", {"lead_id": lead.id, "source": lead.source})
@@ -1278,6 +1292,7 @@ async def admin_patch_lead(lead_id: int, payload: LeadPatchIn, admin: dict[str, 
     if not contact:
         raise HTTPException(status_code=409, detail={"code": "CONTACT_NOT_FOUND", "message": "Контакт лида не найден"})
     updates = payload.model_dump(exclude_unset=True)
+    previous_stage = lead.stage
     if "stage" in updates:
         stage_keys = {stage.key for stage in await _funnel_stages()}
         if updates["stage"] not in stage_keys:
@@ -1301,6 +1316,8 @@ async def admin_patch_lead(lead_id: int, payload: LeadPatchIn, admin: dict[str, 
     now = datetime.datetime.now(datetime.timezone.utc).isoformat()
     contact.updated_at = now
     lead.updated_at = now
+    if "stage" in updates and previous_stage != lead.stage:
+        session.add(OpportunityStageEvent(opportunity_id=lead.id, from_stage=previous_stage, to_stage=lead.stage, occurred_at=now, actor_id=int(admin["sub"]), source="edit"))
     await session.commit()
     await _audit(int(admin["sub"]), "update", "lead", {"lead_id": lead.id, "stage": lead.stage})
     identity = (
@@ -1321,6 +1338,73 @@ async def admin_leads_summary(_: dict[str, Any] = Depends(require_admin)) -> dic
         row["won"] += int(lead.stage == "won")
         row["paid_amount"] += int(lead.paid_amount or 0)
     return {"total": len(items), "by_source": [{"source": key, **value} for key, value in sorted(by_source.items())]}
+
+
+@app.patch("/api/admin/opportunities/{opportunity_id}/marketing")
+async def admin_patch_opportunity_marketing(opportunity_id: int, payload: OpportunityMarketingPatchIn, admin: dict[str, Any] = Depends(require_admin)) -> dict[str, Any]:
+    opportunity = await session.get(Opportunity, opportunity_id)
+    if opportunity is None:
+        raise HTTPException(status_code=404, detail={"code": "NOT_FOUND", "message": "Сделка не найдена"})
+    updates = payload.model_dump(exclude_unset=True)
+    if "campaign" in updates:
+        updates["utm_campaign"] = updates.pop("campaign") or None
+    for key, value in updates.items():
+        setattr(opportunity, key, value)
+    opportunity.updated_at = datetime.datetime.now(datetime.timezone.utc).isoformat()
+    await session.commit()
+    await _audit(int(admin["sub"]), "update", "opportunity_marketing", {"opportunity_id": opportunity_id, **payload.model_dump(exclude_unset=True)})
+    return {"status": "ok"}
+
+
+@app.get("/api/admin/marketing/sources")
+async def admin_marketing_sources(_: dict[str, Any] = Depends(require_admin)) -> dict[str, Any]:
+    items = (await session.execute(select(MarketingSource).order_by(MarketingSource.name))).scalars().all()
+    return {"items": [{"key": item.key, "name": item.name, "channel": item.channel, "is_active": bool(item.is_active)} for item in items]}
+
+
+@app.get("/api/admin/marketing/campaigns")
+async def admin_marketing_campaigns(source_key: str | None = None, _: dict[str, Any] = Depends(require_admin)) -> dict[str, Any]:
+    statement = select(MarketingCampaign).order_by(MarketingCampaign.source_key, MarketingCampaign.name)
+    if source_key:
+        statement = statement.where(MarketingCampaign.source_key == source_key)
+    items = (await session.execute(statement)).scalars().all()
+    return {"items": [{"id": item.id, "source_key": item.source_key, "name": item.name, "is_active": bool(item.is_active)} for item in items]}
+
+
+@app.post("/api/admin/marketing/campaigns")
+async def admin_create_marketing_campaign(payload: MarketingCampaignIn, admin: dict[str, Any] = Depends(require_admin)) -> dict[str, Any]:
+    if await session.get(MarketingSource, payload.source_key) is None:
+        raise HTTPException(status_code=422, detail={"code": "INVALID_SOURCE", "message": "Источник не найден"})
+    now = datetime.datetime.now(datetime.timezone.utc).isoformat()
+    item = MarketingCampaign(source_key=payload.source_key, name=payload.name.strip(), created_at=now, updated_at=now)
+    session.add(item)
+    await session.commit()
+    await session.refresh(item)
+    await _audit(int(admin["sub"]), "create", "marketing_campaign", {"id": item.id, "source": item.source_key, "name": item.name})
+    return {"item": {"id": item.id, "source_key": item.source_key, "name": item.name}}
+
+
+@app.get("/api/admin/marketing/expenses")
+async def admin_marketing_expenses(date_from: datetime.date, date_to: datetime.date, _: dict[str, Any] = Depends(require_admin)) -> dict[str, Any]:
+    rows = await session.execute(select(MarketingExpense, MarketingCampaign).outerjoin(MarketingCampaign, MarketingCampaign.id == MarketingExpense.campaign_id).where(MarketingExpense.spent_at.between(date_from, date_to)).order_by(MarketingExpense.spent_at.desc(), MarketingExpense.id.desc()))
+    return {"items": [{"id": expense.id, "spent_at": expense.spent_at.isoformat(), "amount": expense.amount, "source_key": expense.source_key, "campaign_id": expense.campaign_id, "campaign_name": campaign.name if campaign else None, "category": expense.category, "note": expense.note} for expense, campaign in rows.all()]}
+
+
+@app.post("/api/admin/marketing/expenses")
+async def admin_create_marketing_expense(payload: MarketingExpenseIn, admin: dict[str, Any] = Depends(require_admin)) -> dict[str, Any]:
+    if await session.get(MarketingSource, payload.source_key) is None:
+        raise HTTPException(status_code=422, detail={"code": "INVALID_SOURCE", "message": "Источник не найден"})
+    if payload.campaign_id is not None:
+        campaign = await session.get(MarketingCampaign, payload.campaign_id)
+        if campaign is None or campaign.source_key != payload.source_key:
+            raise HTTPException(status_code=422, detail={"code": "INVALID_CAMPAIGN", "message": "Кампания не принадлежит источнику"})
+    now = datetime.datetime.now(datetime.timezone.utc).isoformat()
+    item = MarketingExpense(**payload.model_dump(), created_at=now, updated_at=now)
+    session.add(item)
+    await session.commit()
+    await session.refresh(item)
+    await _audit(int(admin["sub"]), "create", "marketing_expense", {"expense_id": item.id, **payload.model_dump(mode="json")})
+    return {"item": {"id": item.id}}
 
 
 @app.delete("/api/admin/users/{telegram_id}")
@@ -2473,6 +2557,82 @@ async def stats_month(year: int, month: int, _: dict[str, Any] = Depends(require
     start = datetime.date(year, month, 1)
     end = datetime.date(year + (1 if month == 12 else 0), 1 if month == 12 else month + 1, 1) - datetime.timedelta(days=1)
     return await transactions.payments_summary_for_range(start, end)
+
+
+@app.get("/api/admin/analytics/marketing")
+async def analytics_marketing(
+    date_from: datetime.date,
+    date_to: datetime.date,
+    direction: str | None = None,
+    source_key: str | None = None,
+    campaign: str | None = None,
+    _: dict[str, Any] = Depends(require_admin),
+) -> dict[str, Any]:
+    """Cash marketing dashboard, attributed permanently to first acquisition."""
+    sources = (await session.execute(select(MarketingSource))).scalars().all()
+    source_names = {item.key: item.name for item in sources}
+    contacts = (await session.execute(select(Contact))).scalars().all()
+    opportunities = (await session.execute(select(Opportunity))).scalars().all()
+    stage_roles = {item.key: item.metric_role for item in await _funnel_stages()}
+    events = (await session.execute(select(OpportunityStageEvent))).scalars().all()
+    payments = (await session.execute(select(Payment).where(Payment.status == "paid"))).scalars().all()
+    expenses = (await session.execute(select(MarketingExpense).where(MarketingExpense.spent_at.between(date_from, date_to)))).scalars().all()
+
+    contact_map = {item.id: item for item in contacts}
+    scoped_contacts = [item for item in contacts if item.acquired_at and date_from <= item.acquired_at <= date_to]
+    if source_key:
+        scoped_contacts = [item for item in scoped_contacts if item.acquisition_source == source_key]
+    if campaign:
+        scoped_contacts = [item for item in scoped_contacts if item.acquisition_campaign == campaign]
+    scoped_ids = {item.id for item in scoped_contacts}
+    if direction:
+        allowed = {item.contact_id for item in opportunities if item.direction == direction}
+        scoped_contacts = [item for item in scoped_contacts if item.id in allowed]
+        scoped_ids = {item.id for item in scoped_contacts}
+
+    first_paid: dict[int, Payment] = {}
+    for payment in payments:
+        if payment.contact_id is None:
+            continue
+        previous = first_paid.get(payment.contact_id)
+        if previous is None or payment.lesson_date < previous.lesson_date:
+            first_paid[payment.contact_id] = payment
+    cash_payments = [item for item in payments if item.contact_id in scoped_ids and date_from <= item.lesson_date <= date_to]
+    new_paid = [item for contact_id, item in first_paid.items() if contact_id in scoped_ids and date_from <= item.lesson_date <= date_to]
+    exp_scoped = [item for item in expenses if (not source_key or item.source_key == source_key)]
+
+    event_roles: dict[int, set[str]] = {}
+    for event in events:
+        if event.occurred_at[:10] < date_from.isoformat() or event.occurred_at[:10] > date_to.isoformat():
+            continue
+        opportunity = next((item for item in opportunities if item.id == event.opportunity_id), None)
+        if opportunity and opportunity.contact_id in scoped_ids:
+            event_roles.setdefault(opportunity.contact_id, set()).add(stage_roles.get(event.to_stage, "new"))
+
+    def ratio(numerator: int | float, denominator: int | float) -> float | None:
+        return round(float(numerator) / float(denominator), 2) if denominator else None
+    def percent(numerator: int | float, denominator: int | float) -> float | None:
+        return round((float(numerator) / float(denominator)) * 100, 1) if denominator else None
+    def romi(revenue: int, spend: int) -> float | None:
+        return round(((revenue - spend) / spend) * 100, 2) if spend else None
+
+    total_spend = sum(int(item.amount) for item in exp_scoped)
+    total_cash = sum(int(item.amount or 0) for item in cash_payments)
+    first_revenue = sum(int(item.amount or 0) for item in new_paid)
+    qualified = sum("qualified" in event_roles.get(contact_id, set()) for contact_id in scoped_ids)
+    diagnostics_scheduled = sum("diagnostic_scheduled" in event_roles.get(contact_id, set()) for contact_id in scoped_ids)
+    diagnostics_held = sum("diagnostic_held" in event_roles.get(contact_id, set()) for contact_id in scoped_ids)
+
+    rows = []
+    for key in sorted({item.acquisition_source or "unknown" for item in scoped_contacts} | {item.source_key for item in exp_scoped}):
+        ids = {item.id for item in scoped_contacts if item.acquisition_source == key}
+        spend = sum(int(item.amount) for item in exp_scoped if item.source_key == key)
+        cash = sum(int(item.amount or 0) for item in cash_payments if item.contact_id in ids)
+        new_clients = [item for contact_id, item in first_paid.items() if contact_id in ids and date_from <= item.lesson_date <= date_to]
+        ltv = sum(int(item.amount or 0) for item in payments if item.contact_id in ids)
+        rows.append({"source_key": key, "source_name": source_names.get(key, key), "spend": spend, "leads": len(ids), "qualified": sum("qualified" in event_roles.get(contact_id, set()) for contact_id in ids), "diagnostics_scheduled": sum("diagnostic_scheduled" in event_roles.get(contact_id, set()) for contact_id in ids), "diagnostics_held": sum("diagnostic_held" in event_roles.get(contact_id, set()) for contact_id in ids), "new_clients": len(new_clients), "first_revenue": sum(int(item.amount or 0) for item in new_clients), "cash_revenue": cash, "ltv": ltv, "cpl": ratio(spend, len(ids)), "cac": ratio(spend, len(new_clients)), "romi": romi(cash, spend)})
+
+    return {"period": {"date_from": date_from.isoformat(), "date_to": date_to.isoformat()}, "kpi": {"spend": total_spend, "leads": len(scoped_ids), "qualified": qualified, "diagnostics_scheduled": diagnostics_scheduled, "diagnostics_held": diagnostics_held, "new_clients": len(new_paid), "first_revenue": first_revenue, "cash_revenue": total_cash, "cpl": ratio(total_spend, len(scoped_ids)), "cpql": ratio(total_spend, qualified), "cac": ratio(total_spend, len(new_paid)), "avg_first_payment": ratio(first_revenue, len(new_paid)), "romi": romi(total_cash, total_spend)}, "funnel": [{"role": role, "count": sum(role in values for values in event_roles.values()), "conversion_from_leads": percent(sum(role in values for values in event_roles.values()), len(scoped_ids))} for role in ["new", "qualified", "diagnostic_scheduled", "diagnostic_held", "offer", "won", "lost"]], "rows": rows, "data_quality": {"contacts_unknown_source": sum(item.acquisition_source == "unknown" for item in contacts), "contacts_missing_campaign": sum(bool(item.acquisition_source not in {"unknown", "direct", "referral"} and not item.acquisition_campaign) for item in contacts), "opportunities_missing_next_contact": sum(bool(item.stage not in {"won", "lost"} and not item.next_contact_at) for item in opportunities)}}
 
 
 @app.get("/api/admin/analytics/overview")

@@ -151,6 +151,9 @@ class Contact(Base):
     preferred_channel = Column(String(20), nullable=False, default="telegram")
     status = Column(String(24), nullable=False, default="active", index=True)
     is_archived = Column(Boolean, nullable=False, default=False, index=True)
+    acquisition_source = Column(String(80), nullable=False, default="unknown", index=True)
+    acquisition_campaign = Column(String(120), nullable=True, index=True)
+    acquired_at = Column(Date, nullable=True, index=True)
     created_at = Column(String(50), nullable=False)
     updated_at = Column(String(50), nullable=False)
 
@@ -187,6 +190,8 @@ class Opportunity(Base):
     goal = Column(String(500), nullable=True)
     stage = Column(String(32), nullable=False, default="new", index=True)
     diagnostic_at = Column(String(50), nullable=True)
+    diagnostic_scheduled_at = Column(String(50), nullable=True)
+    diagnostic_held_at = Column(String(50), nullable=True)
     offer_amount = Column(Integer, nullable=True)
     paid_amount = Column(Integer, nullable=True)
     lost_reason = Column(String(255), nullable=True)
@@ -204,6 +209,55 @@ class FunnelStage(Base):
     key = Column(String(48), primary_key=True)
     name = Column(String(100), nullable=False)
     sort_order = Column(Integer, nullable=False, default=0, index=True)
+    metric_role = Column(String(32), nullable=False, default="new", index=True)
+    created_at = Column(String(50), nullable=False)
+    updated_at = Column(String(50), nullable=False)
+
+
+class OpportunityStageEvent(Base):
+    __tablename__ = "opportunity_stage_events"
+
+    id = Column(Integer, primary_key=True)
+    opportunity_id = Column(Integer, ForeignKey("opportunities.id", ondelete="CASCADE"), nullable=False, index=True)
+    from_stage = Column(String(48), nullable=True)
+    to_stage = Column(String(48), nullable=False, index=True)
+    occurred_at = Column(String(50), nullable=False, index=True)
+    actor_id = Column(BigInteger, nullable=True)
+    source = Column(String(32), nullable=False, default="admin")
+
+
+class MarketingSource(Base):
+    __tablename__ = "marketing_sources"
+
+    key = Column(String(80), primary_key=True)
+    name = Column(String(100), nullable=False)
+    channel = Column(String(40), nullable=False, default="other")
+    is_active = Column(Boolean, nullable=False, default=True)
+    created_at = Column(String(50), nullable=False)
+    updated_at = Column(String(50), nullable=False)
+
+
+class MarketingCampaign(Base):
+    __tablename__ = "marketing_campaigns"
+
+    id = Column(Integer, primary_key=True)
+    source_key = Column(String(80), ForeignKey("marketing_sources.key", ondelete="RESTRICT"), nullable=False, index=True)
+    name = Column(String(120), nullable=False)
+    is_active = Column(Boolean, nullable=False, default=True)
+    created_at = Column(String(50), nullable=False)
+    updated_at = Column(String(50), nullable=False)
+
+
+class MarketingExpense(Base):
+    __tablename__ = "marketing_expenses"
+
+    id = Column(Integer, primary_key=True)
+    spent_at = Column(Date, nullable=False, index=True)
+    amount = Column(Integer, nullable=False)
+    source_key = Column(String(80), ForeignKey("marketing_sources.key", ondelete="RESTRICT"), nullable=False, index=True)
+    campaign_id = Column(Integer, ForeignKey("marketing_campaigns.id", ondelete="SET NULL"), nullable=True, index=True)
+    category = Column(String(32), nullable=False)
+    note = Column(String(500), nullable=True)
     created_at = Column(String(50), nullable=False)
     updated_at = Column(String(50), nullable=False)
 

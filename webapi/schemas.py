@@ -131,6 +131,28 @@ class FunnelStageCreateIn(BaseModel):
 class FunnelStagePatchIn(BaseModel):
     name: str | None = Field(default=None, min_length=1, max_length=100)
     sort_order: int | None = Field(default=None, ge=0, le=1000)
+    metric_role: str | None = Field(default=None, pattern=r"^(new|qualified|diagnostic_scheduled|diagnostic_held|offer|won|lost)$")
+
+
+class MarketingCampaignIn(BaseModel):
+    source_key: str = Field(min_length=1, max_length=80)
+    name: str = Field(min_length=1, max_length=120)
+
+
+class MarketingExpenseIn(BaseModel):
+    spent_at: date
+    amount: int = Field(gt=0)
+    source_key: str = Field(min_length=1, max_length=80)
+    campaign_id: int | None = None
+    category: str = Field(pattern=r"^(placement|advertising|content|contractor)$")
+    note: str | None = Field(default=None, max_length=500)
+
+
+class OpportunityMarketingPatchIn(BaseModel):
+    source: str | None = Field(default=None, min_length=1, max_length=80)
+    campaign: str | None = Field(default=None, max_length=120)
+    diagnostic_scheduled_at: str | None = Field(default=None, max_length=50)
+    diagnostic_held_at: str | None = Field(default=None, max_length=50)
 
 
 class ContactFunnelStageIn(BaseModel):
