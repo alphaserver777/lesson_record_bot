@@ -303,15 +303,15 @@ function UserView({ token, appUser, tgUser }) {
       : `Время на ${formatDateRu(date)}`
 
   return (
-    <div className="mini-layout">
+    <div className="mini-layout user-layout">
       <section className="mini-cover">
         <div className="mini-cover-overlay" />
         <div className="mini-cover-head">
           <div className="mini-brand">
-            <div className="brand-logo">LP</div>
+            <div className="brand-logo">P</div>
             <div className="brand-meta">
-              <strong>LESSON PLANNER</strong>
-              <span>мини-приложение</span>
+              <strong>PROFFESSOR IT</strong>
+              <span>личный кабинет</span>
             </div>
           </div>
           <button className="circle-btn">◌</button>
@@ -320,7 +320,7 @@ function UserView({ token, appUser, tgUser }) {
 
       <div className="mini-body">
         {activeTab === 'home' ? (
-          <div className="stack">
+          <div className="stack user-dashboard">
             <Card title={`Привет, ${displayName}`} subtitle="Общая информация">
               {!profileLoading && !profileCompleted ? (
                 <div className="stack" style={{ marginTop: 0 }}>
@@ -440,7 +440,7 @@ function UserView({ token, appUser, tgUser }) {
         ) : null}
 
         {activeTab === 'book' ? (
-          <div className="stack">
+          <div className="stack user-booking">
             {!profileCompleted ? (
               <Card title="Профиль не заполнен" subtitle="Сначала заполните имя, фамилию и телефон на вкладке «Профиль».">
                 <div className="empty">После сохранения профиля откроется запись на занятия.</div>

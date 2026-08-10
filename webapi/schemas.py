@@ -9,6 +9,16 @@ class AuthIn(BaseModel):
     initData: str
 
 
+class TelegramWidgetAuthIn(BaseModel):
+    id: int
+    first_name: str
+    last_name: str | None = None
+    username: str | None = None
+    photo_url: str | None = None
+    auth_date: int
+    hash: str
+
+
 class BookIn(BaseModel):
     date: date
     time: str = Field(pattern=r"^\d{2}:\d{2}$")
@@ -88,6 +98,30 @@ class UserProfileIn(BaseModel):
     first_name: str = Field(min_length=1, max_length=100)
     last_name: str = Field(min_length=1, max_length=100)
     telephone: str = Field(min_length=5, max_length=20)
+
+
+class LeadCreateIn(BaseModel):
+    telegram_id: int | None = None
+    full_name: str | None = Field(default=None, max_length=100)
+    telephone: str | None = Field(default=None, max_length=20)
+    source: str = Field(default="direct", min_length=1, max_length=80)
+    utm_medium: str | None = Field(default=None, max_length=80)
+    utm_campaign: str | None = Field(default=None, max_length=120)
+    utm_content: str | None = Field(default=None, max_length=120)
+    direction: str | None = Field(default=None, max_length=80)
+    goal: str | None = Field(default=None, max_length=500)
+    stage: str = Field(default="new", pattern=r"^(new|qualified|diagnostic_booked|diagnostic_done|offer_sent|won|lost)$")
+    diagnostic_at: str | None = Field(default=None, max_length=50)
+    offer_amount: int | None = Field(default=None, ge=0)
+    paid_amount: int | None = Field(default=None, ge=0)
+    lost_reason: str | None = Field(default=None, max_length=255)
+    next_contact_at: str | None = Field(default=None, max_length=50)
+    notes: str | None = Field(default=None, max_length=1000)
+
+
+class LeadPatchIn(LeadCreateIn):
+    source: str | None = Field(default=None, min_length=1, max_length=80)
+    stage: str | None = Field(default=None, pattern=r"^(new|qualified|diagnostic_booked|diagnostic_done|offer_sent|won|lost)$")
 
 
 class WorkIntervalIn(BaseModel):

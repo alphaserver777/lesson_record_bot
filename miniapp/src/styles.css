@@ -24,6 +24,93 @@ body {
   padding: 18px;
 }
 
+.web-entry {
+  width: min(560px, 100%);
+  margin: min(12vh, 110px) auto 0;
+  padding: 38px;
+  text-align: center;
+  border: 1px solid rgba(112, 169, 255, 0.28);
+  border-radius: 28px;
+  background:
+    radial-gradient(circle at 50% -15%, rgba(63, 142, 255, 0.3), transparent 46%),
+    linear-gradient(145deg, #101a2e, #090b12 68%);
+  box-shadow: 0 28px 80px rgba(0, 0, 0, 0.45);
+}
+
+.web-entry-mark {
+  width: 52px;
+  height: 52px;
+  display: grid;
+  place-items: center;
+  margin: 0 auto 18px;
+  border: 1px solid rgba(255, 255, 255, 0.45);
+  border-radius: 15px;
+  font-weight: 900;
+  font-size: 22px;
+}
+
+.web-entry-kicker {
+  margin: 0;
+  color: #8fb8ff;
+  font-size: 12px;
+  font-weight: 800;
+  letter-spacing: 0.16em;
+}
+
+.web-entry h1 {
+  margin: 10px 0 12px;
+  font-size: clamp(28px, 7vw, 42px);
+  line-height: 1.05;
+}
+
+.web-entry > p:not(.web-entry-kicker) {
+  margin: 0 auto;
+  max-width: 420px;
+  color: #b8c4d9;
+  line-height: 1.55;
+}
+
+.web-entry-action {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 48px;
+  margin: 25px 0 14px;
+  padding: 0 21px;
+  border-radius: 13px;
+  color: #06101d;
+  background: #72b4ff;
+  font-weight: 800;
+  text-decoration: none;
+  border: 0;
+  cursor: pointer;
+  font: inherit;
+}
+
+.web-entry-action:disabled {
+  cursor: wait;
+  opacity: 0.7;
+}
+
+.login-error {
+  color: #ff9ea7;
+  font-size: 13px;
+  line-height: 1.35;
+}
+
+.telegram-login {
+  display: inline-block;
+  margin-bottom: 14px;
+  color: #9dc8ff;
+  font-size: 14px;
+}
+
+.web-entry small {
+  display: block;
+  color: #858fa2;
+  line-height: 1.45;
+}
+
 .mini-layout {
   width: min(430px, calc(100vw - 16px));
   max-width: 430px;
@@ -732,6 +819,30 @@ body {
 
 .analytics-stack {
   min-width: 0;
+}
+
+.lead-row {
+  align-items: center;
+}
+
+.lead-row > div {
+  display: grid;
+  gap: 3px;
+}
+
+.lead-row select {
+  min-width: 150px;
+  padding: 7px 9px;
+}
+
+@media (max-width: 560px) {
+  .lead-row {
+    grid-template-columns: 1fr;
+  }
+
+  .lead-row select {
+    width: 100%;
+  }
 }
 
 .analytics-stack .card {
@@ -1712,5 +1823,231 @@ body {
   .toast-viewport {
     width: calc(100vw - 20px);
     top: calc(10px + env(safe-area-inset-top, 0px));
+  }
+}
+
+/* Desktop cabinet: the same application becomes a full workspace instead of a phone mockup. */
+@media (min-width: 901px) {
+  :root {
+    background: #090b10;
+  }
+
+  body {
+    min-width: 1024px;
+    background:
+      radial-gradient(900px 560px at 85% -10%, rgba(47, 105, 202, 0.16), transparent 68%),
+      radial-gradient(680px 500px at 3% 92%, rgba(54, 182, 145, 0.08), transparent 70%),
+      #090b10;
+  }
+
+  .app {
+    max-width: none;
+    padding: 0;
+  }
+
+  .mini-layout {
+    width: min(1440px, calc(100vw - 64px));
+    max-width: none;
+    min-height: 100vh;
+    margin: 0 auto;
+    padding: 28px 0 48px 188px;
+  }
+
+  .mini-cover {
+    height: 106px;
+    border-radius: 22px;
+    background:
+      radial-gradient(420px 180px at 85% 0%, rgba(91, 156, 255, 0.25), transparent 68%),
+      linear-gradient(125deg, #161b27, #0e1119 68%);
+  }
+
+  .mini-cover-head {
+    padding: 22px 28px;
+  }
+
+  .brand-logo {
+    width: 48px;
+    height: 48px;
+    border-radius: 14px;
+    font-size: 18px;
+    background: linear-gradient(145deg, #4b8df5, #28559e);
+  }
+
+  .brand-meta strong {
+    font-size: 16px;
+    letter-spacing: 0.08em;
+  }
+
+  .brand-meta span {
+    font-size: 12px;
+  }
+
+  .circle-btn {
+    width: 38px;
+    height: 38px;
+  }
+
+  .mini-body {
+    margin-top: 22px;
+  }
+
+  .stack {
+    gap: 20px;
+  }
+
+  .card {
+    padding: 22px;
+    border-radius: 20px;
+    background: linear-gradient(150deg, rgba(27, 31, 42, 0.96), rgba(15, 17, 23, 0.96));
+  }
+
+  .card h3 {
+    font-size: 20px;
+  }
+
+  .card-subtitle {
+    font-size: 13px;
+  }
+
+  .user-dashboard {
+    grid-template-columns: minmax(0, 1.35fr) minmax(330px, 0.85fr);
+    align-items: start;
+  }
+
+  .user-dashboard > :first-child {
+    grid-row: span 2;
+  }
+
+  .user-booking {
+    grid-template-columns: minmax(0, 1fr) minmax(380px, 0.9fr);
+    align-items: start;
+  }
+
+  .user-booking > :first-child {
+    grid-column: 1 / -1;
+  }
+
+  .admin-layout .stack {
+    max-width: 1180px;
+  }
+
+  .admin-layout .analytics-stack {
+    max-width: none;
+  }
+
+  .admin-tabs {
+    gap: 10px;
+  }
+
+  .admin-tab {
+    min-height: 40px;
+    padding: 0 16px;
+    font-size: 13px;
+  }
+
+  .pill-row {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
+  .pill {
+    padding: 15px 16px;
+  }
+
+  .pill strong {
+    font-size: 22px;
+  }
+
+  .lesson-strip {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    margin-top: 22px;
+  }
+
+  .lesson-badge {
+    padding: 16px;
+  }
+
+  .calendar-day {
+    min-height: 56px;
+    border-radius: 12px;
+    font-size: 15px;
+  }
+
+  .weekdays,
+  .calendar-grid,
+  .days-grid {
+    gap: 10px;
+  }
+
+  .slots-grid {
+    grid-template-columns: repeat(5, minmax(0, 1fr));
+  }
+
+  .slots-hour-block {
+    padding: 14px;
+  }
+
+  .bottom-nav {
+    position: fixed;
+    top: 28px;
+    bottom: 28px;
+    left: max(24px, calc((100vw - 1440px) / 2));
+    transform: none;
+    width: 164px;
+    height: auto;
+    border-radius: 22px;
+    display: flex;
+    flex-direction: column;
+    align-items: stretch;
+    gap: 6px;
+    padding: 10px;
+    background: rgba(18, 21, 29, 0.94);
+  }
+
+  .bottom-nav-two,
+  .bottom-nav-five {
+    grid-template-columns: none;
+  }
+
+  .bottom-item {
+    min-height: 48px;
+    padding: 0 12px;
+    display: flex;
+    align-items: center;
+    justify-items: initial;
+    justify-content: flex-start;
+    gap: 10px;
+    text-align: left;
+    font-size: 12px;
+  }
+
+  .bottom-ico {
+    width: 18px;
+    font-size: 18px;
+    text-align: center;
+  }
+
+  .analytics-kpi-grid {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+  }
+
+  .analytics-columns {
+    gap: 18px;
+  }
+
+  .analytics-share-layout {
+    grid-template-columns: minmax(0, 220px) 1fr;
+    gap: 26px;
+  }
+
+  .analytics-donut {
+    width: 196px;
+    height: 196px;
+  }
+
+  .toast-viewport {
+    left: auto;
+    right: 28px;
+    transform: none;
+    width: min(420px, calc(100vw - 240px));
   }
 }

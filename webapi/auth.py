@@ -52,6 +52,31 @@ def verify_init_data(init_data: str, max_age_seconds: int = 60 * 15) -> dict[str
     }
 
 
+def verify_login_widget_data(payload: dict[str, Any], max_age_seconds: int = 60 * 15) -> dict[str, Any]:
+    """Verifies signed data returned by the Telegram Login Widget."""
+    hash_hex = str(payload.get("hash") or "")
+    if not hash_hex:
+        raise ValueError("missing hash")
+    data = {key: value for key, value in payload.items() if key != "hash" and value not in (None, "")}
+    data_check_string = "\n".join(f"{key}={value}" for key, value in sorted(data.items()))
+    secret_key = hashlib.sha256(BOT_TOKEN.encode("utf-8")).digest()
+    calculated = hmac.new(secret_key, data_check_string.encode("utf-8"), hashlib.sha256).hexdigest()
+    if not hmac.compare_digest(calculated, hash_hex):
+        raise ValueError("invalid hash")
+    auth_date = int(data.get("auth_date", 0))
+    now = int(time.time())
+    if auth_date <= 0 or auth_date > now + 60 or now - auth_date > max_age_seconds:
+        raise ValueError("stale auth")
+    return {
+        "telegram_id": int(data["id"]),
+        "username": data.get("username"),
+        "first_name": data.get("first_name"),
+        "last_name": data.get("last_name"),
+        "full_name": " ".join(filter(None, [data.get("first_name"), data.get("last_name")])),
+        "auth_date": auth_date,
+    }
+
+
 def issue_session_token(telegram_id: int, role: str) -> str:
     payload = {
         "sub": telegram_id,

@@ -1,0 +1,47 @@
+services:
+  api:
+    build:
+      context: ../app
+    restart: unless-stopped
+    env_file:
+      - ../app/.env.prod
+    environment:
+      DATABASE_URL: ${DATABASE_URL:?set DATABASE_URL in deploy/cabinet/.env}
+      WEBAPI_PORT: 8000
+      TZ: Europe/Moscow
+      CALENDAR_TIMEZONE: Europe/Moscow
+      MINI_APP_URL: https://crm.befa-robotics.com/cabinet/
+    entrypoint: ["python", "main_webapi.py"]
+    ports:
+      - "127.0.0.1:18000:8000"
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=5)\""]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+
+  frontend:
+    image: node:20-alpine
+    restart: unless-stopped
+    working_dir: /frontend
+    volumes:
+      - ../app/miniapp:/frontend
+    environment:
+      VITE_API_BASE: /cabinet
+      VITE_BASE_PATH: /cabinet/
+      VITE_TELEGRAM_BOT_URL: https://t.me/proffessorit_bot
+    command: sh -c "npm install && npm run build && npx serve -s dist -l 4173"
+    ports:
+      - "127.0.0.1:15173:4173"
+    healthcheck:
+      test: ["CMD-SHELL", "node -e \"fetch('http://127.0.0.1:4173/cabinet/').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))\""]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 45s
+
+networks:
+  default:
+    name: postgres_default
+    external: true

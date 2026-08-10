@@ -9,7 +9,7 @@ from sqlalchemy import case, delete, func, select, text, update
 from sqlalchemy.exc import IntegrityError
 
 from database.connect import Base, engine, session
-from database.models import AnalyticsEvent, DateAvailabilityOverride, Payment, RecordDate, RegularLesson, RegularLessonException, StudentProfile
+from database.models import AdminAuditLog, AnalyticsEvent, DateAvailabilityOverride, Lead, Payment, RecordDate, RegularLesson, RegularLessonException, StudentProfile, WorkingInterval
 from utils.calendar_backend import (
     CalendarBackendError,
     create_booking,
@@ -20,7 +20,7 @@ from utils.calendar_backend import (
     get_calendar_tz,
 )
 from utils.sync_calendar import push_db_events_to_calendar
-from utils.schedule import SLOT_DURATION_MINUTES, SLOT_STEP_MINUTES, get_working_intervals_for_weekday, slots_for_date
+from utils.schedule import SLOT_DURATION_MINUTES, SLOT_STEP_MINUTES, get_working_intervals_for_weekday, refresh_schedule_cache, slots_for_date
 
 logger = logging.getLogger(__name__)
 
@@ -54,6 +54,13 @@ def _compose_full_name(first_name: str | None, last_name: str | None) -> str | N
 async def init_db() -> None:
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+    # SQLite installations before PostgreSQL used additive runtime migrations.
+    # PostgreSQL is created from the complete SQLAlchemy schema, so those
+    # SQLite-only PRAGMA/ALTER statements must never run there.
+    if engine.dialect.name != "sqlite":
+        await _ensure_indexes()
+        await refresh_schedule_cache()
+        return
     await _ensure_event_id_column()
     await _ensure_minute_column()
     await _ensure_record_kind_column()
@@ -67,6 +74,27 @@ async def init_db() -> None:
     await _ensure_analytics_events_table()
     await _ensure_booking_status_columns()
     await _normalize_record_kinds()
+    await _ensure_indexes()
+    await refresh_schedule_cache()
+
+
+async def _ensure_indexes() -> None:
+    statements = (
+        "CREATE INDEX IF NOT EXISTS idx_date_availability_overrides_target_date ON date_availability_overrides(target_date, mode, start_minute, end_minute)",
+        "CREATE INDEX IF NOT EXISTS idx_analytics_events_record_date ON analytics_events(record_date, event_type, telegram_id)",
+        "CREATE INDEX IF NOT EXISTS idx_analytics_events_created_at ON analytics_events(created_at)",
+        "CREATE INDEX IF NOT EXISTS idx_record_dates_date_time ON record_dates(record_date, hour, minute)",
+        "CREATE INDEX IF NOT EXISTS idx_record_dates_telegram_id ON record_dates(telegram_id)",
+        "CREATE INDEX IF NOT EXISTS idx_profiles_name ON student_profiles(full_name)",
+        "CREATE INDEX IF NOT EXISTS idx_profiles_deleted ON student_profiles(is_deleted)",
+        "CREATE INDEX IF NOT EXISTS idx_payments_lesson_date_status ON payments(lesson_date, status)",
+        "CREATE INDEX IF NOT EXISTS idx_payments_tg_date ON payments(telegram_id, lesson_date)",
+        "CREATE INDEX IF NOT EXISTS idx_working_intervals_weekday_active ON working_intervals(weekday, is_active)",
+        "CREATE INDEX IF NOT EXISTS idx_working_intervals_weekday_start_end ON working_intervals(weekday, start_minute, end_minute)",
+    )
+    for statement in statements:
+        await session.execute(text(statement))
+    await session.commit()
 
 
 async def _ensure_event_id_column() -> None:
@@ -565,14 +593,14 @@ async def find_regular_lesson_for_occurrence(
 
 
 async def deleting_records_older_7_days() -> None:
-    sql = text("DELETE FROM record_dates WHERE record_date < datetime('now', '-7 days')")
-    await session.execute(sql)
+    cutoff = datetime.date.today() - datetime.timedelta(days=7)
+    await session.execute(delete(RecordDate).where(RecordDate.record_date < cutoff))
     await session.commit()
 
 
 async def deletes_old_users() -> None:
-    sql = text("DELETE FROM student_profiles WHERE last_visit_date < datetime('now', '-6 month')")
-    await session.execute(sql)
+    cutoff = (datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(days=182)).isoformat()
+    await session.execute(delete(StudentProfile).where(StudentProfile.last_visit_date < cutoff))
     await session.commit()
 
 
@@ -658,6 +686,33 @@ async def upsert_student_profile(
 
     await session.commit()
     return profile
+
+
+async def register_lead_source(telegram_id: int, source: str) -> Lead | None:
+    """Create a single funnel entry from a validated Telegram deep-link source."""
+    source = (source or "").strip().lower()
+    if not source:
+        return None
+    existing = await session.execute(
+        select(Lead).where(Lead.telegram_id == telegram_id).order_by(Lead.id.asc()).limit(1)
+    )
+    lead = existing.scalars().first()
+    if lead:
+        return lead
+    profile = await session.get(StudentProfile, telegram_id)
+    now = datetime.datetime.now(datetime.timezone.utc).isoformat()
+    lead = Lead(
+        telegram_id=telegram_id,
+        full_name=profile.full_name if profile else None,
+        telephone=profile.telephone if profile else None,
+        source=source,
+        stage="new",
+        created_at=now,
+        updated_at=now,
+    )
+    session.add(lead)
+    await session.commit()
+    return lead
 
 
 async def update_visit_date(telegram_id: int) -> None:
@@ -2192,6 +2247,7 @@ async def create_date_availability_override(
     )
     session.add(item)
     await session.commit()
+    await refresh_schedule_cache()
     return {
         "id": int(item.id),
         "date": target_date.isoformat(),
@@ -2208,6 +2264,7 @@ async def delete_date_availability_override(item_id: int) -> bool:
         return False
     await session.delete(item)
     await session.commit()
+    await refresh_schedule_cache()
     return True
 
 

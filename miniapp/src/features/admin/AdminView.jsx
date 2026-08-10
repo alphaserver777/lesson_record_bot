@@ -137,6 +137,9 @@ export function AdminView({ token }) {
   const [broadcast, setBroadcast] = useState('')
   const [broadcastOnlyUnpaid, setBroadcastOnlyUnpaid] = useState(false)
   const [systemHealth, setSystemHealth] = useState(null)
+  const [leads, setLeads] = useState([])
+  const [leadSummary, setLeadSummary] = useState(null)
+  const [leadForm, setLeadForm] = useState({ full_name: '', telephone: '', source: 'direct', direction: '', goal: '', stage: 'new', notes: '' })
   const [backupStatus, setBackupStatus] = useState(null)
   const [workScheduleDays, setWorkScheduleDays] = useState([])
   const [workImpact, setWorkImpact] = useState(null)
@@ -159,8 +162,8 @@ export function AdminView({ token }) {
     ['records', 'Записи', '▥'],
     ['work_schedule', 'Расписание', '▦'],
     ['manage', 'Управление', '◫'],
+    ['leads', 'Воронка', '◉'],
     ['analytics', 'Аналитика', '◷'],
-    ['settings', 'Настройки', '⚙'],
   ]
 
   async function loadUsers(page = usersPage, q = query) {
@@ -173,6 +176,28 @@ export function AdminView({ token }) {
   async function loadClientOptions() {
     const data = await api('/api/admin/users?page=1&page_size=500', { token })
     setClientOptions(data.items || [])
+  }
+
+  async function loadLeads() {
+    const [list, summary] = await Promise.all([
+      api('/api/admin/leads', { token }),
+      api('/api/admin/leads/summary', { token }),
+    ])
+    setLeads(list.items || [])
+    setLeadSummary(summary || null)
+  }
+
+  async function createLead() {
+    const payload = Object.fromEntries(Object.entries(leadForm).filter(([, value]) => String(value || '').trim() !== ''))
+    await api('/api/admin/leads', { token, method: 'POST', body: payload })
+    setLeadForm({ full_name: '', telephone: '', source: 'direct', direction: '', goal: '', stage: 'new', notes: '' })
+    await loadLeads()
+    setSuccess('Лид добавлен в воронку')
+  }
+
+  async function changeLeadStage(lead, stage) {
+    await api(`/api/admin/leads/${lead.id}`, { token, method: 'PATCH', body: { stage } })
+    await loadLeads()
   }
 
   async function loadAnalyticsV2(mode = analyticsMode, anchorDate = analyticsAnchorDate) {
@@ -712,6 +737,10 @@ export function AdminView({ token }) {
     loadAnalyticsV2().catch(e => setError(normalizeErrorMessage(e.message || e)))
   }, [activeTab, analyticsMode, analyticsAnchorDate])
 
+  useEffect(() => {
+    if (activeTab === 'leads') loadLeads().catch(e => setError(normalizeErrorMessage(e.message || e)))
+  }, [activeTab])
+
   const filteredClients = (clientOptions || [])
     .filter(c => {
       const q = clientSearch.trim().toLowerCase()
@@ -781,15 +810,15 @@ export function AdminView({ token }) {
   }
 
   return (
-    <div className="mini-layout">
+    <div className="mini-layout admin-layout">
       <section className="mini-cover">
         <div className="mini-cover-overlay" />
         <div className="mini-cover-head">
           <div className="mini-brand">
-            <div className="brand-logo">AD</div>
+            <div className="brand-logo">P</div>
             <div className="brand-meta">
-              <strong>ADMIN DESK</strong>
-              <span>управление в miniapp</span>
+              <strong>PROFFESSOR IT</strong>
+              <span>панель управления</span>
             </div>
           </div>
           <button className="circle-btn">◌</button>
@@ -1556,6 +1585,38 @@ export function AdminView({ token }) {
                 </button>
               </Card>
             ) : null}
+          </div>
+        ) : null}
+
+        {activeTab === 'leads' ? (
+          <div className="stack">
+            <Card title="Воронка лидов" subtitle="Источники, диагностики и продажи">
+              <div className="pill-row">
+                <Pill label="Всего лидов" value={leadSummary?.total || 0} tone="blue" />
+                <Pill label="Диагностики" value={(leadSummary?.by_source || []).reduce((sum, item) => sum + Number(item.diagnostics || 0), 0)} tone="mint" />
+                <Pill label="Продажи" value={(leadSummary?.by_source || []).reduce((sum, item) => sum + Number(item.won || 0), 0)} tone="violet" />
+              </div>
+              {(leadSummary?.by_source || []).length ? (
+                <ul className="list list-compact" style={{ marginTop: 14 }}>
+                  {leadSummary.by_source.map(item => <li key={item.source}><span>{item.source}</span><strong>{item.leads} лид. · {item.diagnostics} диагн. · {item.won} прод.</strong></li>)}
+                </ul>
+              ) : <div className="empty" style={{ marginTop: 14 }}>Добавьте первое обращение или передайте метку источника через Telegram-ссылку.</div>}
+            </Card>
+            <Card title="Добавить лид" subtitle="Заполняйте сразу после обращения">
+              <div className="stack" style={{ marginTop: 0 }}>
+                <input className="input" value={leadForm.full_name} onChange={e => setLeadForm(v => ({ ...v, full_name: e.target.value }))} placeholder="Имя" />
+                <input className="input" value={leadForm.telephone} onChange={e => setLeadForm(v => ({ ...v, telephone: e.target.value }))} placeholder="Телефон" />
+                <input className="input" value={leadForm.source} onChange={e => setLeadForm(v => ({ ...v, source: e.target.value }))} placeholder="Источник: avito_devops / youtube" />
+                <input className="input" value={leadForm.direction} onChange={e => setLeadForm(v => ({ ...v, direction: e.target.value }))} placeholder="Направление" />
+                <textarea className="input" rows={3} value={leadForm.goal} onChange={e => setLeadForm(v => ({ ...v, goal: e.target.value }))} placeholder="Задача и цель" />
+                <button className="btn" onClick={() => createLead().catch(e => setError(normalizeErrorMessage(e.message || e)))}>Добавить в воронку</button>
+              </div>
+            </Card>
+            <Card title="Текущие обращения" subtitle="Меняйте этап прямо здесь">
+              {leads.length ? <ul className="list list-compact">{leads.map(lead => (
+                <li key={lead.id} className="lead-row"><div><strong>{lead.full_name || lead.telephone || 'Без имени'}</strong><small>{lead.source} · {lead.direction || 'направление не указано'}</small></div><select className="input" value={lead.stage} onChange={e => changeLeadStage(lead, e.target.value).catch(err => setError(normalizeErrorMessage(err.message || err)))}>{['new','qualified','diagnostic_booked','diagnostic_done','offer_sent','won','lost'].map(stage => <option key={stage} value={stage}>{stage}</option>)}</select></li>
+              ))}</ul> : <div className="empty">Лидов пока нет.</div>}
+            </Card>
           </div>
         ) : null}
 

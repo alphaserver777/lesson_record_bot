@@ -3,9 +3,9 @@ from __future__ import annotations
 
 import calendar
 import datetime
+import json
 import logging
 import os
-import sqlite3
 from typing import Any
 
 from aiogram.exceptions import TelegramBadRequest
@@ -24,11 +24,16 @@ from database.connect import (
     rollback_session,
     session,
 )
-from database.models import RecordDate, StudentProfile
+from database.models import Lead, RecordDate, StudentProfile
 from loader import bot
 from utils.calendar_backend import get_busy_intervals, get_calendar_tz
-from utils.schedule import WEEK_SCHEDULE, is_time_in_schedule, slots_for_date
-from webapi.auth import issue_session_token, verify_init_data, verify_session_token
+from utils.schedule import WEEK_SCHEDULE, is_time_in_schedule, refresh_schedule_cache, slots_for_date
+from webapi.auth import (
+    issue_session_token,
+    verify_init_data,
+    verify_login_widget_data,
+    verify_session_token,
+)
 from webapi.probes import router as probes_router
 from webapi.schemas import (
     AdminBlockCreateIn,
@@ -37,10 +42,13 @@ from webapi.schemas import (
     AdminBlockPreviewIn,
     AdminUserPatchIn,
     AuthIn,
+    TelegramWidgetAuthIn,
     BookIn,
     BroadcastIn,
     LessonCloseIn,
     LessonCloseBulkIn,
+    LeadCreateIn,
+    LeadPatchIn,
     ManualPaymentIn,
     RegularLessonIn,
     SingleLessonIn,
@@ -376,13 +384,14 @@ async def _audit(admin_id: int, action: str, entity: str, payload: dict[str, Any
     await session.execute(
         text(
             "INSERT INTO admin_audit_log (admin_id, action, entity, payload_json, created_at) "
-            "VALUES (:admin_id, :action, :entity, :payload_json, datetime('now'))"
+            "VALUES (:admin_id, :action, :entity, :payload_json, :created_at)"
         ),
         {
             "admin_id": admin_id,
             "action": action,
             "entity": entity,
-            "payload_json": str(payload),
+            "payload_json": json.dumps(payload, ensure_ascii=False, default=str),
+            "created_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
         },
     )
     await session.commit()
@@ -412,38 +421,6 @@ async def require_admin(user: dict[str, Any] = Depends(get_current_user)) -> dic
 @app.on_event("startup")
 async def startup() -> None:
     await transactions.init_db()
-    await session.execute(
-        text(
-            "CREATE TABLE IF NOT EXISTS admin_audit_log ("
-            "id INTEGER PRIMARY KEY AUTOINCREMENT,"
-            "admin_id INTEGER NOT NULL,"
-            "action TEXT NOT NULL,"
-            "entity TEXT NOT NULL,"
-            "payload_json TEXT,"
-            "created_at TEXT NOT NULL)"
-        )
-    )
-    await session.execute(text("CREATE INDEX IF NOT EXISTS idx_record_dates_date_time ON record_dates(record_date, hour, minute)"))
-    await session.execute(text("CREATE INDEX IF NOT EXISTS idx_record_dates_telegram_id ON record_dates(telegram_id)"))
-    await session.execute(text("CREATE INDEX IF NOT EXISTS idx_profiles_name ON student_profiles(full_name)"))
-    await session.execute(text("CREATE INDEX IF NOT EXISTS idx_payments_lesson_date_status ON payments(lesson_date, status)"))
-    await session.execute(text("CREATE INDEX IF NOT EXISTS idx_payments_tg_date ON payments(telegram_id, lesson_date)"))
-    await session.execute(text("CREATE INDEX IF NOT EXISTS idx_profiles_deleted ON student_profiles(is_deleted)"))
-    await session.execute(
-        text(
-            "CREATE TABLE IF NOT EXISTS working_intervals ("
-            "id INTEGER PRIMARY KEY AUTOINCREMENT,"
-            "weekday INTEGER NOT NULL,"
-            "start_minute INTEGER NOT NULL,"
-            "end_minute INTEGER NOT NULL,"
-            "is_active INTEGER NOT NULL DEFAULT 1,"
-            "created_at TEXT NOT NULL DEFAULT (datetime('now')),"
-            "updated_at TEXT NOT NULL DEFAULT (datetime('now'))"
-            ")"
-        )
-    )
-    await session.execute(text("CREATE INDEX IF NOT EXISTS idx_working_intervals_weekday_active ON working_intervals(weekday, is_active)"))
-    await session.execute(text("CREATE INDEX IF NOT EXISTS idx_working_intervals_weekday_start_end ON working_intervals(weekday, start_minute, end_minute)"))
 
     # Seed one-time from static fallback if table is empty.
     count_row = await session.execute(text("SELECT COUNT(*) AS c FROM working_intervals"))
@@ -456,11 +433,19 @@ async def startup() -> None:
                 await session.execute(
                     text(
                         "INSERT INTO working_intervals (weekday, start_minute, end_minute, is_active, created_at, updated_at) "
-                        "VALUES (:weekday, :start_minute, :end_minute, 1, datetime('now'), datetime('now'))"
+                        "VALUES (:weekday, :start_minute, :end_minute, :is_active, :created_at, :updated_at)"
                     ),
-                    {"weekday": int(weekday), "start_minute": int(start_min), "end_minute": int(end_min)},
+                    {
+                        "weekday": int(weekday),
+                        "start_minute": int(start_min),
+                        "end_minute": int(end_min),
+                        "is_active": True,
+                        "created_at": datetime.datetime.now().isoformat(),
+                        "updated_at": datetime.datetime.now().isoformat(),
+                    },
                 )
     await session.commit()
+    await refresh_schedule_cache()
     await remove_session()
 
 
@@ -497,6 +482,32 @@ async def auth_telegram(payload: AuthIn) -> dict[str, Any]:
             "role": role,
             "full_name": None,
             "username": data.get("username"),
+        },
+    }
+
+
+@app.post("/api/auth/telegram/login-widget")
+async def auth_telegram_login_widget(payload: TelegramWidgetAuthIn) -> dict[str, Any]:
+    try:
+        data = verify_login_widget_data(payload.model_dump())
+    except (KeyError, ValueError) as exc:
+        raise HTTPException(status_code=401, detail=f"auth failed: {exc}") from exc
+    await transactions.upsert_student_profile(
+        telegram_id=data["telegram_id"],
+        first_name=data.get("first_name"),
+        last_name=data.get("last_name"),
+        username=data.get("username") or None,
+    )
+    await transactions.update_visit_date(data["telegram_id"])
+    role = _role_for_user(data["telegram_id"])
+    return {
+        "access_token": issue_session_token(data["telegram_id"], role),
+        "user": {
+            "telegram_id": data["telegram_id"],
+            "role": role,
+            "full_name": data.get("full_name") or None,
+            "username": data.get("username"),
+            "auth_method": "telegram_widget",
         },
     }
 
@@ -827,6 +838,65 @@ async def admin_patch_user(
             "price": updated.price or 0,
         },
     }
+
+
+def _lead_out(lead: Lead) -> dict[str, Any]:
+    return {
+        "id": lead.id, "telegram_id": lead.telegram_id, "full_name": lead.full_name,
+        "telephone": lead.telephone, "source": lead.source, "utm_medium": lead.utm_medium,
+        "utm_campaign": lead.utm_campaign, "utm_content": lead.utm_content,
+        "direction": lead.direction, "goal": lead.goal, "stage": lead.stage,
+        "diagnostic_at": lead.diagnostic_at, "offer_amount": lead.offer_amount,
+        "paid_amount": lead.paid_amount, "lost_reason": lead.lost_reason,
+        "next_contact_at": lead.next_contact_at, "notes": lead.notes,
+        "created_at": lead.created_at, "updated_at": lead.updated_at,
+    }
+
+
+@app.get("/api/admin/leads")
+async def admin_list_leads(_: dict[str, Any] = Depends(require_admin)) -> dict[str, Any]:
+    result = await session.execute(select(Lead).order_by(Lead.updated_at.desc(), Lead.id.desc()))
+    return {"items": [_lead_out(item) for item in result.scalars().all()]}
+
+
+@app.post("/api/admin/leads")
+async def admin_create_lead(payload: LeadCreateIn, admin: dict[str, Any] = Depends(require_admin)) -> dict[str, Any]:
+    if payload.telegram_id is not None and not await transactions.get_student_profile(payload.telegram_id):
+        raise HTTPException(status_code=422, detail={"code": "PROFILE_NOT_FOUND", "message": "Сначала подтвердите Telegram-профиль ученика"})
+    now = datetime.datetime.now(datetime.timezone.utc).isoformat()
+    lead = Lead(**payload.model_dump(), created_at=now, updated_at=now)
+    session.add(lead)
+    await session.commit()
+    await session.refresh(lead)
+    await _audit(int(admin["sub"]), "create", "lead", {"lead_id": lead.id, "source": lead.source})
+    return {"item": _lead_out(lead)}
+
+
+@app.patch("/api/admin/leads/{lead_id}")
+async def admin_patch_lead(lead_id: int, payload: LeadPatchIn, admin: dict[str, Any] = Depends(require_admin)) -> dict[str, Any]:
+    lead = await session.get(Lead, lead_id)
+    if not lead:
+        raise HTTPException(status_code=404, detail={"code": "NOT_FOUND", "message": "Лид не найден"})
+    for key, value in payload.model_dump(exclude_unset=True).items():
+        setattr(lead, key, value)
+    lead.updated_at = datetime.datetime.now(datetime.timezone.utc).isoformat()
+    await session.commit()
+    await _audit(int(admin["sub"]), "update", "lead", {"lead_id": lead.id, "stage": lead.stage})
+    return {"item": _lead_out(lead)}
+
+
+@app.get("/api/admin/leads/summary")
+async def admin_leads_summary(_: dict[str, Any] = Depends(require_admin)) -> dict[str, Any]:
+    result = await session.execute(select(Lead))
+    items = result.scalars().all()
+    by_source: dict[str, dict[str, int]] = {}
+    for lead in items:
+        row = by_source.setdefault(lead.source or "direct", {"leads": 0, "diagnostics": 0, "won": 0, "paid_amount": 0})
+        row["leads"] += 1
+        row["diagnostics"] += int(lead.stage in {"diagnostic_booked", "diagnostic_done", "offer_sent", "won"})
+        row["won"] += int(lead.stage == "won")
+        row["paid_amount"] += int(lead.paid_amount or 0)
+    return {"total": len(items), "by_source": [{"source": key, **value} for key, value in sorted(by_source.items())]}
 
 
 @app.delete("/api/admin/users/{telegram_id}")
@@ -1181,11 +1251,19 @@ async def admin_put_work_schedule(payload: WorkScheduleIn, admin: dict[str, Any]
             await session.execute(
                 text(
                     "INSERT INTO working_intervals (weekday, start_minute, end_minute, is_active, created_at, updated_at) "
-                    "VALUES (:weekday, :start_minute, :end_minute, 1, datetime('now'), datetime('now'))"
+                    "VALUES (:weekday, :start_minute, :end_minute, :is_active, :created_at, :updated_at)"
                 ),
-                {"weekday": day["weekday"], "start_minute": start_min, "end_minute": end_min},
+                {
+                    "weekday": day["weekday"],
+                    "start_minute": start_min,
+                    "end_minute": end_min,
+                    "is_active": True,
+                    "created_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+                    "updated_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+                },
             )
     await session.commit()
+    await refresh_schedule_cache()
     await _audit(int(admin["sub"]), "update", "work_schedule", {"days": len(days)})
     return await admin_get_work_schedule(admin)
 
@@ -1933,12 +2011,7 @@ async def admin_broadcast(payload: BroadcastIn, admin: dict[str, Any] = Depends(
 async def admin_system_health(_: dict[str, Any] = Depends(require_admin)) -> dict[str, Any]:
     db_ok = True
     try:
-        db_path = os.getenv("DB_PATH", "database/database.db")
-        conn = sqlite3.connect(db_path)
-        cur = conn.cursor()
-        cur.execute("SELECT 1")
-        cur.fetchone()
-        conn.close()
+        await session.execute(text("SELECT 1"))
     except Exception:
         db_ok = False
     return {

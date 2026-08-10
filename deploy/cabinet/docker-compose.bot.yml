@@ -1,0 +1,21 @@
+# Use together with docker-compose.yml. Do not start this service while the
+# Germany2 polling bot is running: one Telegram token may have one poller.
+services:
+  bot:
+    build:
+      context: ../app
+    restart: unless-stopped
+    env_file:
+      - ../app/.env.prod
+    environment:
+      DATABASE_URL: ${DATABASE_URL:?set DATABASE_URL in deploy/cabinet/.env}
+      TZ: Europe/Moscow
+      CALENDAR_TIMEZONE: Europe/Moscow
+      BOT_HEALTH_PORT: 8081
+      MINI_APP_URL: https://crm.befa-robotics.com/cabinet/
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:8081/ready', timeout=5)\""]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s

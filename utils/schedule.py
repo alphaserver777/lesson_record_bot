@@ -7,6 +7,10 @@ import threading
 import time
 from typing import List, Tuple
 
+from sqlalchemy import text
+
+from database.connect import DATABASE_URL, session
+
 # День недели: 0 - Пн ... 6 - Вс
 WEEK_SCHEDULE = {
     0: [("18:30", "23:00")],
@@ -26,6 +30,7 @@ _CACHE_TTL_SEC = 45
 _CACHE_LOCK = threading.Lock()
 _CACHE_TS = 0.0
 _CACHE_MAP: dict[int, list[tuple[str, str]]] | None = None
+_EXTRA_INTERVALS_CACHE: dict[datetime.date, list[tuple[str, str]]] = {}
 logger = logging.getLogger(__name__)
 
 
@@ -43,6 +48,54 @@ def _resolve_db_path() -> str:
     if os.path.isabs(db_path):
         return db_path
     return os.path.abspath(db_path)
+
+
+def _uses_postgresql() -> bool:
+    return DATABASE_URL.startswith("postgresql+")
+
+
+async def refresh_schedule_cache() -> None:
+    """Refreshes synchronous slot-generator caches from the application DB.
+
+    Slot generation is used by legacy synchronous bot helpers. Keeping a small
+    in-process cache lets those helpers work equally with PostgreSQL and the
+    existing SQLite deployment. It is refreshed at startup and after every
+    admin change to availability.
+    """
+    global _CACHE_TS, _CACHE_MAP, _EXTRA_INTERVALS_CACHE
+    rows = await session.execute(
+        text(
+            "SELECT weekday, start_minute, end_minute FROM working_intervals "
+            "WHERE is_active = :active ORDER BY weekday, start_minute, end_minute"
+        ),
+        {"active": True},
+    )
+    schedule_map: dict[int, list[tuple[str, str]]] = {}
+    for row in rows:
+        schedule_map.setdefault(int(row.weekday), []).append(
+            (_minutes_to_hhmm(int(row.start_minute)), _minutes_to_hhmm(int(row.end_minute)))
+        )
+
+    override_rows = await session.execute(
+        text(
+            "SELECT target_date, start_minute, end_minute FROM date_availability_overrides "
+            "WHERE mode = :mode ORDER BY target_date, start_minute, end_minute"
+        ),
+        {"mode": "extra_open"},
+    )
+    extras: dict[datetime.date, list[tuple[str, str]]] = {}
+    for row in override_rows:
+        target_date = row.target_date
+        if isinstance(target_date, str):
+            target_date = datetime.date.fromisoformat(target_date)
+        extras.setdefault(target_date, []).append(
+            (_minutes_to_hhmm(int(row.start_minute)), _minutes_to_hhmm(int(row.end_minute)))
+        )
+
+    with _CACHE_LOCK:
+        _CACHE_MAP = schedule_map
+        _EXTRA_INTERVALS_CACHE = extras
+        _CACHE_TS = time.time()
 
 
 def _load_schedule_from_db() -> dict[int, list[tuple[str, str]]]:
@@ -78,6 +131,8 @@ def _load_schedule_from_db() -> dict[int, list[tuple[str, str]]]:
 
 
 def _load_extra_open_intervals_for_date(target_date: datetime.date) -> list[tuple[str, str]]:
+    if _uses_postgresql():
+        return list(_EXTRA_INTERVALS_CACHE.get(target_date, []))
     path = _resolve_db_path()
     if not os.path.exists(path):
         return []
@@ -108,6 +163,8 @@ def _working_schedule_map() -> dict[int, list[tuple[str, str]]]:
     global _CACHE_TS, _CACHE_MAP
     now = time.time()
     with _CACHE_LOCK:
+        if _uses_postgresql():
+            return _CACHE_MAP or {}
         if _CACHE_MAP is not None and (now - _CACHE_TS) < _CACHE_TTL_SEC:
             return _CACHE_MAP
         try:

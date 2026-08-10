@@ -1,7 +1,9 @@
 """Start handler in minimal bot mode (Mini App entrypoint)."""
 import logging
+import re
 
 from aiogram import exceptions, types
+from aiogram.filters.command import CommandObject
 from aiogram.fsm.context import FSMContext
 from aiogram.types import ReplyKeyboardRemove
 
@@ -12,7 +14,7 @@ from keyboards.inline.miniapp import open_miniapp_kb
 start_logger = logging.getLogger(__name__)
 
 
-async def start_command(message: [types.CallbackQuery, types.Message], state: FSMContext = None) -> None:
+async def start_command(message: [types.CallbackQuery, types.Message], state: FSMContext = None, command: CommandObject | None = None) -> None:
     """Send Mini App entrypoint and keep bot focused on presence notifications only."""
     telegram_id = message.from_user.id
     full_name = message.from_user.full_name
@@ -30,6 +32,14 @@ async def start_command(message: [types.CallbackQuery, types.Message], state: FS
         username=username,
     )
     await transactions.update_visit_date(telegram_id)
+
+    # Telegram limits start payloads to short strings. We store only a validated
+    # source code, e.g. https://t.me/proffessorit_bot?start=src_avito_devops.
+    raw_payload = (command.args if command else "") or ""
+    if raw_payload.startswith("src_"):
+        source = raw_payload.removeprefix("src_")
+        if re.fullmatch(r"[a-zA-Z0-9_-]{1,60}", source):
+            await transactions.register_lead_source(telegram_id, source)
 
     text = (
         "<b>Бот работает в режиме уведомлений.</b>\n"
