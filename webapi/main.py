@@ -1111,6 +1111,7 @@ async def admin_patch_contact(
         raise HTTPException(status_code=404, detail={"code": "NOT_FOUND", "message": "Контакт не найден"})
     updates = payload.model_dump(exclude_unset=True)
     direction = updates.pop("direction", None)
+    telegram_username = updates.pop("telegram_username", None)
     for field, value in updates.items():
         setattr(contact, field, value)
     profile = (
@@ -1123,10 +1124,39 @@ async def admin_patch_contact(
             profile.full_name = _contact_name(contact) or profile.full_name
         if direction is not None:
             profile.direction = direction
+        if telegram_username is not None:
+            profile.telegram_username = telegram_username.strip().lstrip("@") or None
+    if telegram_username is not None:
+        identity = (
+            await session.execute(select(TelegramIdentity).where(TelegramIdentity.contact_id == contact.id))
+        ).scalar_one_or_none()
+        if identity is not None:
+            identity.username = telegram_username.strip().lstrip("@") or None
     contact.updated_at = datetime.datetime.now(datetime.timezone.utc).isoformat()
     await session.commit()
     await _audit(int(admin["sub"]), "update", "contact", {"contact_id": contact.id, **payload.model_dump(exclude_unset=True)})
     return {"status": "ok"}
+
+
+@app.delete("/api/admin/contacts/{contact_id}/profile")
+async def admin_archive_contact_profile(contact_id: int, admin: dict[str, Any] = Depends(require_admin)) -> dict[str, Any]:
+    """Archive a duplicate/inactive student profile without touching history."""
+    contact = await session.get(Contact, contact_id)
+    if contact is None:
+        raise HTTPException(status_code=404, detail={"code": "NOT_FOUND", "message": "Контакт не найден"})
+    profile = (
+        await session.execute(select(StudentProfile).where(StudentProfile.contact_id == contact_id))
+    ).scalar_one_or_none()
+    if profile is None:
+        raise HTTPException(status_code=409, detail={"code": "PROFILE_NOT_FOUND", "message": "У контакта нет профиля ученика"})
+    profile.is_deleted = True
+    profile.blocked = True
+    contact.status = "archived"
+    contact.is_archived = True
+    contact.updated_at = datetime.datetime.now(datetime.timezone.utc).isoformat()
+    await session.commit()
+    await _audit(int(admin["sub"]), "archive", "student_profile", {"contact_id": contact_id, "telegram_id": profile.telegram_id})
+    return {"status": "ok", "contact_id": contact_id}
 
 
 @app.patch("/api/admin/contacts/{contact_id}/funnel-stage")

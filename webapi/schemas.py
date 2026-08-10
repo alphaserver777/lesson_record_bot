@@ -144,6 +144,7 @@ class ContactPatchIn(BaseModel):
     status: str | None = Field(default=None, max_length=24)
     preferred_channel: str | None = Field(default=None, max_length=20)
     direction: str | None = Field(default=None, max_length=100)
+    telegram_username: str | None = Field(default=None, max_length=100)
 
 
 class WorkIntervalIn(BaseModel):

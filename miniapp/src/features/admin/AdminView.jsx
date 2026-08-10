@@ -107,7 +107,7 @@ export function AdminView({ token }) {
   const [navCollapsed, setNavCollapsed] = useState(false)
   const [selectedContact, setSelectedContact] = useState(null)
   const [contactEdit, setContactEdit] = useState({
-    first_name: '', last_name: '', telephone: '', status: 'active', preferred_channel: 'telegram', direction: '',
+    first_name: '', last_name: '', telephone: '', telegram_username: '', status: 'active', preferred_channel: 'telegram', direction: '',
   })
   const [clientOptions, setClientOptions] = useState([])
   const [clientSearch, setClientSearch] = useState('')
@@ -233,6 +233,7 @@ export function AdminView({ token }) {
       first_name: contact.first_name || '',
       last_name: contact.last_name || '',
       telephone: contact.telephone || '',
+      telegram_username: contact.telegram_username || '',
       status: contact.status || 'active',
       preferred_channel: contact.preferred_channel || 'telegram',
       direction: contact.direction || '',
@@ -245,6 +246,16 @@ export function AdminView({ token }) {
     await api(`/api/admin/contacts/${contactId}`, { token, method: 'PATCH', body: contactEdit })
     await Promise.all([selectContact(contactId), loadContacts(contactsPage, contactQuery)])
     setSuccess('Карточка клиента обновлена')
+  }
+
+  async function archiveContactProfile() {
+    const contactId = selectedContact?.contact?.id
+    if (!contactId) return
+    if (!window.confirm('Архивировать профиль ученика? Занятия, оплаты и история останутся в базе.')) return
+    await api(`/api/admin/contacts/${contactId}/profile`, { token, method: 'DELETE' })
+    setSelectedContact(null)
+    await loadContacts(contactsPage, contactQuery)
+    setSuccess('Профиль архивирован, история сохранена')
   }
 
   async function changeContactOpportunityStage(opportunityId, stage) {
@@ -1509,11 +1520,13 @@ export function AdminView({ token }) {
                       <label>Имя<input className="input" value={contactEdit.first_name} onChange={e => setContactEdit(value => ({ ...value, first_name: e.target.value }))} /></label>
                       <label>Фамилия<input className="input" value={contactEdit.last_name} onChange={e => setContactEdit(value => ({ ...value, last_name: e.target.value }))} /></label>
                       <label className="contact-field-wide">Телефон<input className="input" value={contactEdit.telephone} onChange={e => setContactEdit(value => ({ ...value, telephone: e.target.value }))} /></label>
+                      <label className="contact-field-wide">Telegram username<input className="input" value={contactEdit.telegram_username} onChange={e => setContactEdit(value => ({ ...value, telegram_username: e.target.value }))} placeholder="username без @" /></label>
                       <label>Статус<select className="input" value={contactEdit.status} onChange={e => setContactEdit(value => ({ ...value, status: e.target.value }))}><option value="lead">Лид</option><option value="active">Активный</option><option value="student">Ученик</option><option value="archived">Архив</option></select></label>
                       <label>Канал связи<select className="input" value={contactEdit.preferred_channel} onChange={e => setContactEdit(value => ({ ...value, preferred_channel: e.target.value }))}><option value="telegram">Telegram</option><option value="phone">Телефон</option></select></label>
                       {selectedContact.contact?.is_student ? <label className="contact-field-wide">Направление<input className="input" value={contactEdit.direction} onChange={e => setContactEdit(value => ({ ...value, direction: e.target.value }))} placeholder="DevOps, ИБ, Хакер" /></label> : null}
                     </div>
                     <button className="btn contact-save" onClick={() => saveContact().catch(e => setError(normalizeErrorMessage(e.message || e)))}>Сохранить изменения</button>
+                    {selectedContact.contact?.is_student ? <button className="btn secondary contact-save" onClick={() => archiveContactProfile().catch(e => setError(normalizeErrorMessage(e.message || e)))}>Архивировать профиль</button> : null}
 
                 <div className="detail-grid">
                   <div><small>Telegram</small><strong>{selectedContact.contact?.telegram_username ? `@${selectedContact.contact.telegram_username}` : (selectedContact.contact?.telegram_id || 'не привязан')}</strong></div>
