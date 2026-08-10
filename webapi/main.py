@@ -546,6 +546,17 @@ async def user_profile_upsert(payload: UserProfileIn, user: dict[str, Any] = Dep
         last_name=payload.last_name,
         telephone=payload.telephone,
     )
+    identity = (
+        await session.execute(select(TelegramIdentity).where(TelegramIdentity.telegram_id == telegram_id))
+    ).scalar_one_or_none()
+    if identity is not None:
+        contact = await session.get(Contact, identity.contact_id)
+        if contact is not None:
+            contact.first_name = profile.first_name
+            contact.last_name = profile.last_name
+            contact.telephone = profile.telephone
+            contact.updated_at = datetime.datetime.now(datetime.timezone.utc).isoformat()
+            await session.commit()
     return {
         "status": "ok",
         "profile": {
@@ -849,6 +860,23 @@ def _contact_name(contact: Contact) -> str:
     return " ".join(part for part in (contact.last_name, contact.first_name) if part).strip()
 
 
+async def _canonical_names_by_telegram_id(telegram_ids: list[int | None]) -> dict[int, str]:
+    """Return display names from the canonical contact directory, not legacy rows."""
+    ids = {int(item) for item in telegram_ids if item is not None}
+    if not ids:
+        return {}
+    rows = await session.execute(
+        select(TelegramIdentity.telegram_id, Contact)
+        .join(Contact, Contact.id == TelegramIdentity.contact_id)
+        .where(TelegramIdentity.telegram_id.in_(ids))
+    )
+    return {
+        int(telegram_id): name
+        for telegram_id, contact in rows.all()
+        if (name := _contact_name(contact))
+    }
+
+
 def _split_contact_name(full_name: str | None) -> tuple[str | None, str | None]:
     parts = [part for part in (full_name or "").strip().split() if part]
     if len(parts) > 1:
@@ -1085,11 +1113,15 @@ async def admin_patch_contact(
     direction = updates.pop("direction", None)
     for field, value in updates.items():
         setattr(contact, field, value)
-    if direction is not None:
-        profile = (
-            await session.execute(select(StudentProfile).where(StudentProfile.contact_id == contact.id))
-        ).scalar_one_or_none()
-        if profile is not None:
+    profile = (
+        await session.execute(select(StudentProfile).where(StudentProfile.contact_id == contact.id))
+    ).scalar_one_or_none()
+    if profile is not None:
+        if "first_name" in updates or "last_name" in updates:
+            profile.first_name = contact.first_name
+            profile.last_name = contact.last_name
+            profile.full_name = _contact_name(contact) or profile.full_name
+        if direction is not None:
             profile.direction = direction
     contact.updated_at = datetime.datetime.now(datetime.timezone.utc).isoformat()
     await session.commit()
@@ -2215,6 +2247,9 @@ async def admin_unclosed_lessons(
         if len(items) >= limit:
             break
 
+    canonical_names = await _canonical_names_by_telegram_id([item["telegram_id"] for item in items])
+    for item in items:
+        item["full_name"] = canonical_names.get(item["telegram_id"]) or item["full_name"]
     items.sort(key=lambda i: f"{i['date']} {i['time']}", reverse=True)
     return {"items": items, "total": len(items)}
 
@@ -2323,12 +2358,13 @@ async def admin_close_lessons_bulk(payload: LessonCloseBulkIn, admin: dict[str, 
 @app.get("/api/admin/payments/debtors")
 async def admin_debtors(_: dict[str, Any] = Depends(require_admin)) -> dict[str, Any]:
     rows = await transactions.list_unpaid_payments()
+    names = await _canonical_names_by_telegram_id([row[0].telegram_id for row in rows])
     return {
         "items": [
             {
                 "payment_id": r[0].id,
                 "telegram_id": r[0].telegram_id,
-                "full_name": r[0].full_name,
+                "full_name": names.get(int(r[0].telegram_id)) if r[0].telegram_id is not None else r[0].full_name,
                 "date": r[0].lesson_date.isoformat() if hasattr(r[0].lesson_date, "isoformat") else str(r[0].lesson_date),
                 "time": f"{int(r[0].hour):02d}:{int(r[0].minute):02d}",
                 "amount": r[0].amount,
