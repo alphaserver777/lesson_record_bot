@@ -2016,7 +2016,7 @@ async def find_conflicting_lessons(
 
 async def view_clients() -> list[Any]:
     res = await session.execute(
-        select(StudentProfile).where((StudentProfile.is_deleted.is_(None)) | (StudentProfile.is_deleted == 0))
+        select(StudentProfile).where((StudentProfile.is_deleted.is_(None)) | (StudentProfile.is_deleted.is_(False)))
     )
     return res.all()
 
@@ -2077,7 +2077,7 @@ async def del_user(telegram_id: int) -> None:
 
 
 async def search_client(search_text: str) -> list[Any]:
-    base_filter = ((StudentProfile.is_deleted.is_(None)) | (StudentProfile.is_deleted == 0))
+    base_filter = ((StudentProfile.is_deleted.is_(None)) | (StudentProfile.is_deleted.is_(False)))
     res = await session.execute(
         select(StudentProfile).where(base_filter, StudentProfile.telephone.ilike(f'%{search_text}%'))
     )
@@ -3203,7 +3203,7 @@ async def client_activity_for_range(
             Payment.lesson_date <= end_date,
             Payment.status != "canceled",
             Payment.telegram_id.is_not(None),
-            ((StudentProfile.is_deleted.is_(None)) | (StudentProfile.is_deleted == 0) | (StudentProfile.telegram_id.is_(None))),
+            ((StudentProfile.is_deleted.is_(None)) | (StudentProfile.is_deleted.is_(False)) | (StudentProfile.telegram_id.is_(None))),
         )
         .group_by(Payment.telegram_id, func.coalesce(StudentProfile.full_name, Payment.full_name))
         .order_by(func.count(Payment.id).desc())
@@ -3318,7 +3318,7 @@ async def client_revenue_share_for_range(
             Payment.lesson_date <= end_date,
             Payment.status != "canceled",
             Payment.telegram_id.is_not(None),
-            ((StudentProfile.is_deleted.is_(None)) | (StudentProfile.is_deleted == 0) | (StudentProfile.telegram_id.is_(None))),
+            ((StudentProfile.is_deleted.is_(None)) | (StudentProfile.is_deleted.is_(False)) | (StudentProfile.telegram_id.is_(None))),
         )
         .group_by(Payment.telegram_id, func.coalesce(StudentProfile.full_name, Payment.full_name))
         .order_by(
