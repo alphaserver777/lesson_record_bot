@@ -784,6 +784,11 @@ export function AdminView({ token }) {
   }, [])
 
   useEffect(() => {
+    if (activeTab !== 'work_schedule') return
+    loadWorkSchedule().catch(e => setError(String(e.message || e)))
+  }, [activeTab])
+
+  useEffect(() => {
     loadUsers().catch(e => setError(String(e.message || e)))
   }, [usersPage])
 
