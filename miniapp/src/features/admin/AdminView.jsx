@@ -99,6 +99,7 @@ export function AdminView({ token }) {
   const [contactsBoard, setContactsBoard] = useState([])
   const [contactsTotal, setContactsTotal] = useState(0)
   const [contactsPage, setContactsPage] = useState(1)
+  const [contactsView, setContactsView] = useState('table')
   const [selectedContact, setSelectedContact] = useState(null)
   const [contactEdit, setContactEdit] = useState({
     first_name: '', last_name: '', telephone: '', status: 'active', preferred_channel: 'telegram', direction: '',
@@ -1387,6 +1388,10 @@ export function AdminView({ token }) {
         {activeTab === 'contacts' ? (
           <div className="stack">
             <Card title="Клиенты" subtitle="Единый реестр лидов и учеников">
+              <div className="contacts-view-switch" role="group" aria-label="Представление клиентов">
+                <button className={contactsView === 'table' ? 'active' : ''} onClick={() => setContactsView('table')}>Таблица</button>
+                <button className={contactsView === 'kanban' ? 'active' : ''} onClick={() => setContactsView('kanban')}>Канбан</button>
+              </div>
               <div className="custom-row">
                 <input
                   className="input"
@@ -1404,52 +1409,56 @@ export function AdminView({ token }) {
               </div>
             </Card>
 
-            <section className="funnel-board" aria-label="Воронка клиентов">
-              <div className="funnel-board-head"><div><small>CRM-воронка</small><h2>Клиенты по этапам</h2></div><small>Нажмите клиента, чтобы открыть карточку справа</small></div>
-              <div className="funnel-columns">
-                {FUNNEL_STAGES.map(([stage, label]) => {
-                  const stageContacts = contactsBoard.filter(contact => contact.current_stage === stage)
-                  return (
-                    <div className="funnel-column" key={stage}>
-                      <div className="funnel-column-head"><strong>{label}</strong><span>{stageContacts.length}</span></div>
-                      <div className="funnel-cards">
-                        {stageContacts.map(contact => (
-                          <button className="funnel-card" key={contact.id} onClick={() => selectContact(contact.id).catch(e => setError(normalizeErrorMessage(e.message || e)))}>
-                            <strong>{contact.full_name}</strong>
-                            <small>{contact.direction || contact.current_source || (contact.is_student ? 'ученик' : 'без направления')}</small>
-                          </button>
-                        ))}
-                        {!stageContacts.length ? <small className="funnel-empty">Пусто</small> : null}
-                      </div>
-                    </div>
-                  )
-                })}
-              </div>
-            </section>
-
             <div className="contacts-workspace">
-              <section className="contacts-table-panel">
-                <div className="contacts-table-meta">Всего: {contactsTotal}</div>
-                <div className="contacts-table-scroll">
-                  <table className="contacts-table">
-                    <thead>
-                      <tr><th>Клиент</th><th>Телефон</th><th>Telegram</th><th>Этап</th><th>Направление</th><th>Сделки</th></tr>
-                    </thead>
-                    <tbody>
-                      {contacts.map(contact => (
-                        <tr key={contact.id} className={selectedContact?.contact?.id === contact.id ? 'selected' : ''} onClick={() => selectContact(contact.id).catch(e => setError(normalizeErrorMessage(e.message || e)))}>
-                          <td><strong>{contact.full_name}</strong></td>
-                          <td>{contact.telephone || '—'}</td>
-                          <td>{contact.telegram_username ? `@${contact.telegram_username}` : (contact.telegram_id || '—')}</td>
-                          <td><span className={`contact-badge ${contact.current_stage === 'won' ? 'student' : 'lead'}`}>{funnelStageLabel(contact.current_stage)}</span></td>
-                          <td>{contact.direction || '—'}</td>
-                          <td>{contact.opportunities_count || '—'}</td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-                {!contacts.length ? <div className="empty-state">Клиентов пока нет.</div> : null}
+              <section className="contacts-main-panel">
+                {contactsView === 'kanban' ? (
+                  <section className="funnel-board" aria-label="Воронка клиентов">
+                    <div className="funnel-board-head"><div><small>CRM-воронка</small><h2>Клиенты по этапам</h2></div><small>Нажмите клиента, чтобы открыть карточку справа</small></div>
+                    <div className="funnel-columns">
+                      {FUNNEL_STAGES.map(([stage, label]) => {
+                        const stageContacts = contactsBoard.filter(contact => contact.current_stage === stage)
+                        return (
+                          <div className="funnel-column" key={stage}>
+                            <div className="funnel-column-head"><strong>{label}</strong><span>{stageContacts.length}</span></div>
+                            <div className="funnel-cards">
+                              {stageContacts.map(contact => (
+                                <button className="funnel-card" key={contact.id} onClick={() => selectContact(contact.id).catch(e => setError(normalizeErrorMessage(e.message || e)))}>
+                                  <strong>{contact.full_name}</strong>
+                                  <small>{contact.direction || contact.current_source || (contact.is_student ? 'ученик' : 'без направления')}</small>
+                                </button>
+                              ))}
+                              {!stageContacts.length ? <small className="funnel-empty">Пусто</small> : null}
+                            </div>
+                          </div>
+                        )
+                      })}
+                    </div>
+                  </section>
+                ) : (
+                  <section className="contacts-table-panel">
+                    <div className="contacts-table-meta">Всего: {contactsTotal}</div>
+                    <div className="contacts-table-scroll">
+                      <table className="contacts-table">
+                        <thead>
+                          <tr><th>Клиент</th><th>Телефон</th><th>Telegram</th><th>Этап</th><th>Направление</th><th>Сделки</th></tr>
+                        </thead>
+                        <tbody>
+                          {contacts.map(contact => (
+                            <tr key={contact.id} className={selectedContact?.contact?.id === contact.id ? 'selected' : ''} onClick={() => selectContact(contact.id).catch(e => setError(normalizeErrorMessage(e.message || e)))}>
+                              <td><strong>{contact.full_name}</strong></td>
+                              <td>{contact.telephone || '—'}</td>
+                              <td>{contact.telegram_username ? `@${contact.telegram_username}` : (contact.telegram_id || '—')}</td>
+                              <td><span className={`contact-badge ${contact.current_stage === 'won' ? 'student' : 'lead'}`}>{funnelStageLabel(contact.current_stage)}</span></td>
+                              <td>{contact.direction || '—'}</td>
+                              <td>{contact.opportunities_count || '—'}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                    {!contacts.length ? <div className="empty-state">Клиентов пока нет.</div> : null}
+                  </section>
+                )}
               </section>
 
               <aside className="contact-side-panel">

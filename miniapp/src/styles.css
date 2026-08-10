@@ -714,6 +714,37 @@ body {
   align-items: start;
 }
 
+.contacts-main-panel {
+  min-width: 0;
+}
+
+.contacts-view-switch {
+  display: inline-flex;
+  gap: 4px;
+  padding: 4px;
+  border: 1px solid rgba(94, 99, 112, 0.42);
+  border-radius: 11px;
+  background: rgba(15, 18, 25, 0.64);
+}
+
+.contacts-view-switch button {
+  min-height: 32px;
+  padding: 0 12px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: #aeb6c7;
+  font: inherit;
+  font-size: 13px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.contacts-view-switch button.active {
+  color: #f4f7ff;
+  background: #3b4354;
+}
+
 .funnel-board {
   border: 1px solid rgba(94, 99, 112, 0.38);
   border-radius: 16px;
