@@ -40,7 +40,11 @@ function WebEntry({ onAuthenticated }) {
       <p>Записывайтесь на занятия, смотрите расписание и управляйте обучением в одном месте.</p>
       {loginError ? <div className="login-error">{loginError}</div> : null}
       <div className="telegram-login" ref={telegramButtonRef} />
-      <small>Вход выполняется через подтверждённый аккаунт Telegram. Бот не будет открыт.</small>
+      <p className="web-entry-fallback">
+        Не открывается вход через Telegram?{' '}
+        <a href="https://t.me/proffessorit_bot" target="_blank" rel="noreferrer">Откройте кабинет через бота</a>.
+      </p>
+      <small>В боте нажмите «Открыть личный кабинет» — это тот же сайт, но вход произойдёт автоматически.</small>
     </section>
   )
 }
