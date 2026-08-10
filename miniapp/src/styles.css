@@ -709,9 +709,13 @@ body {
 
 .contacts-workspace {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(330px, 0.72fr);
+  grid-template-columns: minmax(0, 1fr);
   gap: 16px;
   align-items: start;
+}
+
+.contacts-workspace.has-selection {
+  grid-template-columns: minmax(0, 1fr) minmax(430px, 0.42fr);
 }
 
 .contacts-main-panel {
@@ -934,6 +938,30 @@ body {
   margin-bottom: 16px;
 }
 
+.contact-panel-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.contact-panel-close {
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  border: 1px solid rgba(139, 151, 173, 0.48);
+  border-radius: 9px;
+  background: transparent;
+  color: #cbd4e4;
+  font-size: 22px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.contact-panel-close:hover {
+  border-color: rgba(255, 139, 160, 0.8);
+  color: #ffb2c0;
+}
+
 .contact-panel-head h2 {
   margin: 4px 0 0;
   font-size: 22px;
@@ -985,6 +1013,10 @@ body {
 
 @media (max-width: 920px) {
   .contacts-workspace {
+    grid-template-columns: 1fr;
+  }
+
+  .contacts-workspace.has-selection {
     grid-template-columns: 1fr;
   }
 

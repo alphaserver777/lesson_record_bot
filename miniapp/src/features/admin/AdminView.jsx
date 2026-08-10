@@ -1409,7 +1409,7 @@ export function AdminView({ token }) {
               </div>
             </Card>
 
-            <div className="contacts-workspace">
+            <div className={`contacts-workspace ${selectedContact ? 'has-selection' : ''}`}>
               <section className="contacts-main-panel">
                 {contactsView === 'kanban' ? (
                   <section className="funnel-board" aria-label="Воронка клиентов">
@@ -1461,12 +1461,11 @@ export function AdminView({ token }) {
                 )}
               </section>
 
-              <aside className="contact-side-panel">
-                {selectedContact ? (
-                  <>
+              {selectedContact ? (
+                <aside className="contact-side-panel">
                     <div className="contact-panel-head">
                       <div><small>Карточка клиента</small><h2>{selectedContact.contact?.full_name || 'Без имени'}</h2></div>
-                      <span className={`contact-badge ${selectedContact.contact?.is_student ? 'student' : 'lead'}`}>{selectedContact.contact?.is_student ? 'Ученик' : 'Лид'}</span>
+                      <div className="contact-panel-actions"><span className={`contact-badge ${selectedContact.contact?.is_student ? 'student' : 'lead'}`}>{selectedContact.contact?.is_student ? 'Ученик' : 'Лид'}</span><button className="contact-panel-close" onClick={() => setSelectedContact(null)} aria-label="Закрыть карточку клиента">×</button></div>
                     </div>
                     <div className="contact-edit-form">
                       <label>Имя<input className="input" value={contactEdit.first_name} onChange={e => setContactEdit(value => ({ ...value, first_name: e.target.value }))} /></label>
@@ -1498,9 +1497,8 @@ export function AdminView({ token }) {
                 {selectedContact.payments?.length ? <ul className="list list-compact">{selectedContact.payments.map((item, index) => (
                   <li key={`${item.date}-${index}`}><strong>{item.date}</strong><small>{formatMoneyShort(item.amount)} · {item.status}</small></li>
                 ))}</ul> : <small>Оплат пока нет.</small>}
-                  </>
-                ) : <div className="contact-panel-empty"><strong>Выберите клиента</strong><small>Нажмите строку в таблице, чтобы открыть карточку справа.</small></div>}
-              </aside>
+                </aside>
+              ) : null}
             </div>
           </div>
         ) : null}
