@@ -600,7 +600,18 @@ async def deleting_records_older_7_days() -> None:
 
 async def deletes_old_users() -> None:
     cutoff = (datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(days=182)).isoformat()
-    await session.execute(delete(StudentProfile).where(StudentProfile.last_visit_date < cutoff))
+    # A Telegram account may be inactive while the student still has a
+    # recurring lesson.  Removing that profile detaches the lesson from the
+    # client and makes it disappear from the schedule.
+    active_regular_students = select(RegularLesson.telegram_id).where(
+        RegularLesson.telegram_id.is_not(None)
+    )
+    await session.execute(
+        delete(StudentProfile).where(
+            StudentProfile.last_visit_date < cutoff,
+            StudentProfile.telegram_id.not_in(active_regular_students),
+        )
+    )
     await session.commit()
 
 
