@@ -749,6 +749,11 @@ body {
   background: #3b4354;
 }
 
+.contacts-toolbar-controls {
+  display: grid;
+  gap: 10px;
+}
+
 .funnel-board {
   border: 1px solid rgba(94, 99, 112, 0.38);
   border-radius: 16px;
@@ -809,7 +814,7 @@ body {
 
 .funnel-columns {
   display: grid;
-  grid-template-columns: repeat(7, minmax(165px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
   gap: 10px;
   overflow-x: auto;
   padding-bottom: 4px;
@@ -847,6 +852,7 @@ body {
   margin-top: 10px;
   max-height: 238px;
   overflow-y: auto;
+  overflow-x: hidden;
   padding-right: 3px;
 }
 
@@ -2350,6 +2356,37 @@ body {
 
   .admin-layout .analytics-stack {
     max-width: none;
+  }
+
+  .contacts-toolbar {
+    padding: 16px 22px;
+  }
+
+  .contacts-toolbar .card-head {
+    margin-bottom: 10px;
+  }
+
+  .contacts-toolbar .card-head h3 {
+    font-size: 18px;
+  }
+
+  .contacts-toolbar-controls {
+    grid-template-columns: auto minmax(380px, 1fr) 250px;
+    align-items: center;
+  }
+
+  .contacts-toolbar .custom-row,
+  .contacts-toolbar .mini-actions-row {
+    margin-top: 0;
+  }
+
+  .contacts-toolbar .mini-actions-row {
+    display: flex;
+    gap: 8px;
+  }
+
+  .contacts-toolbar .mini-actions-row .btn {
+    flex: 1 1 0;
   }
 
   .admin-tabs {

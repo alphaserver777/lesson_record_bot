@@ -1418,25 +1418,27 @@ export function AdminView({ token }) {
 
         {activeTab === 'contacts' ? (
           <div className="stack">
-            <Card title="Клиенты" subtitle="Единый реестр лидов и учеников">
-              <div className="contacts-view-switch" role="group" aria-label="Представление клиентов">
-                <button className={contactsView === 'table' ? 'active' : ''} onClick={() => setContactsView('table')}>Таблица</button>
-                <button className={contactsView === 'kanban' ? 'active' : ''} onClick={() => setContactsView('kanban')}>Канбан</button>
-              </div>
-              <div className="custom-row">
-                <input
-                  className="input"
-                  value={contactQuery}
-                  onChange={e => setContactQuery(e.target.value)}
-                  placeholder="Имя, телефон или Telegram username"
-                />
-                <button className="btn" onClick={() => { setContactsPage(1); loadContacts(1, contactQuery).catch(e => setError(normalizeErrorMessage(e.message || e))) }}>
-                  Поиск
-                </button>
-              </div>
-              <div className="mini-actions-row">
-                <button className="btn secondary" disabled={contactsPage <= 1} onClick={() => setContactsPage(page => Math.max(1, page - 1))}>← Стр.</button>
-                <button className="btn secondary" disabled={contacts.length < 20} onClick={() => setContactsPage(page => page + 1)}>Стр. →</button>
+            <Card className="contacts-toolbar" title="Клиенты" subtitle="Единый реестр лидов и учеников">
+              <div className="contacts-toolbar-controls">
+                <div className="contacts-view-switch" role="group" aria-label="Представление клиентов">
+                  <button className={contactsView === 'table' ? 'active' : ''} onClick={() => setContactsView('table')}>Таблица</button>
+                  <button className={contactsView === 'kanban' ? 'active' : ''} onClick={() => setContactsView('kanban')}>Канбан</button>
+                </div>
+                <div className="custom-row">
+                  <input
+                    className="input"
+                    value={contactQuery}
+                    onChange={e => setContactQuery(e.target.value)}
+                    placeholder="Имя, телефон или Telegram username"
+                  />
+                  <button className="btn" onClick={() => { setContactsPage(1); loadContacts(1, contactQuery).catch(e => setError(normalizeErrorMessage(e.message || e))) }}>
+                    Поиск
+                  </button>
+                </div>
+                <div className="mini-actions-row">
+                  <button className="btn secondary" disabled={contactsPage <= 1} onClick={() => setContactsPage(page => Math.max(1, page - 1))}>← Стр.</button>
+                  <button className="btn secondary" disabled={contacts.length < 20} onClick={() => setContactsPage(page => page + 1)}>Стр. →</button>
+                </div>
               </div>
             </Card>
 
