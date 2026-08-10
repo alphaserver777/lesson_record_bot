@@ -348,7 +348,7 @@ async def _current_intervals_map() -> dict[int, list[tuple[int, int]]]:
         text(
             "SELECT weekday, start_minute, end_minute "
             "FROM working_intervals "
-            "WHERE is_active = 1 "
+            "WHERE is_active IS TRUE "
             "ORDER BY weekday, start_minute, end_minute"
         )
     )
