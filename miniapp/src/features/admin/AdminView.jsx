@@ -53,6 +53,18 @@ function analyticsModeLabel(mode) {
   return mode === 'week' ? 'неделя' : 'месяц'
 }
 
+const MARKETING_ROLE_LABELS = {
+  new: 'Новые лиды', qualified: 'Квалифицированы', diagnostic_scheduled: 'Диагностика назначена',
+  diagnostic_held: 'Диагностика проведена', offer: 'Предложение', won: 'Оплата', lost: 'Потеря',
+}
+
+function metricValue(value, kind = 'number') {
+  if (value === null || value === undefined) return 'нет данных'
+  if (kind === 'money') return formatMoneyShort(value)
+  if (kind === 'percent') return `${Number(value).toLocaleString('ru-RU')}%`
+  return Number(value).toLocaleString('ru-RU')
+}
+
 function signalLabel(signal) {
   if (signal === 'progress') return 'Прогресс'
   if (signal === 'regress') return 'Регресс'
@@ -90,6 +102,19 @@ export function AdminView({ token }) {
   const [analyticsRevenueShare, setAnalyticsRevenueShare] = useState({ total_paid: 0, items: [] })
   const [analyticsV2, setAnalyticsV2] = useState(null)
   const [analyticsLoading, setAnalyticsLoading] = useState(false)
+  const [analyticsView, setAnalyticsView] = useState('business')
+  const [marketingMetrics, setMarketingMetrics] = useState(null)
+  const [marketingSources, setMarketingSources] = useState([])
+  const [marketingCampaigns, setMarketingCampaigns] = useState([])
+  const [marketingLoading, setMarketingLoading] = useState(false)
+  const [marketingFilters, setMarketingFilters] = useState(() => ({
+    date_from: new Date(new Date().getFullYear(), new Date().getMonth(), 1).toISOString().slice(0, 10),
+    date_to: new Date().toISOString().slice(0, 10), source_key: '', campaign: '', direction: '',
+  }))
+  const [expenseForm, setExpenseForm] = useState(() => ({
+    spent_at: new Date().toISOString().slice(0, 10), source_key: 'avito', campaign_id: '', category: 'placement', amount: '', note: '',
+  }))
+  const [campaignName, setCampaignName] = useState('')
   const [query, setQuery] = useState('')
   const [usersPage, setUsersPage] = useState(1)
   const [users, setUsers] = useState([])
@@ -266,6 +291,13 @@ export function AdminView({ token }) {
     setSuccess('Этап воронки обновлён')
   }
 
+  async function patchOpportunityMarketing(opportunityId, payload) {
+    const contactId = selectedContact?.contact?.id
+    await api(`/api/admin/opportunities/${opportunityId}/marketing`, { token, method: 'PATCH', body: payload })
+    if (contactId) await selectContact(contactId)
+    setSuccess('Маркетинговые данные сделки обновлены')
+  }
+
   async function moveContactToStage(contactId, stage) {
     await api(`/api/admin/contacts/${contactId}/funnel-stage`, { token, method: 'PATCH', body: { stage } })
     await loadContacts(contactsPage, contactQuery)
@@ -274,7 +306,7 @@ export function AdminView({ token }) {
   }
 
   async function saveStage(stage) {
-    await api(`/api/admin/funnel/stages/${stage.key}`, { token, method: 'PATCH', body: { name: stage.name } })
+    await api(`/api/admin/funnel/stages/${stage.key}`, { token, method: 'PATCH', body: { name: stage.name, metric_role: stage.metric_role || 'new' } })
     await loadContacts(contactsPage, contactQuery)
   }
 
@@ -329,6 +361,38 @@ export function AdminView({ token }) {
     } finally {
       setAnalyticsLoading(false)
     }
+  }
+
+  async function loadMarketingAnalytics() {
+    setMarketingLoading(true)
+    try {
+      const params = new URLSearchParams(Object.entries(marketingFilters).filter(([, value]) => value))
+      const [metrics, sources, campaigns] = await Promise.all([
+        api(`/api/admin/analytics/marketing?${params}`, { token }),
+        api('/api/admin/marketing/sources', { token }),
+        api('/api/admin/marketing/campaigns', { token }),
+      ])
+      setMarketingMetrics(metrics || null)
+      setMarketingSources(sources.items || [])
+      setMarketingCampaigns(campaigns.items || [])
+    } finally {
+      setMarketingLoading(false)
+    }
+  }
+
+  async function createMarketingExpense() {
+    await api('/api/admin/marketing/expenses', { token, method: 'POST', body: { ...expenseForm, campaign_id: expenseForm.campaign_id ? Number(expenseForm.campaign_id) : null, amount: Number(expenseForm.amount) } })
+    setExpenseForm(value => ({ ...value, amount: '', note: '' }))
+    await loadMarketingAnalytics()
+    setSuccess('Маркетинговый расход добавлен')
+  }
+
+  async function createMarketingCampaign() {
+    if (!campaignName.trim()) return
+    await api('/api/admin/marketing/campaigns', { token, method: 'POST', body: { source_key: expenseForm.source_key, name: campaignName.trim() } })
+    setCampaignName('')
+    await loadMarketingAnalytics()
+    setSuccess('Кампания добавлена')
   }
 
   async function selectUser(telegramId) {
@@ -845,6 +909,11 @@ export function AdminView({ token }) {
     if (activeTab !== 'analytics') return
     loadAnalyticsV2().catch(e => setError(normalizeErrorMessage(e.message || e)))
   }, [activeTab, analyticsMode, analyticsAnchorDate])
+
+  useEffect(() => {
+    if (activeTab !== 'analytics' || analyticsView !== 'marketing') return
+    loadMarketingAnalytics().catch(e => setError(normalizeErrorMessage(e.message || e)))
+  }, [activeTab, analyticsView])
 
   useEffect(() => {
     if (activeTab === 'leads') loadLeads().catch(e => setError(normalizeErrorMessage(e.message || e)))
@@ -1462,7 +1531,7 @@ export function AdminView({ token }) {
                 {contactsView === 'kanban' ? (
                   <section className="funnel-board" aria-label="Воронка клиентов">
                     <div className="funnel-board-head"><div><small>CRM-воронка</small><h2>Клиенты по этапам</h2></div><div className="funnel-board-actions"><small>Перетащите клиента в нужную колонку</small><button className="btn secondary compact" onClick={() => setStageSettingsOpen(value => !value)}>{stageSettingsOpen ? 'Закрыть этапы' : 'Настроить этапы'}</button></div></div>
-                    {stageSettingsOpen ? <div className="stage-settings"><strong>Этапы воронки</strong><small>Название можно изменить. Удаление доступно только для пустого этапа.</small><div className="stage-settings-list">{funnelStages.map(stage => <div className="stage-settings-row" key={stage.key}><input className="input" value={stage.name} onChange={e => setFunnelStages(items => items.map(item => item.key === stage.key ? { ...item, name: e.target.value } : item))} onBlur={() => saveStage(stage).catch(error => setError(normalizeErrorMessage(error.message || error)))} /><button className="btn secondary compact" onClick={() => saveStage(stage).catch(error => setError(normalizeErrorMessage(error.message || error)))}>Сохранить</button><button className="btn secondary compact" onClick={() => deleteStage(stage.key).catch(error => setError(normalizeErrorMessage(error.message || error)))}>Удалить</button></div>)}</div><div className="stage-add-row"><input className="input" value={newStageName} onChange={e => setNewStageName(e.target.value)} placeholder="Новый этап" /><button className="btn compact" onClick={() => addStage().catch(error => setError(normalizeErrorMessage(error.message || error)))}>Добавить</button></div></div> : null}
+                    {stageSettingsOpen ? <div className="stage-settings"><strong>Этапы воронки</strong><small>Название и бизнес-смысл редактируются отдельно; это сохраняет аналитику при переименовании.</small><div className="stage-settings-list">{funnelStages.map(stage => <div className="stage-settings-row" key={stage.key}><input className="input" value={stage.name} onChange={e => setFunnelStages(items => items.map(item => item.key === stage.key ? { ...item, name: e.target.value } : item))} /><select className="input" value={stage.metric_role || 'new'} onChange={e => setFunnelStages(items => items.map(item => item.key === stage.key ? { ...item, metric_role: e.target.value } : item))}>{Object.entries(MARKETING_ROLE_LABELS).map(([key, label]) => <option key={key} value={key}>{label}</option>)}</select><button className="btn secondary compact" onClick={() => saveStage(stage).catch(error => setError(normalizeErrorMessage(error.message || error)))}>Сохранить</button><button className="btn secondary compact" onClick={() => deleteStage(stage.key).catch(error => setError(normalizeErrorMessage(error.message || error)))}>Удалить</button></div>)}</div><div className="stage-add-row"><input className="input" value={newStageName} onChange={e => setNewStageName(e.target.value)} placeholder="Новый этап" /><button className="btn compact" onClick={() => addStage().catch(error => setError(normalizeErrorMessage(error.message || error)))}>Добавить</button></div></div> : null}
                     <div className="funnel-columns">
                       {funnelStages.map(stage => {
                         const stageContacts = contactsBoard.filter(contact => contact.current_stage === stage.key)
@@ -1536,7 +1605,7 @@ export function AdminView({ token }) {
 
                 <h3>Сделки</h3>
                 {selectedContact.opportunities?.length ? <ul className="list list-compact">{selectedContact.opportunities.map(item => (
-                  <li key={item.id} className="contact-opportunity-row"><div><strong>{item.direction || 'Направление не указано'}</strong><small>{item.source}{item.next_contact_at ? ` · следующий контакт: ${item.next_contact_at}` : ''}</small></div><select className="input" value={item.stage} onChange={e => changeContactOpportunityStage(item.id, e.target.value).catch(err => setError(normalizeErrorMessage(err.message || err)))}>{funnelStages.map(stage => <option key={stage.key} value={stage.key}>{stage.name}</option>)}</select></li>
+                  <li key={item.id} className="contact-opportunity-row"><div><strong>{item.direction || 'Направление не указано'}</strong><small>{item.source}{item.next_contact_at ? ` · следующий контакт: ${item.next_contact_at}` : ''}</small><div className="custom-row" style={{ marginTop: 8 }}><input className="input" defaultValue={item.utm_campaign || ''} placeholder="Кампания" onBlur={e => patchOpportunityMarketing(item.id, { campaign: e.target.value || null }).catch(err => setError(normalizeErrorMessage(err.message || err)))} /><input className="input" type="datetime-local" defaultValue={item.diagnostic_scheduled_at || ''} onBlur={e => patchOpportunityMarketing(item.id, { diagnostic_scheduled_at: e.target.value || null }).catch(err => setError(normalizeErrorMessage(err.message || err)))} /><button className="btn secondary compact" onClick={() => patchOpportunityMarketing(item.id, { diagnostic_held_at: new Date().toISOString().slice(0, 16) }).catch(err => setError(normalizeErrorMessage(err.message || err)))}>Диагностика проведена</button></div></div><select className="input" value={item.stage} onChange={e => changeContactOpportunityStage(item.id, e.target.value).catch(err => setError(normalizeErrorMessage(err.message || err)))}>{funnelStages.map(stage => <option key={stage.key} value={stage.key}>{stage.name}</option>)}</select></li>
                 ))}</ul> : <small>Коммерческих сделок пока нет.</small>}
 
                 <h3>Ближайшая история занятий</h3>
@@ -1857,6 +1926,40 @@ export function AdminView({ token }) {
 
         {activeTab === 'analytics' ? (
           <div className="stack analytics-stack">
+            <Card title="Аналитика" subtitle="Бизнес-показатели и эффективность маркетинга">
+              <div className="segmented">
+                <button className={analyticsView === 'business' ? 'seg active' : 'seg'} onClick={() => setAnalyticsView('business')}>Бизнес</button>
+                <button className={analyticsView === 'marketing' ? 'seg active' : 'seg'} onClick={() => setAnalyticsView('marketing')}>Маркетинг</button>
+              </div>
+            </Card>
+            {analyticsView === 'marketing' ? (
+              <>
+                <Card title="Эффективность маркетинга" subtitle="Первое касание клиента определяет источник выручки навсегда">
+                  <div className="custom-row">
+                    <input type="date" className="input" value={marketingFilters.date_from} onChange={e => setMarketingFilters(v => ({ ...v, date_from: e.target.value }))} />
+                    <input type="date" className="input" value={marketingFilters.date_to} onChange={e => setMarketingFilters(v => ({ ...v, date_to: e.target.value }))} />
+                    <select className="input" value={marketingFilters.source_key} onChange={e => setMarketingFilters(v => ({ ...v, source_key: e.target.value, campaign: '' }))}><option value="">Все источники</option>{marketingSources.map(item => <option key={item.key} value={item.key}>{item.name}</option>)}</select>
+                    <select className="input" value={marketingFilters.campaign} onChange={e => setMarketingFilters(v => ({ ...v, campaign: e.target.value }))}><option value="">Все кампании</option>{marketingCampaigns.filter(item => !marketingFilters.source_key || item.source_key === marketingFilters.source_key).map(item => <option key={item.id} value={item.name}>{item.name}</option>)}</select>
+                    <input className="input" value={marketingFilters.direction} onChange={e => setMarketingFilters(v => ({ ...v, direction: e.target.value }))} placeholder="Направление" />
+                    <button className="btn" onClick={() => loadMarketingAnalytics().catch(e => setError(normalizeErrorMessage(e.message || e)))}>Обновить</button>
+                  </div>
+                  {marketingLoading ? <div className="loading">Считаем маркетинг...</div> : null}
+                  {marketingMetrics ? <div className="analytics-kpi-grid" style={{ marginTop: 14 }}>
+                    {[
+                      ['Расходы', marketingMetrics.kpi?.spend, 'money'], ['Лиды', marketingMetrics.kpi?.leads], ['Квалифицированы', marketingMetrics.kpi?.qualified], ['Диагностики назначены', marketingMetrics.kpi?.diagnostics_scheduled], ['Диагностики проведены', marketingMetrics.kpi?.diagnostics_held], ['Новые клиенты', marketingMetrics.kpi?.new_clients], ['Первая выручка', marketingMetrics.kpi?.first_revenue, 'money'], ['Выручка периода', marketingMetrics.kpi?.cash_revenue, 'money'], ['CPL', marketingMetrics.kpi?.cpl, 'money'], ['Стоимость квалиф. лида', marketingMetrics.kpi?.cpql, 'money'], ['CAC', marketingMetrics.kpi?.cac, 'money'], ['Средний первый платёж', marketingMetrics.kpi?.avg_first_payment, 'money'], ['ROMI', marketingMetrics.kpi?.romi, 'percent'],
+                    ].map(([label, value, kind]) => <div className="analytics-kpi-card" key={label}><span>{label}</span><strong>{metricValue(value, kind)}</strong></div>)}
+                  </div> : <div className="placeholder-box">Выберите период и обновите отчёт.</div>}
+                </Card>
+                <Card title="Маркетинговая воронка" subtitle="Конверсия от лидов к бизнес-этапу">
+                  <div className="analytics-kpi-grid">{(marketingMetrics?.funnel || []).map(item => <div className="analytics-kpi-card" key={item.role}><span>{MARKETING_ROLE_LABELS[item.role] || item.role}</span><strong>{item.count}</strong><small>{item.conversion_from_leads === null ? 'нет данных' : `${item.conversion_from_leads}% от лидов`}</small></div>)}</div>
+                </Card>
+                <Card title="Источники и кампании" subtitle="Расходы и выручка по первому касанию">
+                  {(marketingMetrics?.rows || []).length ? <div className="contacts-table-wrap"><table className="contacts-table"><thead><tr><th>Источник</th><th>Расход</th><th>Лиды</th><th>Диагн.</th><th>Клиенты</th><th>Выручка</th><th>CAC</th><th>ROMI</th><th>LTV</th></tr></thead><tbody>{marketingMetrics.rows.map(row => <tr key={row.source_key}><td>{row.source_name}</td><td>{metricValue(row.spend, 'money')}</td><td>{row.leads}</td><td>{row.diagnostics_held}</td><td>{row.new_clients}</td><td>{metricValue(row.cash_revenue, 'money')}</td><td>{metricValue(row.cac, 'money')}</td><td>{metricValue(row.romi, 'percent')}</td><td>{metricValue(row.ltv, 'money')}</td></tr>)}</tbody></table></div> : <div className="placeholder-box">Нет источников или расходов за период.</div>}
+                </Card>
+                <Card title="Качество данных" subtitle="Что нужно заполнить, чтобы решения были точными"><div className="pill-row"><Pill label="Контакты: неизвестный источник" value={marketingMetrics?.data_quality?.contacts_unknown_source ?? '—'} tone="violet" /><Pill label="Нет кампании" value={marketingMetrics?.data_quality?.contacts_missing_campaign ?? '—'} tone="violet" /><Pill label="Нет следующего действия" value={marketingMetrics?.data_quality?.opportunities_missing_next_contact ?? '—'} tone="violet" /></div></Card>
+                <Card title="Добавить расход" subtitle="Только маркетинговые вложения: размещение, реклама, контент, подрядчики"><div className="custom-row"><input type="date" className="input" value={expenseForm.spent_at} onChange={e => setExpenseForm(v => ({ ...v, spent_at: e.target.value }))} /><select className="input" value={expenseForm.source_key} onChange={e => setExpenseForm(v => ({ ...v, source_key: e.target.value, campaign_id: '' }))}>{marketingSources.map(item => <option key={item.key} value={item.key}>{item.name}</option>)}</select><select className="input" value={expenseForm.campaign_id} onChange={e => setExpenseForm(v => ({ ...v, campaign_id: e.target.value }))}><option value="">Без кампании</option>{marketingCampaigns.filter(item => item.source_key === expenseForm.source_key).map(item => <option key={item.id} value={item.id}>{item.name}</option>)}</select><select className="input" value={expenseForm.category} onChange={e => setExpenseForm(v => ({ ...v, category: e.target.value }))}><option value="placement">Размещение</option><option value="advertising">Реклама</option><option value="content">Контент</option><option value="contractor">Подрядчик</option></select><input className="input" type="number" min="1" value={expenseForm.amount} onChange={e => setExpenseForm(v => ({ ...v, amount: e.target.value }))} placeholder="Сумма, ₽" /><input className="input" value={expenseForm.note} onChange={e => setExpenseForm(v => ({ ...v, note: e.target.value }))} placeholder="Комментарий" /><button className="btn" onClick={() => createMarketingExpense().catch(e => setError(normalizeErrorMessage(e.message || e)))}>Добавить</button></div><div className="custom-row" style={{ marginTop: 10 }}><input className="input" value={campaignName} onChange={e => setCampaignName(e.target.value)} placeholder="Название новой кампании для выбранного источника" /><button className="btn secondary" onClick={() => createMarketingCampaign().catch(e => setError(normalizeErrorMessage(e.message || e)))}>Создать кампанию</button></div></Card>
+              </>
+            ) : <>
             <Card title="Аналитика" subtitle="Клиенты, финансы и динамика">
               <div className="segmented">
                 <button className={analyticsMode === 'week' ? 'seg active' : 'seg'} onClick={() => setAnalyticsMode('week')}>Неделя</button>
@@ -2138,6 +2241,7 @@ export function AdminView({ token }) {
                 <div className="placeholder-box">Блок ценности учеников ещё не загружен.</div>
               )}
             </Card>
+            </>}
           </div>
         ) : null}
 
