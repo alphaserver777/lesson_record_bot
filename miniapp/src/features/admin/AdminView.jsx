@@ -166,7 +166,7 @@ export function AdminView({ token }) {
   const adminTabs = [
     ['records', 'Записи', '▥'],
     ['work_schedule', 'Расписание', '▦'],
-    ['contacts', 'Контакты', '◌'],
+    ['contacts', 'Клиенты', '◌'],
     ['manage', 'Управление', '◫'],
     ['leads', 'Воронка', '◉'],
     ['analytics', 'Аналитика', '◷'],
@@ -1342,7 +1342,7 @@ export function AdminView({ token }) {
 
         {activeTab === 'contacts' ? (
           <div className="stack">
-            <Card title="Контакты" subtitle="Единый реестр лидов и учеников">
+            <Card title="Клиенты" subtitle="Единый реестр лидов и учеников">
               <div className="custom-row">
                 <input
                   className="input"
@@ -1371,7 +1371,7 @@ export function AdminView({ token }) {
                   </li>
                 ))}
               </ul>
-              {!contacts.length ? <div className="empty-state">Контактов пока нет.</div> : null}
+              {!contacts.length ? <div className="empty-state">Клиентов пока нет.</div> : null}
             </Card>
 
             {selectedContact ? (
