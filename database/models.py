@@ -194,6 +194,18 @@ class Opportunity(Base):
     updated_at = Column(String(50), nullable=False)
 
 
+class FunnelStage(Base):
+    """Administrator-configurable columns of the commercial kanban."""
+
+    __tablename__ = "funnel_stages"
+
+    key = Column(String(48), primary_key=True)
+    name = Column(String(100), nullable=False)
+    sort_order = Column(Integer, nullable=False, default=0, index=True)
+    created_at = Column(String(50), nullable=False)
+    updated_at = Column(String(50), nullable=False)
+
+
 class Payment(Base):
     __tablename__ = "payments"
     __table_args__ = {'extend_existing': True}

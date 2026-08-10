@@ -6,6 +6,7 @@ import datetime
 import json
 import logging
 import os
+from uuid import uuid4
 from typing import Any
 
 from aiogram.exceptions import TelegramBadRequest
@@ -24,7 +25,7 @@ from database.connect import (
     rollback_session,
     session,
 )
-from database.models import Contact, Opportunity, RecordDate, StudentProfile, TelegramIdentity
+from database.models import Contact, FunnelStage, Opportunity, RecordDate, StudentProfile, TelegramIdentity
 from loader import bot
 from utils.calendar_backend import get_busy_intervals, get_calendar_tz
 from utils.schedule import WEEK_SCHEDULE, is_time_in_schedule, refresh_schedule_cache, slots_for_date
@@ -46,8 +47,11 @@ from webapi.schemas import (
     BookIn,
     BroadcastIn,
     ContactPatchIn,
+    ContactFunnelStageIn,
     LessonCloseIn,
     LessonCloseBulkIn,
+    FunnelStageCreateIn,
+    FunnelStagePatchIn,
     LeadCreateIn,
     LeadPatchIn,
     ManualPaymentIn,
@@ -852,6 +856,75 @@ def _split_contact_name(full_name: str | None) -> tuple[str | None, str | None]:
     return (parts[0], None) if parts else (None, None)
 
 
+DEFAULT_FUNNEL_STAGES = [
+    ("new", "Новые"),
+    ("qualified", "Квалификация"),
+    ("diagnostic_booked", "Диагностика"),
+    ("diagnostic_done", "После диагностики"),
+    ("offer_sent", "Предложение"),
+    ("won", "Оплата / ученик"),
+    ("lost", "Неактуально"),
+]
+
+
+async def _funnel_stages() -> list[FunnelStage]:
+    stages = (await session.execute(select(FunnelStage).order_by(FunnelStage.sort_order, FunnelStage.key))).scalars().all()
+    if stages:
+        return stages
+    now = datetime.datetime.now(datetime.timezone.utc).isoformat()
+    for index, (key, name) in enumerate(DEFAULT_FUNNEL_STAGES):
+        session.add(FunnelStage(key=key, name=name, sort_order=index, created_at=now, updated_at=now))
+    await session.commit()
+    return (await session.execute(select(FunnelStage).order_by(FunnelStage.sort_order, FunnelStage.key))).scalars().all()
+
+
+def _stage_out(stage: FunnelStage) -> dict[str, Any]:
+    return {"key": stage.key, "name": stage.name, "sort_order": stage.sort_order}
+
+
+@app.get("/api/admin/funnel/stages")
+async def admin_funnel_stages(_: dict[str, Any] = Depends(require_admin)) -> dict[str, Any]:
+    return {"items": [_stage_out(item) for item in await _funnel_stages()]}
+
+
+@app.post("/api/admin/funnel/stages")
+async def admin_create_funnel_stage(payload: FunnelStageCreateIn, admin: dict[str, Any] = Depends(require_admin)) -> dict[str, Any]:
+    stages = await _funnel_stages()
+    now = datetime.datetime.now(datetime.timezone.utc).isoformat()
+    stage = FunnelStage(key=f"custom_{uuid4().hex[:12]}", name=payload.name.strip(), sort_order=len(stages), created_at=now, updated_at=now)
+    session.add(stage)
+    await session.commit()
+    await _audit(int(admin["sub"]), "create", "funnel_stage", {"key": stage.key, "name": stage.name})
+    return {"item": _stage_out(stage)}
+
+
+@app.patch("/api/admin/funnel/stages/{stage_key}")
+async def admin_patch_funnel_stage(stage_key: str, payload: FunnelStagePatchIn, admin: dict[str, Any] = Depends(require_admin)) -> dict[str, Any]:
+    stage = await session.get(FunnelStage, stage_key)
+    if stage is None:
+        raise HTTPException(status_code=404, detail={"code": "NOT_FOUND", "message": "Этап не найден"})
+    for field, value in payload.model_dump(exclude_unset=True).items():
+        setattr(stage, field, value.strip() if isinstance(value, str) else value)
+    stage.updated_at = datetime.datetime.now(datetime.timezone.utc).isoformat()
+    await session.commit()
+    await _audit(int(admin["sub"]), "update", "funnel_stage", {"key": stage.key, **payload.model_dump(exclude_unset=True)})
+    return {"item": _stage_out(stage)}
+
+
+@app.delete("/api/admin/funnel/stages/{stage_key}")
+async def admin_delete_funnel_stage(stage_key: str, admin: dict[str, Any] = Depends(require_admin)) -> dict[str, Any]:
+    stage = await session.get(FunnelStage, stage_key)
+    if stage is None:
+        raise HTTPException(status_code=404, detail={"code": "NOT_FOUND", "message": "Этап не найден"})
+    used = (await session.execute(select(func.count(Opportunity.id)).where(Opportunity.stage == stage_key))).scalar_one()
+    if used:
+        raise HTTPException(status_code=409, detail={"code": "STAGE_IN_USE", "message": "Сначала перенесите клиентов из этого этапа"})
+    await session.delete(stage)
+    await session.commit()
+    await _audit(int(admin["sub"]), "delete", "funnel_stage", {"key": stage_key})
+    return {"status": "ok"}
+
+
 def _contact_out(
     contact: Contact,
     identity: TelegramIdentity | None,
@@ -1024,6 +1097,46 @@ async def admin_patch_contact(
     return {"status": "ok"}
 
 
+@app.patch("/api/admin/contacts/{contact_id}/funnel-stage")
+async def admin_set_contact_funnel_stage(
+    contact_id: int,
+    payload: ContactFunnelStageIn,
+    admin: dict[str, Any] = Depends(require_admin),
+) -> dict[str, Any]:
+    contact = await session.get(Contact, contact_id)
+    if contact is None:
+        raise HTTPException(status_code=404, detail={"code": "NOT_FOUND", "message": "Контакт не найден"})
+    stages = {item.key for item in await _funnel_stages()}
+    if payload.stage not in stages:
+        raise HTTPException(status_code=422, detail={"code": "INVALID_STAGE", "message": "Этап не существует"})
+    opportunity = (
+        await session.execute(
+            select(Opportunity).where(Opportunity.contact_id == contact.id).order_by(Opportunity.updated_at.desc(), Opportunity.id.desc()).limit(1)
+        )
+    ).scalar_one_or_none()
+    now = datetime.datetime.now(datetime.timezone.utc).isoformat()
+    if opportunity is None:
+        profile = (
+            await session.execute(select(StudentProfile).where(StudentProfile.contact_id == contact.id))
+        ).scalar_one_or_none()
+        opportunity = Opportunity(
+            contact_id=contact.id,
+            source="manual",
+            direction=profile.direction if profile else None,
+            stage=payload.stage,
+            created_at=now,
+            updated_at=now,
+        )
+        session.add(opportunity)
+    else:
+        opportunity.stage = payload.stage
+        opportunity.updated_at = now
+    contact.updated_at = now
+    await session.commit()
+    await _audit(int(admin["sub"]), "move", "opportunity", {"contact_id": contact.id, "opportunity_id": opportunity.id, "stage": payload.stage})
+    return {"status": "ok", "opportunity_id": opportunity.id}
+
+
 def _lead_out(lead: Opportunity, contact: Contact, identity: TelegramIdentity | None = None) -> dict[str, Any]:
     return {
         "id": lead.id, "contact_id": contact.id,
@@ -1083,6 +1196,9 @@ async def admin_create_lead(payload: LeadCreateIn, admin: dict[str, Any] = Depen
         session.add(contact)
         await session.flush()
     lead_data = payload.model_dump(exclude={"telegram_id", "full_name", "telephone"})
+    stages = await _funnel_stages()
+    stage_keys = {stage.key for stage in stages}
+    lead_data["stage"] = lead_data["stage"] if lead_data["stage"] in stage_keys else stages[0].key
     lead = Opportunity(contact_id=contact.id, **lead_data, created_at=now, updated_at=now)
     session.add(lead)
     await session.commit()
@@ -1100,6 +1216,10 @@ async def admin_patch_lead(lead_id: int, payload: LeadPatchIn, admin: dict[str, 
     if not contact:
         raise HTTPException(status_code=409, detail={"code": "CONTACT_NOT_FOUND", "message": "Контакт лида не найден"})
     updates = payload.model_dump(exclude_unset=True)
+    if "stage" in updates:
+        stage_keys = {stage.key for stage in await _funnel_stages()}
+        if updates["stage"] not in stage_keys:
+            raise HTTPException(status_code=422, detail={"code": "INVALID_STAGE", "message": "Этап не существует"})
     if "full_name" in updates:
         contact.first_name, contact.last_name = _split_contact_name(updates.pop("full_name"))
     if "telephone" in updates:

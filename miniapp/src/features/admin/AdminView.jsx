@@ -7,18 +7,18 @@ import { Pill } from '../../shared/ui/Pill'
 import { ToastViewport } from '../../shared/ui/ToastViewport'
 
 const ANALYTICS_SHARE_COLORS = ['#67e8a5', '#7aa8ff', '#f6b95a', '#ff8ba7', '#91f1ff', '#c29bff', '#868b98']
-const FUNNEL_STAGES = [
-  ['new', 'Новые'],
-  ['qualified', 'Квалификация'],
-  ['diagnostic_booked', 'Диагностика'],
-  ['diagnostic_done', 'После диагностики'],
-  ['offer_sent', 'Предложение'],
-  ['won', 'Оплата / ученик'],
-  ['lost', 'Неактуально'],
+const FALLBACK_FUNNEL_STAGES = [
+  { key: 'new', name: 'Новые' },
+  { key: 'qualified', name: 'Квалификация' },
+  { key: 'diagnostic_booked', name: 'Диагностика' },
+  { key: 'diagnostic_done', name: 'После диагностики' },
+  { key: 'offer_sent', name: 'Предложение' },
+  { key: 'won', name: 'Оплата / ученик' },
+  { key: 'lost', name: 'Неактуально' },
 ]
 
-function funnelStageLabel(stage) {
-  return FUNNEL_STAGES.find(([key]) => key === stage)?.[1] || 'Новые'
+function funnelStageLabel(stage, stages = FALLBACK_FUNNEL_STAGES) {
+  return stages.find(item => item.key === stage)?.name || 'Без этапа'
 }
 
 function formatMoneyShort(value) {
@@ -100,6 +100,11 @@ export function AdminView({ token }) {
   const [contactsTotal, setContactsTotal] = useState(0)
   const [contactsPage, setContactsPage] = useState(1)
   const [contactsView, setContactsView] = useState('table')
+  const [funnelStages, setFunnelStages] = useState(FALLBACK_FUNNEL_STAGES)
+  const [stageSettingsOpen, setStageSettingsOpen] = useState(false)
+  const [newStageName, setNewStageName] = useState('')
+  const [draggedContactId, setDraggedContactId] = useState(null)
+  const [navCollapsed, setNavCollapsed] = useState(false)
   const [selectedContact, setSelectedContact] = useState(null)
   const [contactEdit, setContactEdit] = useState({
     first_name: '', last_name: '', telephone: '', status: 'active', preferred_channel: 'telegram', direction: '',
@@ -214,10 +219,11 @@ export function AdminView({ token }) {
   async function loadContacts(page = contactsPage, q = contactQuery) {
     const path = `/api/admin/contacts?page=${page}&page_size=20${q ? `&query=${encodeURIComponent(q)}` : ''}`
     const boardPath = `/api/admin/contacts?page=1&page_size=100${q ? `&query=${encodeURIComponent(q)}` : ''}`
-    const [data, board] = await Promise.all([api(path, { token }), api(boardPath, { token })])
+    const [data, board, stages] = await Promise.all([api(path, { token }), api(boardPath, { token }), api('/api/admin/funnel/stages', { token })])
     setContacts(data.items || [])
     setContactsTotal(data.total || 0)
     setContactsBoard(board.items || [])
+    setFunnelStages(stages.items?.length ? stages.items : FALLBACK_FUNNEL_STAGES)
   }
 
   async function selectContact(contactId) {
@@ -248,6 +254,31 @@ export function AdminView({ token }) {
     await api(`/api/admin/leads/${opportunityId}`, { token, method: 'PATCH', body: { stage } })
     await Promise.all([selectContact(contactId), loadContacts(contactsPage, contactQuery), loadLeads()])
     setSuccess('Этап воронки обновлён')
+  }
+
+  async function moveContactToStage(contactId, stage) {
+    await api(`/api/admin/contacts/${contactId}/funnel-stage`, { token, method: 'PATCH', body: { stage } })
+    await loadContacts(contactsPage, contactQuery)
+    if (selectedContact?.contact?.id === contactId) await selectContact(contactId)
+    setSuccess('Клиент перенесён на другой этап')
+  }
+
+  async function saveStage(stage) {
+    await api(`/api/admin/funnel/stages/${stage.key}`, { token, method: 'PATCH', body: { name: stage.name } })
+    await loadContacts(contactsPage, contactQuery)
+  }
+
+  async function addStage() {
+    const name = newStageName.trim()
+    if (!name) return
+    await api('/api/admin/funnel/stages', { token, method: 'POST', body: { name } })
+    setNewStageName('')
+    await loadContacts(contactsPage, contactQuery)
+  }
+
+  async function deleteStage(stageKey) {
+    await api(`/api/admin/funnel/stages/${stageKey}`, { token, method: 'DELETE' })
+    await loadContacts(contactsPage, contactQuery)
   }
 
   async function createLead() {
@@ -877,7 +908,7 @@ export function AdminView({ token }) {
   }
 
   return (
-    <div className="mini-layout admin-layout">
+    <div className={`mini-layout admin-layout ${navCollapsed ? 'nav-collapsed' : ''}`}>
       <section className="mini-cover">
         <div className="mini-cover-overlay" />
         <div className="mini-cover-head">
@@ -1413,16 +1444,17 @@ export function AdminView({ token }) {
               <section className="contacts-main-panel">
                 {contactsView === 'kanban' ? (
                   <section className="funnel-board" aria-label="Воронка клиентов">
-                    <div className="funnel-board-head"><div><small>CRM-воронка</small><h2>Клиенты по этапам</h2></div><small>Нажмите клиента, чтобы открыть карточку справа</small></div>
+                    <div className="funnel-board-head"><div><small>CRM-воронка</small><h2>Клиенты по этапам</h2></div><div className="funnel-board-actions"><small>Перетащите клиента в нужную колонку</small><button className="btn secondary compact" onClick={() => setStageSettingsOpen(value => !value)}>{stageSettingsOpen ? 'Закрыть этапы' : 'Настроить этапы'}</button></div></div>
+                    {stageSettingsOpen ? <div className="stage-settings"><strong>Этапы воронки</strong><small>Название можно изменить. Удаление доступно только для пустого этапа.</small><div className="stage-settings-list">{funnelStages.map(stage => <div className="stage-settings-row" key={stage.key}><input className="input" value={stage.name} onChange={e => setFunnelStages(items => items.map(item => item.key === stage.key ? { ...item, name: e.target.value } : item))} onBlur={() => saveStage(stage).catch(error => setError(normalizeErrorMessage(error.message || error)))} /><button className="btn secondary compact" onClick={() => saveStage(stage).catch(error => setError(normalizeErrorMessage(error.message || error)))}>Сохранить</button><button className="btn secondary compact" onClick={() => deleteStage(stage.key).catch(error => setError(normalizeErrorMessage(error.message || error)))}>Удалить</button></div>)}</div><div className="stage-add-row"><input className="input" value={newStageName} onChange={e => setNewStageName(e.target.value)} placeholder="Новый этап" /><button className="btn compact" onClick={() => addStage().catch(error => setError(normalizeErrorMessage(error.message || error)))}>Добавить</button></div></div> : null}
                     <div className="funnel-columns">
-                      {FUNNEL_STAGES.map(([stage, label]) => {
-                        const stageContacts = contactsBoard.filter(contact => contact.current_stage === stage)
+                      {funnelStages.map(stage => {
+                        const stageContacts = contactsBoard.filter(contact => contact.current_stage === stage.key)
                         return (
-                          <div className="funnel-column" key={stage}>
-                            <div className="funnel-column-head"><strong>{label}</strong><span>{stageContacts.length}</span></div>
+                          <div className="funnel-column" key={stage.key} onDragOver={event => event.preventDefault()} onDrop={event => { event.preventDefault(); const contactId = Number(event.dataTransfer.getData('text/plain') || draggedContactId); if (contactId) moveContactToStage(contactId, stage.key).catch(error => setError(normalizeErrorMessage(error.message || error))); setDraggedContactId(null) }}>
+                            <div className="funnel-column-head"><strong>{stage.name}</strong><span>{stageContacts.length}</span></div>
                             <div className="funnel-cards">
                               {stageContacts.map(contact => (
-                                <button className="funnel-card" key={contact.id} onClick={() => selectContact(contact.id).catch(e => setError(normalizeErrorMessage(e.message || e)))}>
+                                <button className="funnel-card" draggable key={contact.id} onDragStart={event => { setDraggedContactId(contact.id); event.dataTransfer.setData('text/plain', String(contact.id)); event.dataTransfer.effectAllowed = 'move' }} onDragEnd={() => setDraggedContactId(null)} onClick={() => selectContact(contact.id).catch(e => setError(normalizeErrorMessage(e.message || e)))}>
                                   <strong>{contact.full_name}</strong>
                                   <small>{contact.direction || contact.current_source || (contact.is_student ? 'ученик' : 'без направления')}</small>
                                 </button>
@@ -1448,7 +1480,7 @@ export function AdminView({ token }) {
                               <td><strong>{contact.full_name}</strong></td>
                               <td>{contact.telephone || '—'}</td>
                               <td>{contact.telegram_username ? `@${contact.telegram_username}` : (contact.telegram_id || '—')}</td>
-                              <td><span className={`contact-badge ${contact.current_stage === 'won' ? 'student' : 'lead'}`}>{funnelStageLabel(contact.current_stage)}</span></td>
+                              <td><span className={`contact-badge ${contact.current_stage === 'won' ? 'student' : 'lead'}`}>{funnelStageLabel(contact.current_stage, funnelStages)}</span></td>
                               <td>{contact.direction || '—'}</td>
                               <td>{contact.opportunities_count || '—'}</td>
                             </tr>
@@ -1485,7 +1517,7 @@ export function AdminView({ token }) {
 
                 <h3>Сделки</h3>
                 {selectedContact.opportunities?.length ? <ul className="list list-compact">{selectedContact.opportunities.map(item => (
-                  <li key={item.id} className="contact-opportunity-row"><div><strong>{item.direction || 'Направление не указано'}</strong><small>{item.source}{item.next_contact_at ? ` · следующий контакт: ${item.next_contact_at}` : ''}</small></div><select className="input" value={item.stage} onChange={e => changeContactOpportunityStage(item.id, e.target.value).catch(err => setError(normalizeErrorMessage(err.message || err)))}>{FUNNEL_STAGES.map(([stage, label]) => <option key={stage} value={stage}>{label}</option>)}</select></li>
+                  <li key={item.id} className="contact-opportunity-row"><div><strong>{item.direction || 'Направление не указано'}</strong><small>{item.source}{item.next_contact_at ? ` · следующий контакт: ${item.next_contact_at}` : ''}</small></div><select className="input" value={item.stage} onChange={e => changeContactOpportunityStage(item.id, e.target.value).catch(err => setError(normalizeErrorMessage(err.message || err)))}>{funnelStages.map(stage => <option key={stage.key} value={stage.key}>{stage.name}</option>)}</select></li>
                 ))}</ul> : <small>Коммерческих сделок пока нет.</small>}
 
                 <h3>Ближайшая история занятий</h3>
@@ -1798,7 +1830,7 @@ export function AdminView({ token }) {
             </Card>
             <Card title="Текущие обращения" subtitle="Меняйте этап прямо здесь">
               {leads.length ? <ul className="list list-compact">{leads.map(lead => (
-                <li key={lead.id} className="lead-row"><div><strong>{lead.full_name || lead.telephone || 'Без имени'}</strong><small>{lead.source} · {lead.direction || 'направление не указано'}</small></div><select className="input" value={lead.stage} onChange={e => changeLeadStage(lead, e.target.value).catch(err => setError(normalizeErrorMessage(err.message || err)))}>{['new','qualified','diagnostic_booked','diagnostic_done','offer_sent','won','lost'].map(stage => <option key={stage} value={stage}>{stage}</option>)}</select></li>
+                <li key={lead.id} className="lead-row"><div><strong>{lead.full_name || lead.telephone || 'Без имени'}</strong><small>{lead.source} · {lead.direction || 'направление не указано'}</small></div><select className="input" value={lead.stage} onChange={e => changeLeadStage(lead, e.target.value).catch(err => setError(normalizeErrorMessage(err.message || err)))}>{funnelStages.map(stage => <option key={stage.key} value={stage.key}>{stage.name}</option>)}</select></li>
               ))}</ul> : <div className="empty">Лидов пока нет.</div>}
             </Card>
           </div>
@@ -2115,6 +2147,7 @@ export function AdminView({ token }) {
       </div>
 
       <nav className="bottom-nav bottom-nav-six">
+        <button className="nav-collapse-toggle" onClick={() => setNavCollapsed(value => !value)} aria-label={navCollapsed ? 'Развернуть меню' : 'Свернуть меню'} title={navCollapsed ? 'Развернуть меню' : 'Свернуть меню'}>{navCollapsed ? '›' : '‹'}</button>
         {adminTabs.map(([key, label, icon]) => (
           <button key={key} className={`bottom-item ${activeTab === key ? 'active' : ''}`} onClick={() => setActiveTab(key)}>
             <span className="bottom-ico">{icon}</span>

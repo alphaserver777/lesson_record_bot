@@ -110,7 +110,7 @@ class LeadCreateIn(BaseModel):
     utm_content: str | None = Field(default=None, max_length=120)
     direction: str | None = Field(default=None, max_length=80)
     goal: str | None = Field(default=None, max_length=500)
-    stage: str = Field(default="new", pattern=r"^(new|qualified|diagnostic_booked|diagnostic_done|offer_sent|won|lost)$")
+    stage: str = Field(default="new", min_length=1, max_length=48)
     diagnostic_at: str | None = Field(default=None, max_length=50)
     offer_amount: int | None = Field(default=None, ge=0)
     paid_amount: int | None = Field(default=None, ge=0)
@@ -121,7 +121,20 @@ class LeadCreateIn(BaseModel):
 
 class LeadPatchIn(LeadCreateIn):
     source: str | None = Field(default=None, min_length=1, max_length=80)
-    stage: str | None = Field(default=None, pattern=r"^(new|qualified|diagnostic_booked|diagnostic_done|offer_sent|won|lost)$")
+    stage: str | None = Field(default=None, min_length=1, max_length=48)
+
+
+class FunnelStageCreateIn(BaseModel):
+    name: str = Field(min_length=1, max_length=100)
+
+
+class FunnelStagePatchIn(BaseModel):
+    name: str | None = Field(default=None, min_length=1, max_length=100)
+    sort_order: int | None = Field(default=None, ge=0, le=1000)
+
+
+class ContactFunnelStageIn(BaseModel):
+    stage: str = Field(min_length=1, max_length=48)
 
 
 class ContactPatchIn(BaseModel):
