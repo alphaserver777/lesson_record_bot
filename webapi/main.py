@@ -55,6 +55,7 @@ from webapi.schemas import (
     FunnelStagePatchIn,
     LeadCreateIn,
     LeadPatchIn,
+    ManualCompletedLessonIn,
     LessonRescheduleIn,
     ManualPaymentIn,
     MarketingCampaignIn,
@@ -1744,6 +1745,27 @@ async def admin_reschedule_lesson(payload: LessonRescheduleIn, admin: dict[str, 
         logger.warning("failed to notify rescheduled lesson telegram_id=%s: %s", payload.telegram_id, exc)
     await _audit(int(admin["sub"]), "reschedule", "lesson", payload.model_dump(mode="json"))
     return {"status": "ok"}
+
+
+@app.post("/api/admin/lessons/manual-completed")
+async def admin_add_manual_completed_lesson(payload: ManualCompletedLessonIn, admin: dict[str, Any] = Depends(require_admin)) -> dict[str, Any]:
+    """Register a lesson that already happened outside the published schedule."""
+    hh, mm = _parse_hhmm(payload.time)
+    if not _is_valid_custom_step(hh, mm):
+        raise HTTPException(status_code=422, detail="INVALID_TIME_STEP")
+    record = await transactions.add_manual_completed_lesson(
+        payload.telegram_id, payload.date, hh, mm, payload.duration, payload.note,
+    )
+    if record is None:
+        raise HTTPException(
+            status_code=409,
+            detail={"code": "MANUAL_LESSON_EXISTS", "message": "Такое проведённое занятие уже внесено или клиент не найден"},
+        )
+    await _audit(
+        int(admin["sub"]), "create", "manual_completed_lesson",
+        {"record_id": record.id, **payload.model_dump(mode="json")},
+    )
+    return {"status": "ok", "record_id": record.id}
 
 
 @app.post("/api/admin/lessons/regular")

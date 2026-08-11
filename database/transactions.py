@@ -981,6 +981,65 @@ async def add_single_slot(
     return True
 
 
+async def add_manual_completed_lesson(
+    telegram_id: int,
+    date: datetime.date,
+    hour: int,
+    minute: int,
+    duration_minutes: int = SLOT_DURATION_MINUTES,
+    note: str | None = None,
+) -> RecordDate | None:
+    """Write a completed off-schedule lesson to the canonical lesson journal.
+
+    This intentionally does not create a calendar event: the lesson has already
+    happened.  It is still a RecordDate, so finance and analytics process it in
+    exactly the same way as a normally scheduled lesson.
+    """
+    duplicate = await session.execute(
+        select(RecordDate.id).where(
+            RecordDate.telegram_id == telegram_id,
+            RecordDate.record_date == date,
+            RecordDate.hour == hour,
+            RecordDate.minute == minute,
+        )
+    )
+    if duplicate.scalar_one_or_none() is not None:
+        return None
+
+    profile = await session.get(StudentProfile, telegram_id)
+    if profile is None:
+        return None
+    record = RecordDate(
+        contact_id=profile.contact_id,
+        telegram_id=telegram_id,
+        record_date=date,
+        hour=hour,
+        minute=minute,
+        duration_minutes=duration_minutes,
+        kind="manual",
+        presence_status="yes",
+        note=(note or "").strip() or "Проведено вручную вне расписания",
+        event_id=None,
+        booking_status="approved",
+    )
+    session.add(record)
+    await session.flush()
+    await log_analytics_event(
+        "lesson_recorded_manual",
+        telegram_id=telegram_id,
+        record_date=date,
+        hour=hour,
+        minute=minute,
+        duration_minutes=duration_minutes,
+        lesson_kind="manual",
+        source_context="admin",
+        meta={"note": record.note},
+        commit=False,
+    )
+    await session.commit()
+    return record
+
+
 async def add_pending_single_slot(
     telegram_id: int,
     date: datetime.date,

@@ -248,6 +248,13 @@ export function AdminView({ token }) {
     amount: '',
     duration: 60,
   })
+  const [manualCompletedLesson, setManualCompletedLesson] = useState(() => ({
+    telegram_id: '',
+    date: new Date().toISOString().slice(0, 10),
+    time: '10:00',
+    duration: 60,
+    note: '',
+  }))
   const [debtors, setDebtors] = useState([])
   const [unclosedLessons, setUnclosedLessons] = useState([])
   const [unclosedDaysBack, setUnclosedDaysBack] = useState(21)
@@ -813,6 +820,22 @@ export function AdminView({ token }) {
       },
     })
     setManualPay(prev => ({ ...prev, amount: '' }))
+  }
+
+  async function addManualCompletedLesson() {
+    if (!manualCompletedLesson.telegram_id) throw new Error('Выберите клиента')
+    await api('/api/admin/lessons/manual-completed', {
+      token,
+      method: 'POST',
+      body: {
+        ...manualCompletedLesson,
+        telegram_id: Number(manualCompletedLesson.telegram_id),
+        duration: Number(manualCompletedLesson.duration),
+      },
+    })
+    setManualCompletedLesson(prev => ({ ...prev, note: '' }))
+    await Promise.all([loadUnclosedLessons(), loadDebtors(), loadScheduleMonth()])
+    setSuccess('Проведённое занятие внесено. Выберите для него финансовый статус ниже.')
   }
 
   async function loadDebtors() {
@@ -1991,6 +2014,19 @@ export function AdminView({ token }) {
 
             {manageSection === 'finance' ? (
               <>
+                <Card title="Проведённое занятие вне расписания" subtitle="Внесите факт занятия — затем оно появится в «Незакрытых занятиях» для выбора оплаты, долга или отмены">
+                  <select className="input" value={manualCompletedLesson.telegram_id} onChange={e => setManualCompletedLesson(v => ({ ...v, telegram_id: e.target.value }))}>
+                    <option value="">Выберите клиента</option>
+                    {clientOptions.map(client => <option key={`manual-lesson-${client.telegram_id}`} value={client.telegram_id}>{client.full_name || 'Без имени'} • {client.telegram_id}</option>)}
+                  </select>
+                  <div className="custom-row">
+                    <input type="date" className="input" value={manualCompletedLesson.date} onChange={e => setManualCompletedLesson(v => ({ ...v, date: e.target.value }))} />
+                    <input type="time" step="900" className="input" value={manualCompletedLesson.time} onChange={e => setManualCompletedLesson(v => ({ ...v, time: e.target.value }))} />
+                    <select className="input" value={manualCompletedLesson.duration} onChange={e => setManualCompletedLesson(v => ({ ...v, duration: Number(e.target.value) }))}><option value={60}>60 мин</option><option value={90}>90 мин</option><option value={120}>120 мин</option></select>
+                  </div>
+                  <input className="input" value={manualCompletedLesson.note} onChange={e => setManualCompletedLesson(v => ({ ...v, note: e.target.value }))} placeholder="Комментарий (необязательно)" />
+                  <button className="btn" onClick={() => addManualCompletedLesson().catch(e => setError(normalizeErrorMessage(e.message || e)))}>Внести проведённое занятие</button>
+                </Card>
                 <Card title="Manual payment" subtitle="Ручная оплата">
                   <input className="input" value={manualPay.telegram_id} onChange={e => setManualPay(v => ({ ...v, telegram_id: e.target.value }))} placeholder="Telegram ID" />
                   <input type="date" className="input" value={manualPay.date} onChange={e => setManualPay(v => ({ ...v, date: e.target.value }))} />

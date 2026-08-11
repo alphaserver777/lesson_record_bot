@@ -47,6 +47,15 @@ class LessonRescheduleIn(BaseModel):
     duration: int = Field(default=60, ge=15, le=360)
 
 
+class ManualCompletedLessonIn(BaseModel):
+    """A lesson that was held but was never placed into the timetable."""
+    telegram_id: int
+    date: date
+    time: str = Field(pattern=r"^\d{2}:\d{2}$")
+    duration: int = Field(default=60, ge=15, le=360)
+    note: str | None = Field(default=None, max_length=255)
+
+
 class RegularLessonIn(BaseModel):
     telegram_id: int
     day_of_week: int = Field(ge=0, le=6)
