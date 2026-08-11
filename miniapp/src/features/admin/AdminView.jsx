@@ -65,6 +65,24 @@ function metricValue(value, kind = 'number') {
   return Number(value).toLocaleString('ru-RU')
 }
 
+function CampaignFunnel({ stages, onSelect }) {
+  const colors = ['#3099e8', '#22b573', '#f5a623', '#ffd238', '#f7c995', '#f3aaa7']
+  const totalHeight = 510
+  const levelHeight = totalHeight / stages.length
+  return <div style={{ overflowX: 'auto', padding: '10px 0' }}><svg viewBox="0 0 1000 540" role="img" aria-label="Воронка кампании" style={{ display: 'block', width: 'min(100%, 1000px)', minWidth: 720, margin: '0 auto' }}>
+    {stages.map(([label, value, metricKey], index) => {
+      const topWidth = 940 - index * 128
+      const bottomWidth = 940 - (index + 1) * 128
+      const y = 12 + index * levelHeight
+      const x1 = (1000 - topWidth) / 2
+      const x2 = (1000 - bottomWidth) / 2
+      const previous = index ? Number(stages[index - 1][1]) : null
+      const conversion = previous ? `${Math.round((Number(value) / previous) * 100)}% от предыдущего этапа` : 'базовый этап'
+      return <g key={label} onClick={() => metricKey && onSelect({ label, value, metricKey })} style={{ cursor: metricKey ? 'pointer' : 'default' }}><polygon points={`${x1},${y} ${1000 - x1},${y} ${1000 - x2},${y + levelHeight - 4} ${x2},${y + levelHeight - 4}`} fill={colors[index]} /><text x="500" y={y + levelHeight / 2 - 7} textAnchor="middle" fill="#101820" fontSize="22" fontWeight="700">{label}</text><text x="500" y={y + levelHeight / 2 + 22} textAnchor="middle" fill="#101820" fontSize="17">{value} · {metricKey ? 'нажмите для редактирования' : conversion}</text></g>
+    })}
+  </svg></div>
+}
+
 function signalLabel(signal) {
   if (signal === 'progress') return 'Прогресс'
   if (signal === 'regress') return 'Регресс'
@@ -116,6 +134,7 @@ export function AdminView({ token }) {
   const [campaignName, setCampaignName] = useState('')
   const [campaignPeriod, setCampaignPeriod] = useState({ active_from: '', active_to: '' })
   const [selectedMarketingCampaignId, setSelectedMarketingCampaignId] = useState('')
+  const [selectedFunnelMetric, setSelectedFunnelMetric] = useState(null)
   const [query, setQuery] = useState('')
   const [usersPage, setUsersPage] = useState(1)
   const [users, setUsers] = useState([])
@@ -421,6 +440,26 @@ export function AdminView({ token }) {
     await api(`/api/admin/marketing/campaigns/${campaignId}/metrics`, { token, method: 'PUT', body: { views: Number(views || 0), dialogs: Number(dialogs || 0), target_actions: Number(targetActions || 0) } })
     await loadMarketingAnalytics()
     setSuccess('Показатели воронки сохранены')
+  }
+
+  async function saveCampaignPeriod(campaignId, activeFrom, activeTo) {
+    await api(`/api/admin/marketing/campaigns/${campaignId}`, { token, method: 'PATCH', body: { active_from: activeFrom || null, active_to: activeTo || null } })
+    await loadMarketingAnalytics()
+    setSuccess('Период кампании сохранён')
+  }
+
+  async function incrementCampaignMetric(campaign, metricKey) {
+    const current = campaign.manual_metrics || {}
+    await saveCampaignMetrics(campaign.campaign_id, current.views || 0, current.dialogs || 0, metricKey === 'target_actions' ? Number(current.target_actions || 0) + 1 : (current.target_actions || 0))
+    if (metricKey === 'views') await saveCampaignMetrics(campaign.campaign_id, Number(current.views || 0) + 1, current.dialogs || 0, current.target_actions || 0)
+    if (metricKey === 'dialogs') await saveCampaignMetrics(campaign.campaign_id, current.views || 0, Number(current.dialogs || 0) + 1, current.target_actions || 0)
+  }
+
+  async function saveSelectedFunnelMetric(campaign, value) {
+    const current = campaign.manual_metrics || {}
+    const next = { views: current.views || 0, dialogs: current.dialogs || 0, target_actions: current.target_actions || 0, [selectedFunnelMetric.metricKey]: Number(value || 0) }
+    await saveCampaignMetrics(campaign.campaign_id, next.views, next.dialogs, next.target_actions)
+    setSelectedFunnelMetric(null)
   }
 
   async function selectUser(telegramId) {
@@ -1987,6 +2026,7 @@ export function AdminView({ token }) {
                   {(marketingMetrics?.rows || []).length ? <div className="contacts-table-wrap"><table className="contacts-table"><thead><tr><th>Источник</th><th>Кампания / ID</th><th>Период</th><th>Расход</th><th>Лиды</th><th>Диагн.</th><th>Клиенты</th><th>Выручка</th><th>CAC</th><th>ROMI</th><th>LTV</th></tr></thead><tbody>{marketingMetrics.rows.map((row, index) => <tr key={`${row.source_key}-${row.campaign_name || 'none'}-${index}`} className={String(row.campaign_id) === String(selectedMarketingCampaignId) ? 'selected' : ''} onClick={() => row.campaign_id && setSelectedMarketingCampaignId(String(row.campaign_id))}><td>{row.source_name}</td><td>{row.campaign_id ? `#${row.campaign_id} · ` : ''}{row.campaign_name || '—'}</td><td>{row.active_from || '—'} → {row.active_to || '—'}</td><td>{metricValue(row.spend, 'money')}</td><td>{row.leads}</td><td>{row.diagnostics_held}</td><td>{row.new_clients}</td><td>{metricValue(row.cash_revenue, 'money')}</td><td>{metricValue(row.cac, 'money')}</td><td>{metricValue(row.romi, 'percent')}</td><td>{metricValue(row.ltv, 'money')}</td></tr>)}</tbody></table></div> : <div className="placeholder-box">Нет источников или расходов за период.</div>}
                 </Card>
                 {(() => { const campaign = (marketingMetrics?.rows || []).find(row => String(row.campaign_id) === String(selectedMarketingCampaignId)); if (!campaign) return null; const stages = [['Просмотры объявления', campaign.manual_metrics?.views || 0, '#e7b35a'], ['Вступили в диалог', campaign.manual_metrics?.dialogs || 0, '#b4cb35'], ['Целевое действие', campaign.manual_metrics?.target_actions || 0, '#6ca8ef'], ['Лиды в CRM', campaign.leads, '#7d74e8'], ['Диагностика проведена', campaign.diagnostics_held, '#a46fea'], ['Первая оплата', campaign.new_clients, '#58d0a3']]; const max = Math.max(...stages.map(item => Number(item[1])), 1); return <Card title={`Кампания #${campaign.campaign_id}: ${campaign.campaign_name}`} subtitle="Рабочая карточка кампании: реклама → лид → продажа"><div className="analytics-kpi-grid"><div className="analytics-kpi-card"><span>Источник</span><strong>{campaign.source_name}</strong></div><div className="analytics-kpi-card"><span>Период работы</span><strong>{campaign.active_from || 'не указан'} — {campaign.active_to || 'активна'}</strong></div><div className="analytics-kpi-card"><span>Потраченный бюджет</span><strong>{metricValue(campaign.spend, 'money')}</strong><small>вносится через «Добавить расход» ниже</small></div><div className="analytics-kpi-card"><span>Выручка кампании</span><strong>{metricValue(campaign.cash_revenue, 'money')}</strong><small>ROMI {metricValue(campaign.romi, 'percent')}</small></div></div><div className="custom-row" style={{ marginTop: 16 }}><label>Просмотры объявления<input id="campaign-views" className="input" type="number" min="0" defaultValue={campaign.manual_metrics?.views || 0} /></label><label>Вступили в диалог<input id="campaign-dialogs" className="input" type="number" min="0" defaultValue={campaign.manual_metrics?.dialogs || 0} /></label><label>Целевое действие<input id="campaign-target-actions" className="input" type="number" min="0" defaultValue={campaign.manual_metrics?.target_actions || 0} /></label><button className="btn" onClick={() => saveCampaignMetrics(campaign.campaign_id, document.getElementById('campaign-views')?.value, document.getElementById('campaign-dialogs')?.value, document.getElementById('campaign-target-actions')?.value).catch(e => setError(normalizeErrorMessage(e.message || e)))}>Сохранить показатели</button></div><small>«Целевое действие» — нужный результат рекламы до лида: например, клик по контакту, отправка формы или запись на диагностику.</small><div style={{ display: 'grid', gap: 8, marginTop: 18, justifyItems: 'center' }}>{stages.map(([label, value, color], index) => <div key={label} style={{ width: `${Math.max(34, Math.round((Number(value) / max) * 100))}%`, minWidth: 280, background: `linear-gradient(90deg, ${color}, ${color}cc)`, color: '#10131a', borderRadius: '10px 10px 18px 18px', textAlign: 'center', padding: '13px 18px', fontWeight: 700, boxShadow: '0 8px 18px rgba(0,0,0,.18)' }}><span>{label}</span><strong style={{ marginLeft: 12 }}>{value}</strong>{index ? <small style={{ marginLeft: 12 }}>{Math.round((Number(value) / Math.max(Number(stages[index - 1][1]), 1)) * 100)}% от предыдущего этапа</small> : null}</div>)}</div></Card> })()}
+                {(() => { const campaign = (marketingMetrics?.rows || []).find(row => String(row.campaign_id) === String(selectedMarketingCampaignId)); if (!campaign) return null; const stages = [['Просмотры объявления', campaign.manual_metrics?.views || 0, 'views'], ['Вступили в диалог', campaign.manual_metrics?.dialogs || 0, 'dialogs'], ['Целевое действие', campaign.manual_metrics?.target_actions || 0, 'target_actions'], ['Лиды в CRM', campaign.leads, null], ['Диагностика проведена', campaign.diagnostics_held, null], ['Первая оплата', campaign.new_clients, null]]; return <Card title="Визуальная воронка кампании" subtitle="Нажмите ручной этап, чтобы открыть редактор справа"><div style={{ display: 'grid', gridTemplateColumns: selectedFunnelMetric ? 'minmax(0, 1fr) 300px' : 'minmax(0, 1fr)', gap: 18 }}><CampaignFunnel stages={stages} onSelect={setSelectedFunnelMetric} />{selectedFunnelMetric ? <aside className="analytics-kpi-card" style={{ alignSelf: 'center' }}><span>Редактирование этапа</span><strong>{selectedFunnelMetric.label}</strong><div className="custom-row" style={{ marginTop: 12 }}><button className="btn secondary compact" onClick={() => setSelectedFunnelMetric(item => ({ ...item, value: Math.max(0, Number(item.value) - 1) }))}>−</button><input className="input" type="number" min="0" value={selectedFunnelMetric.value} onChange={e => setSelectedFunnelMetric(item => ({ ...item, value: e.target.value }))} /><button className="btn secondary compact" onClick={() => setSelectedFunnelMetric(item => ({ ...item, value: Number(item.value) + 1 }))}>+</button></div><button className="btn" style={{ marginTop: 12, width: '100%' }} onClick={() => saveSelectedFunnelMetric(campaign, selectedFunnelMetric.value).catch(e => setError(normalizeErrorMessage(e.message || e)))}>Сохранить</button></aside> : null}</div></Card> })()}
                 <Card title="Качество данных" subtitle="Что нужно заполнить, чтобы решения были точными"><div className="pill-row"><Pill label="Контакты: неизвестный источник" value={marketingMetrics?.data_quality?.contacts_unknown_source ?? '—'} tone="violet" /><Pill label="Нет кампании" value={marketingMetrics?.data_quality?.contacts_missing_campaign ?? '—'} tone="violet" /><Pill label="Нет следующего действия" value={marketingMetrics?.data_quality?.opportunities_missing_next_contact ?? '—'} tone="violet" /></div></Card>
                 <Card title="Добавить расход" subtitle="Только маркетинговые вложения: размещение, реклама, контент, подрядчики"><div className="custom-row"><input type="date" className="input" value={expenseForm.spent_at} onChange={e => setExpenseForm(v => ({ ...v, spent_at: e.target.value }))} /><select className="input" value={expenseForm.source_key} onChange={e => setExpenseForm(v => ({ ...v, source_key: e.target.value, campaign_id: '' }))}>{marketingSources.map(item => <option key={item.key} value={item.key}>{item.name}</option>)}</select><select className="input" value={expenseForm.campaign_id} onChange={e => setExpenseForm(v => ({ ...v, campaign_id: e.target.value }))}><option value="">Без кампании</option>{marketingCampaigns.filter(item => item.source_key === expenseForm.source_key).map(item => <option key={item.id} value={item.id}>#{item.id} · {item.name}</option>)}</select><select className="input" value={expenseForm.category} onChange={e => setExpenseForm(v => ({ ...v, category: e.target.value }))}><option value="placement">Размещение</option><option value="advertising">Реклама</option><option value="content">Контент</option><option value="contractor">Подрядчик</option></select><input className="input" type="number" min="1" value={expenseForm.amount} onChange={e => setExpenseForm(v => ({ ...v, amount: e.target.value }))} placeholder="Сумма, ₽" /><input className="input" value={expenseForm.note} onChange={e => setExpenseForm(v => ({ ...v, note: e.target.value }))} placeholder="Комментарий" /><button className="btn" onClick={() => createMarketingExpense().catch(e => setError(normalizeErrorMessage(e.message || e)))}>Добавить</button></div><div className="custom-row" style={{ marginTop: 10 }}><input className="input" value={campaignName} onChange={e => setCampaignName(e.target.value)} placeholder="Название новой кампании" /><input type="date" className="input" value={campaignPeriod.active_from} onChange={e => setCampaignPeriod(v => ({ ...v, active_from: e.target.value }))} /><input type="date" className="input" value={campaignPeriod.active_to} onChange={e => setCampaignPeriod(v => ({ ...v, active_to: e.target.value }))} /><button className="btn secondary" onClick={() => createMarketingCampaign().catch(e => setError(normalizeErrorMessage(e.message || e)))}>Создать кампанию</button></div></Card>
               </>

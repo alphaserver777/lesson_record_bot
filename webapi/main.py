@@ -57,6 +57,7 @@ from webapi.schemas import (
     LeadPatchIn,
     ManualPaymentIn,
     MarketingCampaignIn,
+    MarketingCampaignPatchIn,
     MarketingCampaignMetricsIn,
     MarketingExpenseIn,
     OpportunityMarketingPatchIn,
@@ -1410,6 +1411,20 @@ async def admin_create_marketing_campaign(payload: MarketingCampaignIn, admin: d
     await session.refresh(item)
     await _audit(int(admin["sub"]), "create", "marketing_campaign", {"id": item.id, "source": item.source_key, "name": item.name})
     return {"item": {"id": item.id, "source_key": item.source_key, "name": item.name, "active_from": item.active_from.isoformat() if item.active_from else None, "active_to": item.active_to.isoformat() if item.active_to else None}}
+
+
+@app.patch("/api/admin/marketing/campaigns/{campaign_id}")
+async def admin_patch_marketing_campaign(campaign_id: int, payload: MarketingCampaignPatchIn, admin: dict[str, Any] = Depends(require_admin)) -> dict[str, Any]:
+    item = await session.get(MarketingCampaign, campaign_id)
+    if item is None:
+        raise HTTPException(status_code=404, detail={"code": "NOT_FOUND", "message": "Кампания не найдена"})
+    if payload.active_from and payload.active_to and payload.active_from > payload.active_to:
+        raise HTTPException(status_code=422, detail={"code": "INVALID_PERIOD", "message": "Дата окончания не может быть раньше даты запуска"})
+    item.active_from, item.active_to = payload.active_from, payload.active_to
+    item.updated_at = datetime.datetime.now(datetime.timezone.utc).isoformat()
+    await session.commit()
+    await _audit(int(admin["sub"]), "update", "marketing_campaign", {"id": item.id, **payload.model_dump(mode="json")})
+    return {"item": {"id": item.id, "active_from": item.active_from.isoformat() if item.active_from else None, "active_to": item.active_to.isoformat() if item.active_to else None}}
 
 
 @app.put("/api/admin/marketing/campaigns/{campaign_id}/metrics")

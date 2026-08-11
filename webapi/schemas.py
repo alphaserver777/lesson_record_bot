@@ -141,6 +141,11 @@ class MarketingCampaignIn(BaseModel):
     active_to: date | None = None
 
 
+class MarketingCampaignPatchIn(BaseModel):
+    active_from: date | None = None
+    active_to: date | None = None
+
+
 class MarketingCampaignMetricsIn(BaseModel):
     views: int = Field(default=0, ge=0)
     dialogs: int = Field(default=0, ge=0)
