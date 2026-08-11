@@ -1240,12 +1240,15 @@ export function AdminView({ token }) {
                 <div className="calendar-grid">
                   {adminCalendarCells.map((cell, idx) => (
                     cell ? (() => {
-                      const cellDisabled = scheduleMode === 'free' && (cell.past || !cell.has_free)
+                      // A full day is still useful: the administrator must be able to
+                      // to open it and move an existing lesson.  Only past dates remain
+                      // disabled in the "free slots" picker.
+                      const cellDisabled = scheduleMode === 'free' && cell.past
                       const cellMuted = cell.past || (scheduleMode === 'free' && !cell.has_free)
                       const cellTitle = scheduleMode === 'booked'
                         ? `Записей: ${cell.booked_count}`
                         : scheduleMode === 'free'
-                          ? (cell.has_free ? `Свободно: ${cell.free_count}` : 'Нет свободных слотов')
+                          ? (cell.has_free ? `Свободно: ${cell.free_count}` : `Занято: ${cell.booked_count}. Нажмите, чтобы открыть записи`)
                           : `Дата: ${cell.date}`
 
                       return (
@@ -1258,7 +1261,12 @@ export function AdminView({ token }) {
                             if (scheduleMode === 'booked') {
                               await loadSchedule(cell.date).catch(() => {})
                             } else if (scheduleMode === 'free') {
-                              await loadFreeSlots(cell.date).catch(() => {})
+                              if (cell.has_free) {
+                                await loadFreeSlots(cell.date).catch(() => {})
+                              } else {
+                                setScheduleMode('booked')
+                                await loadSchedule(cell.date).catch(() => {})
+                              }
                             } else {
                               await loadBlocks(cell.date).catch(() => {})
                             }
