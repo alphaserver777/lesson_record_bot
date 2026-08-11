@@ -38,6 +38,15 @@ class SingleLessonIn(BaseModel):
     duration: int = 60
 
 
+class LessonRescheduleIn(BaseModel):
+    telegram_id: int
+    source_date: date
+    source_time: str = Field(pattern=r"^\d{2}:\d{2}$")
+    target_date: date
+    target_time: str = Field(pattern=r"^\d{2}:\d{2}$")
+    duration: int = Field(default=60, ge=15, le=360)
+
+
 class RegularLessonIn(BaseModel):
     telegram_id: int
     day_of_week: int = Field(ge=0, le=6)

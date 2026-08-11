@@ -55,6 +55,7 @@ from webapi.schemas import (
     FunnelStagePatchIn,
     LeadCreateIn,
     LeadPatchIn,
+    LessonRescheduleIn,
     ManualPaymentIn,
     MarketingCampaignIn,
     MarketingCampaignPatchIn,
@@ -1704,6 +1705,44 @@ async def admin_add_single(payload: SingleLessonIn, admin: dict[str, Any] = Depe
     except Exception as exc:  # pylint: disable=broad-except
         logger.warning("failed to notify user about admin single lesson telegram_id=%s: %s", payload.telegram_id, exc)
     await _audit(int(admin["sub"]), "create", "single_lesson", payload.model_dump())
+    return {"status": "ok"}
+
+
+@app.post("/api/admin/lessons/override")
+async def admin_add_single_override(payload: SingleLessonIn, admin: dict[str, Any] = Depends(require_admin)) -> dict[str, Any]:
+    """Admin-only booking outside the published work schedule, still conflict-safe."""
+    hh, mm = _parse_hhmm(payload.time)
+    if not _is_valid_custom_step(hh, mm):
+        raise HTTPException(status_code=422, detail="INVALID_TIME_STEP")
+    if await transactions.is_slot_busy(payload.date, hh, mm, payload.duration) or await transactions.is_slot_overlapping_local(payload.date, hh, mm, payload.duration):
+        raise HTTPException(status_code=409, detail="SLOT_BUSY")
+    if not await transactions.add_single_slot(payload.telegram_id, payload.date, hh, mm, payload.duration):
+        raise HTTPException(status_code=500, detail="CREATE_FAILED")
+    try:
+        await bot.send_message(chat_id=payload.telegram_id, text=("📌 Вам назначено занятие администратором\n" f"Дата: {payload.date.isoformat()}\nВремя: {hh:02d}:{mm:02d}\nДлительность: {payload.duration} мин"))
+    except Exception as exc:  # pylint: disable=broad-except
+        logger.warning("failed to notify override lesson telegram_id=%s: %s", payload.telegram_id, exc)
+    await _audit(int(admin["sub"]), "create", "single_lesson_override", payload.model_dump())
+    return {"status": "ok"}
+
+
+@app.post("/api/admin/lessons/reschedule")
+async def admin_reschedule_lesson(payload: LessonRescheduleIn, admin: dict[str, Any] = Depends(require_admin)) -> dict[str, Any]:
+    old_hh, old_mm = _parse_hhmm(payload.source_time)
+    new_hh, new_mm = _parse_hhmm(payload.target_time)
+    if not _is_valid_custom_step(new_hh, new_mm):
+        raise HTTPException(status_code=422, detail="INVALID_TIME_STEP")
+    if (payload.source_date, old_hh, old_mm) != (payload.target_date, new_hh, new_mm):
+        if await transactions.is_slot_busy(payload.target_date, new_hh, new_mm, payload.duration) or await transactions.is_slot_overlapping_local(payload.target_date, new_hh, new_mm, payload.duration):
+            raise HTTPException(status_code=409, detail="SLOT_BUSY")
+    moved = await transactions.reschedule_single_slot(payload.telegram_id, payload.source_date, old_hh, old_mm, payload.target_date, new_hh, new_mm, payload.duration, source_context="admin_override")
+    if not moved:
+        raise HTTPException(status_code=404, detail={"code": "LESSON_NOT_FOUND", "message": "Исходное занятие не найдено"})
+    try:
+        await bot.send_message(chat_id=payload.telegram_id, text=("📌 Занятие перенесено администратором\n" f"Новая дата: {payload.target_date.isoformat()}\nВремя: {new_hh:02d}:{new_mm:02d}\nДлительность: {payload.duration} мин"))
+    except Exception as exc:  # pylint: disable=broad-except
+        logger.warning("failed to notify rescheduled lesson telegram_id=%s: %s", payload.telegram_id, exc)
+    await _audit(int(admin["sub"]), "reschedule", "lesson", payload.model_dump(mode="json"))
     return {"status": "ok"}
 
 

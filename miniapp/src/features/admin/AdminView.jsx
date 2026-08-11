@@ -216,6 +216,8 @@ export function AdminView({ token }) {
   const [scheduleMode, setScheduleMode] = useState('booked')
   const [scheduleAssignMode, setScheduleAssignMode] = useState('single')
   const [scheduleDuration, setScheduleDuration] = useState(60)
+  const [overrideTime, setOverrideTime] = useState('10:00')
+  const [rescheduleForm, setRescheduleForm] = useState(null)
   const [scheduleMonthDays, setScheduleMonthDays] = useState([])
   const [schedule, setSchedule] = useState([])
   const [freeSlots, setFreeSlots] = useState([])
@@ -1130,6 +1132,27 @@ export function AdminView({ token }) {
     setSelectedFreeTime('')
   }
 
+  async function assignClientToAnySlot() {
+    if (!lessonForm.telegram_id || !overrideTime) return
+    await api('/api/admin/lessons/override', {
+      token,
+      method: 'POST',
+      body: { telegram_id: Number(lessonForm.telegram_id), date: day, time: overrideTime, duration: Number(scheduleDuration) },
+    })
+    await Promise.all([loadSchedule(), loadScheduleMonth(), loadFreeSlots()])
+    setSuccess('Занятие назначено вне обычного графика')
+  }
+
+  async function rescheduleLesson() {
+    if (!rescheduleForm) return
+    await api('/api/admin/lessons/reschedule', { token, method: 'POST', body: { ...rescheduleForm, telegram_id: Number(rescheduleForm.telegram_id), duration: Number(rescheduleForm.duration) } })
+    const targetDay = rescheduleForm.target_date
+    setRescheduleForm(null)
+    if (targetDay === day) await loadSchedule()
+    await Promise.all([loadScheduleMonth(), loadFreeSlots()])
+    setSuccess('Занятие перенесено')
+  }
+
   return (
     <div className={`mini-layout admin-layout ${navCollapsed ? 'nav-collapsed' : ''}`}>
       <section className="mini-cover">
@@ -1430,6 +1453,9 @@ export function AdminView({ token }) {
                       {s.telegram_id && s.kind_code !== 'block' ? (
                         s.kind_code === 'regular' ? (
                           <div className="record-actions">
+                            <button className="btn secondary compact" onClick={() => setRescheduleForm({ telegram_id: s.telegram_id, source_date: day, source_time: `${String(s.hour).padStart(2, '0')}:${String(s.minute).padStart(2, '0')}`, target_date: day, target_time: '10:00', duration: s.duration || 60 })}>
+                              Перенести это
+                            </button>
                             <button className="btn secondary compact" onClick={() => deleteScheduleItem(s, 'single').catch(e => setError(String(e.message || e)))}>
                               Удалить это
                             </button>
@@ -1439,6 +1465,9 @@ export function AdminView({ token }) {
                           </div>
                         ) : (
                           <div className="record-actions">
+                            <button className="btn secondary compact" onClick={() => setRescheduleForm({ telegram_id: s.telegram_id, source_date: day, source_time: `${String(s.hour).padStart(2, '0')}:${String(s.minute).padStart(2, '0')}`, target_date: day, target_time: '10:00', duration: s.duration || 60 })}>
+                              Перенести
+                            </button>
                             <button className="btn secondary compact" onClick={() => deleteScheduleItem(s, 'single').catch(e => setError(String(e.message || e)))}>
                               Удалить
                             </button>
@@ -1448,6 +1477,7 @@ export function AdminView({ token }) {
                     </li>
                   ))}
                 </ul>
+                {rescheduleForm ? <div className="stack" style={{ marginTop: 14 }}><strong>Перенос занятия</strong><small>Новый слот может быть вне рабочего графика, но не может пересекаться с другим занятием или бронью.</small><div className="custom-row"><input className="input" type="date" value={rescheduleForm.target_date} onChange={e => setRescheduleForm(value => ({ ...value, target_date: e.target.value }))} /><input className="input" type="time" step="900" value={rescheduleForm.target_time} onChange={e => setRescheduleForm(value => ({ ...value, target_time: e.target.value }))} /><select className="input" value={rescheduleForm.duration} onChange={e => setRescheduleForm(value => ({ ...value, duration: Number(e.target.value) }))}><option value={60}>60 мин</option><option value={90}>90 мин</option><option value={120}>120 мин</option></select><button className="btn" onClick={() => rescheduleLesson().catch(e => setError(normalizeErrorMessage(e.message || e)))}>Перенести</button><button className="btn secondary" onClick={() => setRescheduleForm(null)}>Отмена</button></div></div> : null}
                 </>
                 )}
               </Card>
@@ -1487,6 +1517,8 @@ export function AdminView({ token }) {
                   <button className={scheduleDuration === 90 ? 'seg active' : 'seg'} onClick={() => setScheduleDuration(90)}>90 мин</button>
                   <button className={scheduleDuration === 120 ? 'seg active' : 'seg'} onClick={() => setScheduleDuration(120)}>120 мин</button>
                 </div>
+                <div className="custom-row"><input className="input" type="time" step="900" value={overrideTime} onChange={e => setOverrideTime(e.target.value)} aria-label="Время вне графика" /><button className="btn secondary" disabled={!lessonForm.telegram_id || !overrideTime} onClick={() => assignClientToAnySlot().catch(e => setError(normalizeErrorMessage(e.message || e)))}>Назначить в это время вне графика</button></div>
+                <small>Админское назначение: доступно даже вне настроенных рабочих часов, но пересечения с существующими занятиями запрещены.</small>
                 <div className="record-actions">
                   <button className="btn secondary" onClick={() => loadFreeSlots().catch(e => setError(String(e.message || e)))}>Обновить слоты</button>
                   <button className="btn secondary" onClick={() => setShowExtraAvailabilityForm(v => !v)}>
@@ -1608,6 +1640,7 @@ export function AdminView({ token }) {
                   </div>
                 ))}
               </div>
+              <button className="btn" style={{ marginTop: 14 }} onClick={() => saveWorkSchedule().catch(e => setError(normalizeErrorMessage(e.message || e)))}>Сохранить расписание</button>
             </Card>
 
             <Card title="Последствия изменений" subtitle="Проверьте какие занятия выйдут за пределы графика">
