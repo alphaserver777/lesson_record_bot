@@ -2710,19 +2710,48 @@ async def analytics_marketing(
         if opportunity and opportunity.contact_id in scoped_ids:
             event_roles.setdefault(opportunity.contact_id, set()).add(stage_roles.get(event.to_stage, "new"))
 
+    opportunities_by_contact: dict[int, list[Opportunity]] = {}
+    for opportunity in opportunities:
+        if opportunity.contact_id in scoped_ids:
+            opportunities_by_contact.setdefault(opportunity.contact_id, []).append(opportunity)
+
+    def contacts_with(role: str, contact_ids: set[int]) -> set[int]:
+        """Combine canonical CRM events with direct operations in the lead passport."""
+        result = {contact_id for contact_id in contact_ids if role in event_roles.get(contact_id, set())}
+        for contact_id in contact_ids:
+            items = opportunities_by_contact.get(contact_id, [])
+            if role == "qualified" and any(item.qualification_status == "qualified" for item in items):
+                result.add(contact_id)
+            elif role == "diagnostic_scheduled" and any(item.diagnostic_scheduled_at for item in items):
+                result.add(contact_id)
+            elif role == "diagnostic_held" and any(item.diagnostic_held_at for item in items):
+                result.add(contact_id)
+        return result
+
     def ratio(numerator: int | float, denominator: int | float) -> float | None:
         return round(float(numerator) / float(denominator), 2) if denominator else None
     def percent(numerator: int | float, denominator: int | float) -> float | None:
         return round((float(numerator) / float(denominator)) * 100, 1) if denominator else None
     def romi(revenue: int, spend: int) -> float | None:
         return round(((revenue - spend) / spend) * 100, 2) if spend else None
+    def average_sales_cycle(contact_ids: set[int]) -> float | None:
+        days = [
+            max(0, (first_paid[contact_id].lesson_date - contact_map[contact_id].acquired_at).days)
+            for contact_id in contact_ids
+            if contact_id in first_paid and contact_map[contact_id].acquired_at
+            and date_from <= first_paid[contact_id].lesson_date <= date_to
+        ]
+        return round(sum(days) / len(days), 1) if days else None
 
     total_spend = sum(int(item.amount) for item in exp_scoped)
     total_cash = sum(int(item.amount or 0) for item in cash_payments)
     first_revenue = sum(int(item.amount or 0) for item in new_paid)
-    qualified = sum("qualified" in event_roles.get(contact_id, set()) for contact_id in scoped_ids)
-    diagnostics_scheduled = sum("diagnostic_scheduled" in event_roles.get(contact_id, set()) for contact_id in scoped_ids)
-    diagnostics_held = sum("diagnostic_held" in event_roles.get(contact_id, set()) for contact_id in scoped_ids)
+    qualified_ids = contacts_with("qualified", scoped_ids)
+    diagnostics_scheduled_ids = contacts_with("diagnostic_scheduled", scoped_ids)
+    diagnostics_held_ids = contacts_with("diagnostic_held", scoped_ids)
+    qualified = len(qualified_ids)
+    diagnostics_scheduled = len(diagnostics_scheduled_ids)
+    diagnostics_held = len(diagnostics_held_ids)
 
     rows = []
     row_keys = {(item.acquisition_source or "unknown", item.acquisition_campaign or None, item.acquisition_campaign_id) for item in scoped_contacts}
@@ -2738,9 +2767,13 @@ async def analytics_marketing(
         new_clients = [item for contact_id, item in first_paid.items() if contact_id in ids and date_from <= item.lesson_date <= date_to]
         ltv = sum(int(item.amount or 0) for item in payments if item.contact_id in ids)
         campaign_item = campaign_meta.get(campaign_id)
-        rows.append({"source_key": key, "source_name": source_names.get(key, key), "campaign_id": campaign_id, "campaign_name": campaign_name, "active_from": campaign_item.active_from.isoformat() if campaign_item and campaign_item.active_from else None, "active_to": campaign_item.active_to.isoformat() if campaign_item and campaign_item.active_to else None, "target_action_label": campaign_item.target_action_label if campaign_item else "Целевое действие", "manual_metrics": manual_metrics.get(campaign_id, {}), "spend": spend, "leads": len(ids), "qualified": sum("qualified" in event_roles.get(contact_id, set()) for contact_id in ids), "diagnostics_scheduled": sum("diagnostic_scheduled" in event_roles.get(contact_id, set()) for contact_id in ids), "diagnostics_held": sum("diagnostic_held" in event_roles.get(contact_id, set()) for contact_id in ids), "new_clients": len(new_clients), "first_revenue": sum(int(item.amount or 0) for item in new_clients), "cash_revenue": cash, "ltv": ltv, "cpl": ratio(spend, len(ids)), "cac": ratio(spend, len(new_clients)), "romi": romi(cash, spend)})
+        rows.append({"source_key": key, "source_name": source_names.get(key, key), "campaign_id": campaign_id, "campaign_name": campaign_name, "active_from": campaign_item.active_from.isoformat() if campaign_item and campaign_item.active_from else None, "active_to": campaign_item.active_to.isoformat() if campaign_item and campaign_item.active_to else None, "target_action_label": campaign_item.target_action_label if campaign_item else "Целевое действие", "manual_metrics": manual_metrics.get(campaign_id, {}), "spend": spend, "leads": len(ids), "qualified": len(contacts_with("qualified", ids)), "diagnostics_scheduled": len(contacts_with("diagnostic_scheduled", ids)), "diagnostics_held": len(contacts_with("diagnostic_held", ids)), "new_clients": len(new_clients), "first_revenue": sum(int(item.amount or 0) for item in new_clients), "cash_revenue": cash, "ltv": ltv, "cpl": ratio(spend, len(ids)), "cac": ratio(spend, len(new_clients)), "romi": romi(cash, spend), "avg_days_to_first_payment": average_sales_cycle(ids)})
 
-    return {"period": {"date_from": date_from.isoformat(), "date_to": date_to.isoformat()}, "kpi": {"spend": total_spend, "leads": len(scoped_ids), "qualified": qualified, "diagnostics_scheduled": diagnostics_scheduled, "diagnostics_held": diagnostics_held, "new_clients": len(new_paid), "first_revenue": first_revenue, "cash_revenue": total_cash, "cpl": ratio(total_spend, len(scoped_ids)), "cpql": ratio(total_spend, qualified), "cac": ratio(total_spend, len(new_paid)), "avg_first_payment": ratio(first_revenue, len(new_paid)), "romi": romi(total_cash, total_spend)}, "funnel": [{"role": role, "count": sum(role in values for values in event_roles.values()), "conversion_from_leads": percent(sum(role in values for values in event_roles.values()), len(scoped_ids))} for role in ["new", "qualified", "diagnostic_scheduled", "diagnostic_held", "offer", "won", "lost"]], "rows": rows, "data_quality": {"contacts_unknown_source": sum(item.acquisition_source == "unknown" for item in contacts), "contacts_missing_campaign": sum(bool(item.acquisition_source not in {"unknown", "direct", "referral"} and not item.acquisition_campaign_id) for item in contacts), "opportunities_missing_next_contact": sum(bool(item.stage not in {"won", "lost"} and not item.next_contact_at) for item in opportunities)}}
+    funnel_counts = {
+        "qualified": qualified, "diagnostic_scheduled": diagnostics_scheduled, "diagnostic_held": diagnostics_held,
+        **{role: sum(role in values for values in event_roles.values()) for role in ["new", "offer", "won", "lost"]},
+    }
+    return {"period": {"date_from": date_from.isoformat(), "date_to": date_to.isoformat()}, "kpi": {"spend": total_spend, "leads": len(scoped_ids), "qualified": qualified, "diagnostics_scheduled": diagnostics_scheduled, "diagnostics_held": diagnostics_held, "new_clients": len(new_paid), "first_revenue": first_revenue, "cash_revenue": total_cash, "cpl": ratio(total_spend, len(scoped_ids)), "cpql": ratio(total_spend, qualified), "cac": ratio(total_spend, len(new_paid)), "avg_first_payment": ratio(first_revenue, len(new_paid)), "avg_days_to_first_payment": average_sales_cycle(scoped_ids), "romi": romi(total_cash, total_spend)}, "funnel": [{"role": role, "count": funnel_counts[role], "conversion_from_leads": percent(funnel_counts[role], len(scoped_ids))} for role in ["new", "qualified", "diagnostic_scheduled", "diagnostic_held", "offer", "won", "lost"]], "rows": rows, "data_quality": {"contacts_unknown_source": sum(item.acquisition_source == "unknown" for item in contacts), "contacts_missing_campaign": sum(bool(item.acquisition_source not in {"unknown", "direct", "referral"} and not item.acquisition_campaign_id) for item in contacts), "opportunities_missing_next_contact": sum(bool(item.stage not in {"won", "lost"} and not item.next_contact_at) for item in opportunities)}}
 
 
 @app.get("/api/admin/analytics/overview")
