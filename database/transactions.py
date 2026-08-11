@@ -988,7 +988,7 @@ async def add_manual_completed_lesson(
     minute: int,
     duration_minutes: int = SLOT_DURATION_MINUTES,
     note: str | None = None,
-) -> RecordDate | None:
+) -> tuple[RecordDate | None, bool, str | None]:
     """Write a completed off-schedule lesson to the canonical lesson journal.
 
     This intentionally does not create a calendar event: the lesson has already
@@ -996,19 +996,41 @@ async def add_manual_completed_lesson(
     exactly the same way as a normally scheduled lesson.
     """
     duplicate = await session.execute(
-        select(RecordDate.id).where(
+        select(RecordDate).where(
             RecordDate.telegram_id == telegram_id,
             RecordDate.record_date == date,
             RecordDate.hour == hour,
             RecordDate.minute == minute,
         )
     )
-    if duplicate.scalar_one_or_none() is not None:
-        return None
+    existing = duplicate.scalar_one_or_none()
+    if existing is not None:
+        if existing.kind != "manual":
+            return None, False, "slot_exists"
+        if await find_payment(telegram_id, date, hour, minute):
+            return None, False, "financially_closed"
+        existing.duration_minutes = duration_minutes
+        existing.presence_status = "yes"
+        if (note or "").strip():
+            existing.note = note.strip()
+        await log_analytics_event(
+            "lesson_recorded_manual_corrected",
+            telegram_id=telegram_id,
+            record_date=date,
+            hour=hour,
+            minute=minute,
+            duration_minutes=duration_minutes,
+            lesson_kind="manual",
+            source_context="admin",
+            meta={"note": existing.note},
+            commit=False,
+        )
+        await session.commit()
+        return existing, False, None
 
     profile = await session.get(StudentProfile, telegram_id)
     if profile is None:
-        return None
+        return None, False, "profile_missing"
     record = RecordDate(
         contact_id=profile.contact_id,
         telegram_id=telegram_id,
@@ -1037,7 +1059,7 @@ async def add_manual_completed_lesson(
         commit=False,
     )
     await session.commit()
-    return record
+    return record, True, None
 
 
 async def add_pending_single_slot(

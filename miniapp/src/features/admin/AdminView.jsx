@@ -827,7 +827,7 @@ export function AdminView({ token }) {
 
   async function addManualCompletedLesson() {
     if (!manualCompletedLesson.telegram_id) throw new Error('Выберите клиента')
-    await api('/api/admin/lessons/manual-completed', {
+    const result = await api('/api/admin/lessons/manual-completed', {
       token,
       method: 'POST',
       body: {
@@ -841,7 +841,9 @@ export function AdminView({ token }) {
     if (selectedContact?.contact?.id && Number(selectedContact.contact.telegram_id) === Number(manualCompletedLesson.telegram_id)) {
       await selectContact(selectedContact.contact.id)
     }
-    setSuccess('Проведённое занятие внесено. Выберите для него финансовый статус ниже.')
+    setSuccess(result.status === 'updated'
+      ? 'Проведённое занятие исправлено. Финансовый статус пока не выбран.'
+      : 'Проведённое занятие внесено. Выберите для него финансовый статус ниже.')
   }
 
   async function loadDebtors() {

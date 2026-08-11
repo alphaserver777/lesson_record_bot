@@ -1753,19 +1753,24 @@ async def admin_add_manual_completed_lesson(payload: ManualCompletedLessonIn, ad
     hh, mm = _parse_hhmm(payload.time)
     if not _is_valid_custom_step(hh, mm):
         raise HTTPException(status_code=422, detail="INVALID_TIME_STEP")
-    record = await transactions.add_manual_completed_lesson(
+    record, created, error_code = await transactions.add_manual_completed_lesson(
         payload.telegram_id, payload.date, hh, mm, payload.duration, payload.note,
     )
     if record is None:
+        messages = {
+            "slot_exists": "На это время уже есть обычное занятие. Измените его в расписании.",
+            "financially_closed": "Занятие уже закрыто в финансах. Сначала исправьте финансовую запись.",
+            "profile_missing": "Клиент не найден.",
+        }
         raise HTTPException(
             status_code=409,
-            detail={"code": "MANUAL_LESSON_EXISTS", "message": "Такое проведённое занятие уже внесено или клиент не найден"},
+            detail={"code": "MANUAL_LESSON_EXISTS", "message": messages.get(error_code or "", "Не удалось сохранить занятие")},
         )
     await _audit(
-        int(admin["sub"]), "create", "manual_completed_lesson",
+        int(admin["sub"]), "create" if created else "update", "manual_completed_lesson",
         {"record_id": record.id, **payload.model_dump(mode="json")},
     )
-    return {"status": "ok", "record_id": record.id}
+    return {"status": "created" if created else "updated", "record_id": record.id}
 
 
 @app.post("/api/admin/lessons/regular")
