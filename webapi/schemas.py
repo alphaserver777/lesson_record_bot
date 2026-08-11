@@ -144,6 +144,7 @@ class MarketingCampaignIn(BaseModel):
 class MarketingCampaignMetricsIn(BaseModel):
     views: int = Field(default=0, ge=0)
     dialogs: int = Field(default=0, ge=0)
+    target_actions: int = Field(default=0, ge=0)
 
 
 class MarketingExpenseIn(BaseModel):
