@@ -283,6 +283,20 @@ class MarketingCampaignMetric(Base):
     updated_at = Column(String(50), nullable=False)
 
 
+class ManualWorkLog(Base):
+    """Non-lesson work included in the effective hourly-rate calculation."""
+
+    __tablename__ = "manual_work_logs"
+
+    id = Column(Integer, primary_key=True)
+    worked_on = Column(Date, nullable=False, index=True)
+    category = Column(String(24), nullable=False, index=True)  # prep/sales/content/admin
+    minutes = Column(Integer, nullable=False)
+    note = Column(String(500), nullable=True)
+    created_at = Column(String(50), nullable=False)
+    updated_at = Column(String(50), nullable=False)
+
+
 class Payment(Base):
     __tablename__ = "payments"
     __table_args__ = {'extend_existing': True}

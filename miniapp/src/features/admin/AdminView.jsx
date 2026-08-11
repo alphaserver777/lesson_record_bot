@@ -63,6 +63,7 @@ const LOST_REASON_OPTIONS = [
   ['other_teacher', 'Выбрал другого преподавателя'], ['format', 'Не подходит формат'], ['motivation', 'Потерял мотивацию'],
   ['goal_reached', 'Достиг цели'], ['finance', 'Финансовые причины'], ['no_response', 'Не выходит на связь'], ['other', 'Другое'],
 ]
+const WORK_CATEGORY_LABELS = { prep: 'Подготовка', sales: 'Продажи и переписка', content: 'Контент', admin: 'Администрирование' }
 
 function metricValue(value, kind = 'number') {
   if (value === null || value === undefined) return 'нет данных'
@@ -157,6 +158,8 @@ export function AdminView({ token }) {
   const [analyticsSeriesSummary, setAnalyticsSeriesSummary] = useState(null)
   const [analyticsRevenueShare, setAnalyticsRevenueShare] = useState({ total_paid: 0, items: [] })
   const [analyticsV2, setAnalyticsV2] = useState(null)
+  const [effectiveRate, setEffectiveRate] = useState(null)
+  const [workLogForm, setWorkLogForm] = useState(() => ({ worked_on: new Date().toISOString().slice(0, 10), category: 'prep', minutes: '', note: '' }))
   const [analyticsLoading, setAnalyticsLoading] = useState(false)
   const [marketingMetrics, setMarketingMetrics] = useState(null)
   const [marketingSources, setMarketingSources] = useState([])
@@ -433,6 +436,8 @@ export function AdminView({ token }) {
         api(`/api/admin/analytics/revenue-share?anchor_date=${anchorDate}&mode=${mode}`, { token }),
         api(`/api/admin/analytics/overview-v2?anchor_date=${anchorDate}&mode=${mode}`, { token }),
       ])
+      const ratePeriod = overviewV2?.period
+      const rate = ratePeriod ? await api(`/api/admin/analytics/effective-rate?date_from=${ratePeriod.current_from}&date_to=${ratePeriod.current_to}`, { token }) : null
       setAnalyticsOverview(overview || null)
       setAnalyticsDelta({
         new_active: Array.isArray(delta?.new_active) ? delta.new_active : [],
@@ -445,9 +450,25 @@ export function AdminView({ token }) {
         items: Array.isArray(revenueShare?.items) ? revenueShare.items : [],
       })
       setAnalyticsV2(overviewV2 || null)
+      setEffectiveRate(rate)
     } finally {
       setAnalyticsLoading(false)
     }
+  }
+
+  async function addWorkLog() {
+    const minutes = Number(workLogForm.minutes)
+    if (!Number.isInteger(minutes) || minutes <= 0) return
+    await api('/api/admin/analytics/work-logs', { token, method: 'POST', body: { ...workLogForm, minutes } })
+    setWorkLogForm(value => ({ ...value, minutes: '', note: '' }))
+    await loadAnalyticsV2()
+    setSuccess('Рабочие часы добавлены')
+  }
+
+  async function deleteWorkLog(logId) {
+    await api(`/api/admin/analytics/work-logs/${logId}`, { token, method: 'DELETE' })
+    await loadAnalyticsV2()
+    setSuccess('Запись рабочих часов удалена')
   }
 
   async function loadMarketingAnalytics() {
@@ -2147,6 +2168,26 @@ export function AdminView({ token }) {
                   <Pill label="Стали неактивны" value={analyticsPeriodClosed ? (analyticsOverview.clients?.became_inactive_count ?? 0) : '—'} tone="violet" />
                 </div>
               ) : null}
+            </Card>
+
+            <Card title="Эффективная ставка" subtitle="Выручка проведённых занятий ÷ все учтённые рабочие часы">
+              {effectiveRate ? <>
+                <div className="analytics-kpi-grid">
+                  <div className="analytics-kpi-card"><span>Эффективная ставка</span><strong>{metricValue(effectiveRate.summary?.effective_hourly_rate, 'money')}</strong><small>цель: 3 000 ₽/ч+</small></div>
+                  <div className="analytics-kpi-card"><span>Учтённая выручка</span><strong>{metricValue(effectiveRate.summary?.revenue, 'money')}</strong><small>без предоплат, не связанных с уроком</small></div>
+                  <div className="analytics-kpi-card"><span>Проведённые занятия</span><strong>{metricValue(effectiveRate.summary?.lesson_hours)} ч</strong><small>по длительности оплаченных уроков</small></div>
+                  <div className="analytics-kpi-card"><span>Непроведённая работа</span><strong>{metricValue(effectiveRate.summary?.manual_hours)} ч</strong><small>подготовка, продажи, контент, админ</small></div>
+                </div>
+                <div className="custom-row" style={{ marginTop: 14 }}>
+                  <input type="date" className="input" value={workLogForm.worked_on} onChange={e => setWorkLogForm(value => ({ ...value, worked_on: e.target.value }))} />
+                  <select className="input" value={workLogForm.category} onChange={e => setWorkLogForm(value => ({ ...value, category: e.target.value }))}>{Object.entries(WORK_CATEGORY_LABELS).map(([key, label]) => <option key={key} value={key}>{label}</option>)}</select>
+                  <input className="input" type="number" min="1" value={workLogForm.minutes} onChange={e => setWorkLogForm(value => ({ ...value, minutes: e.target.value }))} placeholder="Минуты" />
+                  <input className="input" value={workLogForm.note} onChange={e => setWorkLogForm(value => ({ ...value, note: e.target.value }))} placeholder="Что сделано" />
+                  <button className="btn" disabled={!workLogForm.minutes} onClick={() => addWorkLog().catch(e => setError(normalizeErrorMessage(e.message || e)))}>Учесть часы</button>
+                </div>
+                <small>За период: всего {metricValue(effectiveRate.summary?.total_hours)} ч. Вносите только работу вне проведённых занятий — занятия считаются автоматически.</small>
+                {(effectiveRate.items || []).length ? <ul className="list list-compact" style={{ marginTop: 12 }}>{effectiveRate.items.slice(0, 8).map(item => <li key={item.id}><div><strong>{item.worked_on} · {WORK_CATEGORY_LABELS[item.category] || item.category}</strong><small>{item.minutes} мин{item.note ? ` · ${item.note}` : ''}</small></div><button className="btn secondary compact" onClick={() => deleteWorkLog(item.id).catch(e => setError(normalizeErrorMessage(e.message || e)))}>Удалить</button></li>)}</ul> : <div className="placeholder-box" style={{ marginTop: 12 }}>Добавьте подготовку, продажи, контент или администрирование — это сделает ставку честной.</div>}
+              </> : <div className="placeholder-box">Загружаем расчёт рабочей ставки.</div>}
             </Card>
 
             <Card

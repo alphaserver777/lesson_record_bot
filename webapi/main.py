@@ -25,7 +25,7 @@ from database.connect import (
     rollback_session,
     session,
 )
-from database.models import Contact, FunnelStage, MarketingCampaign, MarketingCampaignMetric, MarketingExpense, MarketingSource, Opportunity, OpportunityStageEvent, Payment, RecordDate, StudentProfile, TelegramIdentity
+from database.models import Contact, FunnelStage, ManualWorkLog, MarketingCampaign, MarketingCampaignMetric, MarketingExpense, MarketingSource, Opportunity, OpportunityStageEvent, Payment, RecordDate, StudentProfile, TelegramIdentity
 from loader import bot
 from utils.calendar_backend import get_busy_intervals, get_calendar_tz
 from utils.schedule import WEEK_SCHEDULE, is_time_in_schedule, refresh_schedule_cache, slots_for_date
@@ -60,6 +60,7 @@ from webapi.schemas import (
     MarketingCampaignPatchIn,
     MarketingCampaignMetricsIn,
     MarketingExpenseIn,
+    ManualWorkLogIn,
     OpportunityMarketingPatchIn,
     RegularLessonIn,
     SingleLessonIn,
@@ -2775,6 +2776,72 @@ async def analytics_marketing(
         **{role: sum(role in values for values in event_roles.values()) for role in ["new", "offer", "won", "lost"]},
     }
     return {"period": {"date_from": date_from.isoformat(), "date_to": date_to.isoformat()}, "kpi": {"spend": total_spend, "leads": len(scoped_ids), "qualified": qualified, "diagnostics_scheduled": diagnostics_scheduled, "diagnostics_held": diagnostics_held, "new_clients": len(new_paid), "first_revenue": first_revenue, "cash_revenue": total_cash, "cpl": ratio(total_spend, len(scoped_ids)), "cpql": ratio(total_spend, qualified), "cac": ratio(total_spend, len(new_paid)), "avg_first_payment": ratio(first_revenue, len(new_paid)), "avg_days_to_first_payment": average_sales_cycle(scoped_ids), "roas": ratio(total_cash, total_spend), "ltv_cac": ratio(total_ltv, total_spend), "romi": romi(total_cash, total_spend)}, "funnel": [{"role": role, "count": funnel_counts[role], "conversion_from_leads": percent(funnel_counts[role], len(scoped_ids))} for role in ["new", "qualified", "diagnostic_scheduled", "diagnostic_held", "offer", "won", "lost"]], "rows": rows, "data_quality": {"contacts_unknown_source": sum(item.acquisition_source == "unknown" for item in contacts), "contacts_missing_campaign": sum(bool(item.acquisition_source not in {"unknown", "direct", "referral"} and not item.acquisition_campaign_id) for item in contacts), "opportunities_missing_next_contact": sum(bool(item.stage not in {"won", "lost"} and not item.next_contact_at) for item in opportunities)}}
+
+
+def _effective_rate_out(
+    payments: list[Payment],
+    work_logs: list[ManualWorkLog],
+) -> dict[str, Any]:
+    """Cash earned from delivered lessons divided by all recorded working time."""
+    lesson_payments = [item for item in payments if item.status == "paid" and (item.source or "") != "prepayment" and int(item.duration_minutes or 0) > 0]
+    revenue = sum(int(item.amount or 0) for item in lesson_payments)
+    lesson_minutes = sum(int(item.duration_minutes or 0) for item in lesson_payments)
+    by_category = {key: 0 for key in ("prep", "sales", "content", "admin")}
+    for item in work_logs:
+        by_category[item.category] = by_category.get(item.category, 0) + int(item.minutes or 0)
+    manual_minutes = sum(by_category.values())
+    total_minutes = lesson_minutes + manual_minutes
+    return {
+        "revenue": revenue,
+        "lesson_minutes": lesson_minutes,
+        "manual_minutes": manual_minutes,
+        "total_minutes": total_minutes,
+        "lesson_hours": round(lesson_minutes / 60, 1),
+        "manual_hours": round(manual_minutes / 60, 1),
+        "total_hours": round(total_minutes / 60, 1),
+        "effective_hourly_rate": round(revenue * 60 / total_minutes) if total_minutes else None,
+        "by_category_minutes": by_category,
+    }
+
+
+@app.get("/api/admin/analytics/effective-rate")
+async def analytics_effective_rate(
+    date_from: datetime.date,
+    date_to: datetime.date,
+    _: dict[str, Any] = Depends(require_admin),
+) -> dict[str, Any]:
+    if date_to < date_from:
+        raise HTTPException(status_code=422, detail={"code": "INVALID_PERIOD", "message": "Дата окончания не может быть раньше даты начала"})
+    payments = (await session.execute(select(Payment).where(Payment.lesson_date.between(date_from, date_to)))).scalars().all()
+    logs = (await session.execute(select(ManualWorkLog).where(ManualWorkLog.worked_on.between(date_from, date_to)).order_by(ManualWorkLog.worked_on.desc(), ManualWorkLog.id.desc()))).scalars().all()
+    return {
+        "period": {"date_from": date_from.isoformat(), "date_to": date_to.isoformat()},
+        "summary": _effective_rate_out(payments, logs),
+        "items": [{"id": item.id, "worked_on": item.worked_on.isoformat(), "category": item.category, "minutes": item.minutes, "note": item.note} for item in logs],
+    }
+
+
+@app.post("/api/admin/analytics/work-logs")
+async def admin_create_work_log(payload: ManualWorkLogIn, admin: dict[str, Any] = Depends(require_admin)) -> dict[str, Any]:
+    now = datetime.datetime.now(datetime.timezone.utc).isoformat()
+    item = ManualWorkLog(worked_on=payload.worked_on, category=payload.category, minutes=payload.minutes, note=(payload.note or "").strip() or None, created_at=now, updated_at=now)
+    session.add(item)
+    await session.commit()
+    await session.refresh(item)
+    await _audit(int(admin["sub"]), "create", "manual_work_log", {"id": item.id, **payload.model_dump(mode="json")})
+    return {"item": {"id": item.id, "worked_on": item.worked_on.isoformat(), "category": item.category, "minutes": item.minutes, "note": item.note}}
+
+
+@app.delete("/api/admin/analytics/work-logs/{log_id}")
+async def admin_delete_work_log(log_id: int, admin: dict[str, Any] = Depends(require_admin)) -> dict[str, Any]:
+    item = await session.get(ManualWorkLog, log_id)
+    if item is None:
+        raise HTTPException(status_code=404, detail={"code": "NOT_FOUND", "message": "Запись часов не найдена"})
+    snapshot = {"id": item.id, "worked_on": item.worked_on.isoformat(), "category": item.category, "minutes": item.minutes}
+    await session.delete(item)
+    await session.commit()
+    await _audit(int(admin["sub"]), "delete", "manual_work_log", snapshot)
+    return {"status": "ok"}
 
 
 @app.get("/api/admin/analytics/overview")

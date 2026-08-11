@@ -169,6 +169,13 @@ class MarketingExpenseIn(BaseModel):
     note: str | None = Field(default=None, max_length=500)
 
 
+class ManualWorkLogIn(BaseModel):
+    worked_on: date
+    category: str = Field(pattern=r"^(prep|sales|content|admin)$")
+    minutes: int = Field(ge=1, le=1440)
+    note: str | None = Field(default=None, max_length=500)
+
+
 class OpportunityMarketingPatchIn(BaseModel):
     source: str | None = Field(default=None, min_length=1, max_length=80)
     campaign: str | None = Field(default=None, max_length=120)
