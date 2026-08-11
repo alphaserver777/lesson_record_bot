@@ -340,6 +340,9 @@ export function AdminView({ token }) {
       acquisition_source: contact.acquisition_source || 'unknown',
       acquisition_campaign_id: contact.acquisition_campaign_id ? String(contact.acquisition_campaign_id) : '',
     })
+    if (contact.telegram_id) {
+      setManualCompletedLesson(prev => ({ ...prev, telegram_id: String(contact.telegram_id) }))
+    }
   }
 
   async function saveContact() {
@@ -835,6 +838,9 @@ export function AdminView({ token }) {
     })
     setManualCompletedLesson(prev => ({ ...prev, note: '' }))
     await Promise.all([loadUnclosedLessons(), loadDebtors(), loadScheduleMonth()])
+    if (selectedContact?.contact?.id && Number(selectedContact.contact.telegram_id) === Number(manualCompletedLesson.telegram_id)) {
+      await selectContact(selectedContact.contact.id)
+    }
     setSuccess('Проведённое занятие внесено. Выберите для него финансовый статус ниже.')
   }
 
@@ -1838,6 +1844,17 @@ export function AdminView({ token }) {
                   <div><small>Оплаты (последние 12)</small><strong>{formatMoneyShort(selectedContact.paid_total_recent)}</strong></div>
                 </div>
                 {selectedContact.contact?.is_student ? <div className="custom-row" style={{ marginTop: 12 }}><input className="input" type="number" min="1" value={prepaymentAmount} onChange={e => setPrepaymentAmount(e.target.value)} placeholder="Предоплата, ₽" /><button className="btn" onClick={() => addPrepayment().catch(e => setError(normalizeErrorMessage(e.message || e)))}>Внести оплату и пополнить баланс</button></div> : null}
+                {selectedContact.contact?.telegram_id ? <div className="stack" style={{ marginTop: 12 }}>
+                  <h3 style={{ margin: 0 }}>Проведённое занятие</h3>
+                  <small>Внести факт занятия вне расписания. Затем выберите «Оплачено», «В долг» или «Отмена» в финансах.</small>
+                  <div className="custom-row">
+                    <input type="date" className="input" value={manualCompletedLesson.date} onChange={e => setManualCompletedLesson(v => ({ ...v, date: e.target.value }))} />
+                    <input type="time" step="900" className="input" value={manualCompletedLesson.time} onChange={e => setManualCompletedLesson(v => ({ ...v, time: e.target.value }))} />
+                    <select className="input" value={manualCompletedLesson.duration} onChange={e => setManualCompletedLesson(v => ({ ...v, duration: Number(e.target.value) }))}><option value={60}>60 мин</option><option value={90}>90 мин</option><option value={120}>120 мин</option></select>
+                  </div>
+                  <input className="input" value={manualCompletedLesson.note} onChange={e => setManualCompletedLesson(v => ({ ...v, note: e.target.value }))} placeholder="Комментарий (необязательно)" />
+                  <button className="btn" onClick={() => addManualCompletedLesson().catch(e => setError(normalizeErrorMessage(e.message || e)))}>Внести проведённое занятие</button>
+                </div> : <small>Привяжите Telegram-профиль, чтобы вносить занятия.</small>}
 
                 <h3>Паспорт лида</h3>
                 {selectedContact.opportunities?.length ? <ul className="list list-compact">{selectedContact.opportunities.map(item => (
