@@ -1281,6 +1281,14 @@ async def admin_list_leads(_: dict[str, Any] = Depends(require_admin)) -> dict[s
 @app.post("/api/admin/leads")
 async def admin_create_lead(payload: LeadCreateIn, admin: dict[str, Any] = Depends(require_admin)) -> dict[str, Any]:
     now = datetime.datetime.now(datetime.timezone.utc).isoformat()
+    source_key = payload.source.strip().lower()
+    if await session.get(MarketingSource, source_key) is None:
+        raise HTTPException(status_code=422, detail={"code": "INVALID_SOURCE", "message": "Выберите источник из справочника"})
+    campaign = None
+    if payload.acquisition_campaign_id is not None:
+        campaign = await session.get(MarketingCampaign, payload.acquisition_campaign_id)
+        if campaign is None or campaign.source_key != source_key:
+            raise HTTPException(status_code=422, detail={"code": "INVALID_CAMPAIGN", "message": "Кампания не принадлежит выбранному источнику"})
     identity = None
     contact = None
     if payload.telegram_id is not None:
@@ -1305,15 +1313,18 @@ async def admin_create_lead(payload: LeadCreateIn, admin: dict[str, Any] = Depen
             preferred_channel="telegram" if identity else "phone",
             status="lead",
             is_archived=False,
-            acquisition_source=payload.source.strip().lower() if payload.source.strip().lower() in {"avito", "youtube", "telegram", "referral", "site", "direct", "other"} else "other",
-            acquisition_campaign=payload.utm_campaign,
+            acquisition_source=source_key,
+            acquisition_campaign_id=campaign.id if campaign else None,
+            acquisition_campaign=campaign.name if campaign else payload.utm_campaign,
             acquired_at=datetime.date.today(),
             created_at=now,
             updated_at=now,
         )
         session.add(contact)
         await session.flush()
-    lead_data = payload.model_dump(exclude={"telegram_id", "full_name", "telephone"})
+    lead_data = payload.model_dump(exclude={"telegram_id", "full_name", "telephone", "acquisition_campaign_id"})
+    if campaign is not None:
+        lead_data["utm_campaign"] = campaign.name
     stages = await _funnel_stages()
     stage_keys = {stage.key for stage in stages}
     lead_data["stage"] = lead_data["stage"] if lead_data["stage"] in stage_keys else stages[0].key

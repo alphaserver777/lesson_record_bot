@@ -182,6 +182,7 @@ export function AdminView({ token }) {
   const [draggedContactId, setDraggedContactId] = useState(null)
   const [navCollapsed, setNavCollapsed] = useState(false)
   const [selectedContact, setSelectedContact] = useState(null)
+  const [newLeadOpen, setNewLeadOpen] = useState(false)
   const [contactEdit, setContactEdit] = useState({
     first_name: '', last_name: '', telephone: '', telegram_username: '', status: 'active', preferred_channel: 'telegram', direction: '', acquisition_source: 'unknown', acquisition_campaign_id: '',
   })
@@ -244,7 +245,7 @@ export function AdminView({ token }) {
   const [systemHealth, setSystemHealth] = useState(null)
   const [leads, setLeads] = useState([])
   const [leadSummary, setLeadSummary] = useState(null)
-  const [leadForm, setLeadForm] = useState({ full_name: '', telephone: '', source: 'direct', direction: '', goal: '', stage: 'new', notes: '' })
+  const [leadForm, setLeadForm] = useState({ full_name: '', telephone: '', source: 'direct', acquisition_campaign_id: '', direction: '', goal: '', qualification_status: 'new', desired_format: '', desired_budget: '', next_contact_at: '', stage: 'new', notes: '' })
   const [backupStatus, setBackupStatus] = useState(null)
   const [workScheduleDays, setWorkScheduleDays] = useState([])
   const [workImpact, setWorkImpact] = useState(null)
@@ -392,10 +393,22 @@ export function AdminView({ token }) {
 
   async function createLead() {
     const payload = Object.fromEntries(Object.entries(leadForm).filter(([, value]) => String(value || '').trim() !== ''))
-    await api('/api/admin/leads', { token, method: 'POST', body: payload })
-    setLeadForm({ full_name: '', telephone: '', source: 'direct', direction: '', goal: '', stage: 'new', notes: '' })
-    await loadLeads()
-    setSuccess('Лид добавлен в воронку')
+    payload.acquisition_campaign_id = leadForm.acquisition_campaign_id ? Number(leadForm.acquisition_campaign_id) : null
+    payload.desired_budget = leadForm.desired_budget ? Number(leadForm.desired_budget) : null
+    const result = await api('/api/admin/leads', { token, method: 'POST', body: payload })
+    setLeadForm({ full_name: '', telephone: '', source: 'direct', acquisition_campaign_id: '', direction: '', goal: '', qualification_status: 'new', desired_format: '', desired_budget: '', next_contact_at: '', stage: 'new', notes: '' })
+    setNewLeadOpen(false)
+    await Promise.all([loadLeads(), loadContacts(1, '')])
+    if (result.item?.contact_id) await selectContact(result.item.contact_id)
+    setSuccess('Лид создан и привязан к источнику')
+  }
+
+  async function openNewLead() {
+    const [sources, campaigns] = await Promise.all([api('/api/admin/marketing/sources', { token }), api('/api/admin/marketing/campaigns', { token })])
+    setMarketingSources(sources.items || [])
+    setMarketingCampaigns(campaigns.items || [])
+    setSelectedContact(null)
+    setNewLeadOpen(true)
   }
 
   async function changeLeadStage(lead, stage) {
@@ -1616,6 +1629,9 @@ export function AdminView({ token }) {
                   <button className="btn" onClick={() => { setContactsPage(1); loadContacts(1, contactQuery).catch(e => setError(normalizeErrorMessage(e.message || e))) }}>
                     Поиск
                   </button>
+                  <button className="btn" onClick={() => openNewLead().catch(e => setError(normalizeErrorMessage(e.message || e)))}>
+                    + Новый лид
+                  </button>
                 </div>
                 <div className="mini-actions-row">
                   <button className="btn secondary" disabled={contactsPage <= 1} onClick={() => setContactsPage(page => Math.max(1, page - 1))}>← Стр.</button>
@@ -1624,7 +1640,7 @@ export function AdminView({ token }) {
               </div>
             </Card>
 
-            <div className={`contacts-workspace ${selectedContact ? 'has-selection' : ''}`}>
+            <div className={`contacts-workspace ${(selectedContact || newLeadOpen) ? 'has-selection' : ''}`}>
               <section className="contacts-main-panel">
                 {contactsView === 'kanban' ? (
                   <section className="funnel-board" aria-label="Воронка клиентов">
@@ -1676,6 +1692,30 @@ export function AdminView({ token }) {
                   </section>
                 )}
               </section>
+
+              {newLeadOpen ? (
+                <aside className="contact-side-panel">
+                  <div className="contact-panel-head">
+                    <div><small>Быстрое создание</small><h2>Новый лид</h2></div>
+                    <div className="contact-panel-actions"><button className="contact-panel-close" onClick={() => setNewLeadOpen(false)} aria-label="Закрыть создание лида">×</button></div>
+                  </div>
+                  <small>Заполните только то, что уже известно. Источник и кампания сохраняются как первое касание и сразу попадут в маркетинговую аналитику.</small>
+                  <div className="contact-edit-form" style={{ marginTop: 12 }}>
+                    <label className="contact-field-wide">Имя и фамилия<input className="input" autoFocus value={leadForm.full_name} onChange={e => setLeadForm(value => ({ ...value, full_name: e.target.value }))} placeholder="Например, Иван Петров" /></label>
+                    <label className="contact-field-wide">Телефон<input className="input" value={leadForm.telephone} onChange={e => setLeadForm(value => ({ ...value, telephone: e.target.value }))} placeholder="89881414232" /></label>
+                    <label>Источник<select className="input" value={leadForm.source} onChange={e => setLeadForm(value => ({ ...value, source: e.target.value, acquisition_campaign_id: '' }))}>{marketingSources.map(item => <option key={item.key} value={item.key}>{item.name}</option>)}</select></label>
+                    <label>Кампания<select className="input" value={leadForm.acquisition_campaign_id} onChange={e => setLeadForm(value => ({ ...value, acquisition_campaign_id: e.target.value }))}><option value="">Без кампании</option>{marketingCampaigns.filter(item => item.source_key === leadForm.source).map(item => <option key={item.id} value={String(item.id)}>#{item.id} · {item.name}</option>)}</select></label>
+                    <label>Направление<input className="input" value={leadForm.direction} onChange={e => setLeadForm(value => ({ ...value, direction: e.target.value }))} placeholder="DevOps, ИБ, Хакер" /></label>
+                    <label>Квалификация<select className="input" value={leadForm.qualification_status} onChange={e => setLeadForm(value => ({ ...value, qualification_status: e.target.value }))}><option value="new">Не оценен</option><option value="qualified">Квалифицирован</option><option value="not_qualified">Не подходит</option></select></label>
+                    <label>Формат<input className="input" value={leadForm.desired_format} onChange={e => setLeadForm(value => ({ ...value, desired_format: e.target.value }))} placeholder="2 × 60 минут" /></label>
+                    <label>Бюджет, ₽/занятие<input className="input" type="number" min="0" value={leadForm.desired_budget} onChange={e => setLeadForm(value => ({ ...value, desired_budget: e.target.value }))} /></label>
+                    <label>Следующее действие<input className="input" type="datetime-local" value={leadForm.next_contact_at} onChange={e => setLeadForm(value => ({ ...value, next_contact_at: e.target.value }))} /></label>
+                    <label>Этап<select className="input" value={leadForm.stage} onChange={e => setLeadForm(value => ({ ...value, stage: e.target.value }))}>{funnelStages.map(stage => <option key={stage.key} value={stage.key}>{stage.name}</option>)}</select></label>
+                    <label className="contact-field-wide">Цель ученика<textarea className="input" rows={3} value={leadForm.goal} onChange={e => setLeadForm(value => ({ ...value, goal: e.target.value }))} placeholder="Работа, подготовка, освоить конкретный навык" /></label>
+                  </div>
+                  <button className="btn contact-save" disabled={!leadForm.full_name.trim() && !leadForm.telephone.trim()} onClick={() => createLead().catch(e => setError(normalizeErrorMessage(e.message || e)))}>Создать лид</button>
+                </aside>
+              ) : null}
 
               {selectedContact ? (
                 <aside className="contact-side-panel">
