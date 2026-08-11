@@ -168,6 +168,14 @@ class OpportunityMarketingPatchIn(BaseModel):
     campaign: str | None = Field(default=None, max_length=120)
     diagnostic_scheduled_at: str | None = Field(default=None, max_length=50)
     diagnostic_held_at: str | None = Field(default=None, max_length=50)
+    qualification_status: str | None = Field(default=None, pattern=r"^(new|qualified|not_qualified)$")
+    desired_format: str | None = Field(default=None, max_length=80)
+    desired_budget: int | None = Field(default=None, ge=0)
+    goal: str | None = Field(default=None, max_length=500)
+    direction: str | None = Field(default=None, max_length=80)
+    first_response_at: str | None = Field(default=None, max_length=50)
+    lost_reason: str | None = Field(default=None, max_length=255)
+    next_contact_at: str | None = Field(default=None, max_length=50)
 
 
 class ContactFunnelStageIn(BaseModel):
@@ -183,6 +191,7 @@ class ContactPatchIn(BaseModel):
     direction: str | None = Field(default=None, max_length=100)
     telegram_username: str | None = Field(default=None, max_length=100)
     acquisition_source: str | None = Field(default=None, max_length=80)
+    acquisition_campaign_id: int | None = Field(default=None, ge=1)
     acquisition_campaign: str | None = Field(default=None, max_length=120)
 
 

@@ -152,6 +152,9 @@ class Contact(Base):
     status = Column(String(24), nullable=False, default="active", index=True)
     is_archived = Column(Boolean, nullable=False, default=False, index=True)
     acquisition_source = Column(String(80), nullable=False, default="unknown", index=True)
+    # Immutable attribution link.  The legacy name remains only for historical
+    # compatibility and is kept in sync with the selected campaign.
+    acquisition_campaign_id = Column(Integer, ForeignKey("marketing_campaigns.id", ondelete="SET NULL"), nullable=True, index=True)
     acquisition_campaign = Column(String(120), nullable=True, index=True)
     acquired_at = Column(Date, nullable=True, index=True)
     created_at = Column(String(50), nullable=False)
@@ -188,6 +191,10 @@ class Opportunity(Base):
     utm_content = Column(String(120), nullable=True)
     direction = Column(String(80), nullable=True)
     goal = Column(String(500), nullable=True)
+    qualification_status = Column(String(24), nullable=False, default="new", index=True)
+    desired_format = Column(String(80), nullable=True)
+    desired_budget = Column(Integer, nullable=True)
+    first_response_at = Column(String(50), nullable=True)
     stage = Column(String(32), nullable=False, default="new", index=True)
     diagnostic_at = Column(String(50), nullable=True)
     diagnostic_scheduled_at = Column(String(50), nullable=True)

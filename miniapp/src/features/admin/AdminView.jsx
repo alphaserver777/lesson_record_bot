@@ -157,7 +157,7 @@ export function AdminView({ token }) {
   const [marketingLoading, setMarketingLoading] = useState(false)
   const [marketingFilters, setMarketingFilters] = useState(() => ({
     date_from: new Date(new Date().getFullYear(), new Date().getMonth(), 1).toISOString().slice(0, 10),
-    date_to: new Date().toISOString().slice(0, 10), source_key: '', campaign: '', direction: '',
+    date_to: new Date().toISOString().slice(0, 10), source_key: '', campaign_id: '', direction: '',
   }))
   const [expenseForm, setExpenseForm] = useState(() => ({
     spent_at: new Date().toISOString().slice(0, 10), source_key: 'avito', campaign_id: '', category: 'placement', amount: '', note: '',
@@ -183,7 +183,7 @@ export function AdminView({ token }) {
   const [navCollapsed, setNavCollapsed] = useState(false)
   const [selectedContact, setSelectedContact] = useState(null)
   const [contactEdit, setContactEdit] = useState({
-    first_name: '', last_name: '', telephone: '', telegram_username: '', status: 'active', preferred_channel: 'telegram', direction: '', acquisition_source: 'unknown', acquisition_campaign: '',
+    first_name: '', last_name: '', telephone: '', telegram_username: '', status: 'active', preferred_channel: 'telegram', direction: '', acquisition_source: 'unknown', acquisition_campaign_id: '',
   })
   const [prepaymentAmount, setPrepaymentAmount] = useState('')
   const [clientOptions, setClientOptions] = useState([])
@@ -318,14 +318,14 @@ export function AdminView({ token }) {
       preferred_channel: contact.preferred_channel || 'telegram',
       direction: contact.direction || '',
       acquisition_source: contact.acquisition_source || 'unknown',
-      acquisition_campaign: contact.acquisition_campaign || '',
+      acquisition_campaign_id: contact.acquisition_campaign_id ? String(contact.acquisition_campaign_id) : '',
     })
   }
 
   async function saveContact() {
     const contactId = selectedContact?.contact?.id
     if (!contactId) return
-    await api(`/api/admin/contacts/${contactId}`, { token, method: 'PATCH', body: contactEdit })
+    await api(`/api/admin/contacts/${contactId}`, { token, method: 'PATCH', body: { ...contactEdit, acquisition_campaign_id: contactEdit.acquisition_campaign_id ? Number(contactEdit.acquisition_campaign_id) : null } })
     await Promise.all([selectContact(contactId), loadContacts(contactsPage, contactQuery)])
     setSuccess('Карточка клиента обновлена')
   }
@@ -1691,10 +1691,10 @@ export function AdminView({ token }) {
                       <label>Статус<select className="input" value={contactEdit.status} onChange={e => setContactEdit(value => ({ ...value, status: e.target.value }))}><option value="lead">Лид</option><option value="active">Активный</option><option value="student">Ученик</option><option value="archived">Архив</option></select></label>
                       <label>Канал связи<select className="input" value={contactEdit.preferred_channel} onChange={e => setContactEdit(value => ({ ...value, preferred_channel: e.target.value }))}><option value="telegram">Telegram</option><option value="phone">Телефон</option></select></label>
                       {selectedContact.contact?.is_student ? <label className="contact-field-wide">Направление<input className="input" value={contactEdit.direction} onChange={e => setContactEdit(value => ({ ...value, direction: e.target.value }))} placeholder="DevOps, ИБ, Хакер" /></label> : null}
-                      <label>Первый источник<select className="input" value={contactEdit.acquisition_source} onChange={e => setContactEdit(value => ({ ...value, acquisition_source: e.target.value, acquisition_campaign: '' }))}>{marketingSources.map(item => <option key={item.key} value={item.key}>{item.name}</option>)}</select></label>
-                      <label>Кампания первого касания<select className="input" value={contactEdit.acquisition_campaign} onChange={e => setContactEdit(value => ({ ...value, acquisition_campaign: e.target.value }))}><option value="">Без кампании</option>{contactEdit.acquisition_campaign && !marketingCampaigns.some(item => item.source_key === contactEdit.acquisition_source && item.name === contactEdit.acquisition_campaign) ? <option value={contactEdit.acquisition_campaign}>{contactEdit.acquisition_campaign}</option> : null}{marketingCampaigns.filter(item => item.source_key === contactEdit.acquisition_source).map(item => <option key={item.id} value={item.name}>{item.name}</option>)}</select></label>
+                      <label>Первый источник<select className="input" value={contactEdit.acquisition_source} onChange={e => setContactEdit(value => ({ ...value, acquisition_source: e.target.value, acquisition_campaign_id: '' }))}>{marketingSources.map(item => <option key={item.key} value={item.key}>{item.name}</option>)}</select></label>
+                      <label>Кампания первого касания<select className="input" value={contactEdit.acquisition_campaign_id} onChange={e => setContactEdit(value => ({ ...value, acquisition_campaign_id: e.target.value }))}><option value="">Без кампании</option>{marketingCampaigns.filter(item => item.source_key === contactEdit.acquisition_source).map(item => <option key={item.id} value={String(item.id)}>#{item.id} · {item.name}</option>)}</select></label>
                     </div>
-                    <small>Источник и кампания связывают клиента с расходами в «Аналитика → Маркетинг». Выберите ту же кампанию, на которую внесён расход.</small>
+                    <small>Первое касание хранится один раз у клиента. Кампания выбирается по ID, поэтому одноимённые объявления не смешиваются в аналитике.</small>
                     <button className="btn contact-save" onClick={() => saveContact().catch(e => setError(normalizeErrorMessage(e.message || e)))}>Сохранить изменения</button>
                     {selectedContact.contact?.is_student ? <button className="btn secondary contact-save" onClick={() => archiveContactProfile().catch(e => setError(normalizeErrorMessage(e.message || e)))}>Архивировать профиль</button> : null}
 
@@ -1705,9 +1705,20 @@ export function AdminView({ token }) {
                 </div>
                 {selectedContact.contact?.is_student ? <div className="custom-row" style={{ marginTop: 12 }}><input className="input" type="number" min="1" value={prepaymentAmount} onChange={e => setPrepaymentAmount(e.target.value)} placeholder="Предоплата, ₽" /><button className="btn" onClick={() => addPrepayment().catch(e => setError(normalizeErrorMessage(e.message || e)))}>Внести оплату и пополнить баланс</button></div> : null}
 
-                <h3>Сделки</h3>
+                <h3>Паспорт лида</h3>
                 {selectedContact.opportunities?.length ? <ul className="list list-compact">{selectedContact.opportunities.map(item => (
-                  <li key={item.id} className="contact-opportunity-row"><div><strong>{item.direction || 'Направление не указано'}</strong><small>{item.next_contact_at ? `Следующее действие: ${item.next_contact_at}` : 'Этап сделки ведётся отдельно от атрибуции'}</small>{!['won', 'lost'].includes(item.stage) ? <div className="custom-row" style={{ marginTop: 8 }}><input className="input" type="datetime-local" defaultValue={item.diagnostic_scheduled_at || ''} aria-label="Дата диагностики" onBlur={e => patchOpportunityMarketing(item.id, { diagnostic_scheduled_at: e.target.value || null }).catch(err => setError(normalizeErrorMessage(err.message || err)))} /><button className="btn secondary compact" onClick={() => patchOpportunityMarketing(item.id, { diagnostic_held_at: new Date().toISOString().slice(0, 16) }).catch(err => setError(normalizeErrorMessage(err.message || err)))}>Диагностика проведена</button></div> : null}</div><select className="input" value={item.stage} onChange={e => changeContactOpportunityStage(item.id, e.target.value).catch(err => setError(normalizeErrorMessage(err.message || err)))}>{funnelStages.map(stage => <option key={stage.key} value={stage.key}>{stage.name}</option>)}</select></li>
+                  <li key={item.id} className="contact-opportunity-row" style={{ display: 'block' }}>
+                    <div className="contact-edit-form">
+                      <label>Этап<select className="input" value={item.stage} onChange={e => changeContactOpportunityStage(item.id, e.target.value).catch(err => setError(normalizeErrorMessage(err.message || err)))}>{funnelStages.map(stage => <option key={stage.key} value={stage.key}>{stage.name}</option>)}</select></label>
+                      <label>Квалификация<select className="input" defaultValue={item.qualification_status || 'new'} onChange={e => patchOpportunityMarketing(item.id, { qualification_status: e.target.value }).catch(err => setError(normalizeErrorMessage(err.message || err)))}><option value="new">Не оценен</option><option value="qualified">Квалифицирован</option><option value="not_qualified">Не подходит</option></select></label>
+                      <label>Направление<input className="input" defaultValue={item.direction || ''} placeholder="DevOps, ИБ, Хакер" onBlur={e => patchOpportunityMarketing(item.id, { direction: e.target.value || null }).catch(err => setError(normalizeErrorMessage(err.message || err)))} /></label>
+                      <label>Формат<input className="input" defaultValue={item.desired_format || ''} placeholder="2 × 60 минут" onBlur={e => patchOpportunityMarketing(item.id, { desired_format: e.target.value || null }).catch(err => setError(normalizeErrorMessage(err.message || err)))} /></label>
+                      <label>Бюджет, ₽/занятие<input className="input" type="number" min="0" defaultValue={item.desired_budget ?? ''} onBlur={e => patchOpportunityMarketing(item.id, { desired_budget: e.target.value ? Number(e.target.value) : null }).catch(err => setError(normalizeErrorMessage(err.message || err)))} /></label>
+                      <label>Следующее действие<input className="input" type="datetime-local" defaultValue={item.next_contact_at || ''} onBlur={e => patchOpportunityMarketing(item.id, { next_contact_at: e.target.value || null }).catch(err => setError(normalizeErrorMessage(err.message || err)))} /></label>
+                      <label className="contact-field-wide">Цель ученика<input className="input" defaultValue={item.goal || ''} placeholder="Работа, подготовка, освоить навык" onBlur={e => patchOpportunityMarketing(item.id, { goal: e.target.value || null }).catch(err => setError(normalizeErrorMessage(err.message || err)))} /></label>
+                    </div>
+                    {!['won', 'lost'].includes(item.stage) ? <div className="custom-row" style={{ marginTop: 8 }}><label>Диагностика<input className="input" type="datetime-local" defaultValue={item.diagnostic_scheduled_at || ''} onBlur={e => patchOpportunityMarketing(item.id, { diagnostic_scheduled_at: e.target.value || null }).catch(err => setError(normalizeErrorMessage(err.message || err)))} /></label><button className="btn secondary compact" onClick={() => patchOpportunityMarketing(item.id, { diagnostic_held_at: new Date().toISOString().slice(0, 16) }).catch(err => setError(normalizeErrorMessage(err.message || err)))}>Диагностика проведена</button></div> : null}
+                  </li>
                 ))}</ul> : <small>Коммерческих сделок пока нет.</small>}
 
                 <h3>Ближайшая история занятий</h3>
@@ -2034,8 +2045,8 @@ export function AdminView({ token }) {
                   <div className="custom-row">
                     <input type="date" className="input" value={marketingFilters.date_from} onChange={e => setMarketingFilters(v => ({ ...v, date_from: e.target.value }))} />
                     <input type="date" className="input" value={marketingFilters.date_to} onChange={e => setMarketingFilters(v => ({ ...v, date_to: e.target.value }))} />
-                    <select className="input" value={marketingFilters.source_key} onChange={e => setMarketingFilters(v => ({ ...v, source_key: e.target.value, campaign: '' }))}><option value="">Все источники</option>{marketingSources.map(item => <option key={item.key} value={item.key}>{item.name}</option>)}</select>
-                    <select className="input" value={marketingFilters.campaign} onChange={e => setMarketingFilters(v => ({ ...v, campaign: e.target.value }))}><option value="">Все кампании</option>{marketingCampaigns.filter(item => !marketingFilters.source_key || item.source_key === marketingFilters.source_key).map(item => <option key={item.id} value={item.name}>{item.name}</option>)}</select>
+                    <select className="input" value={marketingFilters.source_key} onChange={e => setMarketingFilters(v => ({ ...v, source_key: e.target.value, campaign_id: '' }))}><option value="">Все источники</option>{marketingSources.map(item => <option key={item.key} value={item.key}>{item.name}</option>)}</select>
+                    <select className="input" value={marketingFilters.campaign_id} onChange={e => setMarketingFilters(v => ({ ...v, campaign_id: e.target.value }))}><option value="">Все кампании</option>{marketingCampaigns.filter(item => !marketingFilters.source_key || item.source_key === marketingFilters.source_key).map(item => <option key={item.id} value={String(item.id)}>#{item.id} · {item.name}</option>)}</select>
                     <input className="input" value={marketingFilters.direction} onChange={e => setMarketingFilters(v => ({ ...v, direction: e.target.value }))} placeholder="Направление" />
                     <button className="btn" onClick={() => loadMarketingAnalytics().catch(e => setError(normalizeErrorMessage(e.message || e)))}>Обновить</button>
                   </div>

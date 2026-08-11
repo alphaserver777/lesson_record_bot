@@ -978,6 +978,7 @@ def _contact_out(
         "is_archived": bool(contact.is_archived),
         "preferred_channel": contact.preferred_channel,
         "acquisition_source": contact.acquisition_source or "unknown",
+        "acquisition_campaign_id": contact.acquisition_campaign_id,
         "acquisition_campaign": contact.acquisition_campaign,
         "telegram_id": identity.telegram_id if identity else None,
         "telegram_username": identity.username if identity else None,
@@ -1125,7 +1126,19 @@ async def admin_patch_contact(
         if await session.get(MarketingSource, source_key) is None:
             raise HTTPException(status_code=422, detail={"code": "INVALID_SOURCE", "message": "Выберите источник из справочника"})
         updates["acquisition_source"] = source_key
-    if "acquisition_campaign" in updates:
+    if "acquisition_campaign_id" in updates:
+        campaign_id = updates.pop("acquisition_campaign_id")
+        if campaign_id is None:
+            updates["acquisition_campaign"] = None
+        else:
+            campaign = await session.get(MarketingCampaign, campaign_id)
+            selected_source = updates.get("acquisition_source", contact.acquisition_source)
+            if campaign is None or campaign.source_key != selected_source:
+                raise HTTPException(status_code=422, detail={"code": "INVALID_CAMPAIGN", "message": "Кампания не принадлежит выбранному источнику"})
+            updates["acquisition_campaign_id"] = campaign.id
+            updates["acquisition_campaign"] = campaign.name
+    elif "acquisition_campaign" in updates:
+        # Text is accepted only for legacy imports; the admin UI always sends ID.
         updates["acquisition_campaign"] = (updates["acquisition_campaign"] or "").strip() or None
     for field, value in updates.items():
         setattr(contact, field, value)
@@ -1244,6 +1257,8 @@ def _lead_out(lead: Opportunity, contact: Contact, identity: TelegramIdentity | 
         "source": lead.source, "utm_medium": lead.utm_medium,
         "utm_campaign": lead.utm_campaign, "utm_content": lead.utm_content,
         "direction": lead.direction, "goal": lead.goal, "stage": lead.stage,
+        "qualification_status": lead.qualification_status, "desired_format": lead.desired_format,
+        "desired_budget": lead.desired_budget, "first_response_at": lead.first_response_at,
         "diagnostic_at": lead.diagnostic_at, "diagnostic_scheduled_at": lead.diagnostic_scheduled_at,
         "diagnostic_held_at": lead.diagnostic_held_at, "offer_amount": lead.offer_amount,
         "paid_amount": lead.paid_amount, "lost_reason": lead.lost_reason,
@@ -1379,7 +1394,11 @@ async def admin_patch_opportunity_marketing(opportunity_id: int, payload: Opport
         updates["utm_campaign"] = updates.pop("campaign") or None
     for key, value in updates.items():
         setattr(opportunity, key, value)
-    opportunity.updated_at = datetime.datetime.now(datetime.timezone.utc).isoformat()
+    now = datetime.datetime.now(datetime.timezone.utc).isoformat()
+    opportunity.updated_at = now
+    contact = await session.get(Contact, opportunity.contact_id)
+    if contact is not None:
+        contact.updated_at = now
     await session.commit()
     await _audit(int(admin["sub"]), "update", "opportunity_marketing", {"opportunity_id": opportunity_id, **payload.model_dump(exclude_unset=True)})
     return {"status": "ok"}
@@ -2626,6 +2645,7 @@ async def analytics_marketing(
     date_to: datetime.date,
     direction: str | None = None,
     source_key: str | None = None,
+    campaign_id: int | None = None,
     campaign: str | None = None,
     _: dict[str, Any] = Depends(require_admin),
 ) -> dict[str, Any]:
@@ -2650,7 +2670,9 @@ async def analytics_marketing(
     scoped_contacts = [item for item in contacts if item.acquired_at and date_from <= item.acquired_at <= date_to]
     if source_key:
         scoped_contacts = [item for item in scoped_contacts if item.acquisition_source == source_key]
-    if campaign:
+    if campaign_id is not None:
+        scoped_contacts = [item for item in scoped_contacts if item.acquisition_campaign_id == campaign_id]
+    elif campaign:
         scoped_contacts = [item for item in scoped_contacts if item.acquisition_campaign == campaign]
     scoped_ids = {item.id for item in scoped_contacts}
     if direction:
@@ -2667,7 +2689,7 @@ async def analytics_marketing(
             first_paid[payment.contact_id] = payment
     cash_payments = [item for item in payments if item.contact_id in scoped_ids and date_from <= item.lesson_date <= date_to]
     new_paid = [item for contact_id, item in first_paid.items() if contact_id in scoped_ids and date_from <= item.lesson_date <= date_to]
-    exp_scoped = [item for item in expenses if (not source_key or item.source_key == source_key) and (not campaign or campaign_names.get(item.campaign_id) == campaign)]
+    exp_scoped = [item for item in expenses if (not source_key or item.source_key == source_key) and (campaign_id is None or item.campaign_id == campaign_id) and (not campaign or campaign_names.get(item.campaign_id) == campaign)]
 
     event_roles: dict[int, set[str]] = {}
     for event in events:
@@ -2692,18 +2714,22 @@ async def analytics_marketing(
     diagnostics_held = sum("diagnostic_held" in event_roles.get(contact_id, set()) for contact_id in scoped_ids)
 
     rows = []
-    row_keys = {(item.acquisition_source or "unknown", item.acquisition_campaign or None, next((campaign.id for campaign in campaigns if campaign.source_key == item.acquisition_source and campaign.name == item.acquisition_campaign), None)) for item in scoped_contacts}
+    row_keys = {(item.acquisition_source or "unknown", item.acquisition_campaign or None, item.acquisition_campaign_id) for item in scoped_contacts}
     row_keys |= {(item.source_key, campaign_names.get(item.campaign_id), item.campaign_id) for item in exp_scoped}
     for key, campaign_name, campaign_id in sorted(row_keys, key=lambda item: (item[0], item[1] or "")):
-        ids = {item.id for item in scoped_contacts if item.acquisition_source == key and (item.acquisition_campaign or None) == campaign_name}
-        spend = sum(int(item.amount) for item in exp_scoped if item.source_key == key and campaign_names.get(item.campaign_id) == campaign_name)
+        ids = {item.id for item in scoped_contacts if item.acquisition_source == key and item.acquisition_campaign_id == campaign_id}
+        # Legacy contacts without an ID are still visible as a separate
+        # historical row; they are never merged into same-named campaigns.
+        if campaign_id is None:
+            ids = {item.id for item in scoped_contacts if item.acquisition_source == key and item.acquisition_campaign_id is None and (item.acquisition_campaign or None) == campaign_name}
+        spend = sum(int(item.amount) for item in exp_scoped if item.source_key == key and item.campaign_id == campaign_id)
         cash = sum(int(item.amount or 0) for item in cash_payments if item.contact_id in ids)
         new_clients = [item for contact_id, item in first_paid.items() if contact_id in ids and date_from <= item.lesson_date <= date_to]
         ltv = sum(int(item.amount or 0) for item in payments if item.contact_id in ids)
         campaign_item = campaign_meta.get(campaign_id)
         rows.append({"source_key": key, "source_name": source_names.get(key, key), "campaign_id": campaign_id, "campaign_name": campaign_name, "active_from": campaign_item.active_from.isoformat() if campaign_item and campaign_item.active_from else None, "active_to": campaign_item.active_to.isoformat() if campaign_item and campaign_item.active_to else None, "target_action_label": campaign_item.target_action_label if campaign_item else "Целевое действие", "manual_metrics": manual_metrics.get(campaign_id, {}), "spend": spend, "leads": len(ids), "qualified": sum("qualified" in event_roles.get(contact_id, set()) for contact_id in ids), "diagnostics_scheduled": sum("diagnostic_scheduled" in event_roles.get(contact_id, set()) for contact_id in ids), "diagnostics_held": sum("diagnostic_held" in event_roles.get(contact_id, set()) for contact_id in ids), "new_clients": len(new_clients), "first_revenue": sum(int(item.amount or 0) for item in new_clients), "cash_revenue": cash, "ltv": ltv, "cpl": ratio(spend, len(ids)), "cac": ratio(spend, len(new_clients)), "romi": romi(cash, spend)})
 
-    return {"period": {"date_from": date_from.isoformat(), "date_to": date_to.isoformat()}, "kpi": {"spend": total_spend, "leads": len(scoped_ids), "qualified": qualified, "diagnostics_scheduled": diagnostics_scheduled, "diagnostics_held": diagnostics_held, "new_clients": len(new_paid), "first_revenue": first_revenue, "cash_revenue": total_cash, "cpl": ratio(total_spend, len(scoped_ids)), "cpql": ratio(total_spend, qualified), "cac": ratio(total_spend, len(new_paid)), "avg_first_payment": ratio(first_revenue, len(new_paid)), "romi": romi(total_cash, total_spend)}, "funnel": [{"role": role, "count": sum(role in values for values in event_roles.values()), "conversion_from_leads": percent(sum(role in values for values in event_roles.values()), len(scoped_ids))} for role in ["new", "qualified", "diagnostic_scheduled", "diagnostic_held", "offer", "won", "lost"]], "rows": rows, "data_quality": {"contacts_unknown_source": sum(item.acquisition_source == "unknown" for item in contacts), "contacts_missing_campaign": sum(bool(item.acquisition_source not in {"unknown", "direct", "referral"} and not item.acquisition_campaign) for item in contacts), "opportunities_missing_next_contact": sum(bool(item.stage not in {"won", "lost"} and not item.next_contact_at) for item in opportunities)}}
+    return {"period": {"date_from": date_from.isoformat(), "date_to": date_to.isoformat()}, "kpi": {"spend": total_spend, "leads": len(scoped_ids), "qualified": qualified, "diagnostics_scheduled": diagnostics_scheduled, "diagnostics_held": diagnostics_held, "new_clients": len(new_paid), "first_revenue": first_revenue, "cash_revenue": total_cash, "cpl": ratio(total_spend, len(scoped_ids)), "cpql": ratio(total_spend, qualified), "cac": ratio(total_spend, len(new_paid)), "avg_first_payment": ratio(first_revenue, len(new_paid)), "romi": romi(total_cash, total_spend)}, "funnel": [{"role": role, "count": sum(role in values for values in event_roles.values()), "conversion_from_leads": percent(sum(role in values for values in event_roles.values()), len(scoped_ids))} for role in ["new", "qualified", "diagnostic_scheduled", "diagnostic_held", "offer", "won", "lost"]], "rows": rows, "data_quality": {"contacts_unknown_source": sum(item.acquisition_source == "unknown" for item in contacts), "contacts_missing_campaign": sum(bool(item.acquisition_source not in {"unknown", "direct", "referral"} and not item.acquisition_campaign_id) for item in contacts), "opportunities_missing_next_contact": sum(bool(item.stage not in {"won", "lost"} and not item.next_contact_at) for item in opportunities)}}
 
 
 @app.get("/api/admin/analytics/overview")
