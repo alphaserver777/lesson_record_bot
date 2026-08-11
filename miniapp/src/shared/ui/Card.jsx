@@ -1,4 +1,6 @@
 export function Card({ title, subtitle, children, actions, ...props }) {
+  const legacyCampaignCard = title === 'Период работы кампании' || title === 'Визуальная воронка кампании' || subtitle === 'Рабочая карточка кампании: реклама → лид → продажа'
+  if (legacyCampaignCard) return null
   return (
     <section className="card" {...props}>
       <div className="card-head">
