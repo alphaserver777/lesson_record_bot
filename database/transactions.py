@@ -1007,7 +1007,13 @@ async def add_manual_completed_lesson(
     if existing is not None:
         if existing.kind != "manual":
             return None, False, "slot_exists"
-        if await find_payment(telegram_id, date, hour, minute):
+        existing_payment = await find_payment(telegram_id, date, hour, minute)
+        if existing_payment and existing_payment.status == "canceled":
+            # A cancellation of a manually recorded lesson means "entered by
+            # mistake".  Remove the technical cancellation so it can be
+            # corrected and re-entered.
+            await session.delete(existing_payment)
+        elif existing_payment:
             return None, False, "financially_closed"
         existing.duration_minutes = duration_minutes
         existing.presence_status = "yes"
@@ -1060,6 +1066,44 @@ async def add_manual_completed_lesson(
     )
     await session.commit()
     return record, True, None
+
+
+async def delete_manual_completed_lesson(
+    telegram_id: int,
+    date: datetime.date,
+    hour: int,
+    minute: int,
+) -> bool:
+    """Forget an erroneously entered off-schedule lesson completely."""
+    result = await session.execute(
+        select(RecordDate).where(
+            RecordDate.telegram_id == telegram_id,
+            RecordDate.record_date == date,
+            RecordDate.hour == hour,
+            RecordDate.minute == minute,
+            RecordDate.kind == "manual",
+        )
+    )
+    record = result.scalar_one_or_none()
+    if record is None:
+        return False
+    payment = await find_payment(telegram_id, date, hour, minute)
+    if payment is not None:
+        await session.delete(payment)
+    await session.delete(record)
+    await log_analytics_event(
+        "lesson_recorded_manual_deleted",
+        telegram_id=telegram_id,
+        record_date=date,
+        hour=hour,
+        minute=minute,
+        duration_minutes=record.duration_minutes or SLOT_DURATION_MINUTES,
+        lesson_kind="manual",
+        source_context="admin",
+        commit=False,
+    )
+    await session.commit()
+    return True
 
 
 async def add_pending_single_slot(

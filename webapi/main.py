@@ -2529,6 +2529,14 @@ async def admin_unclosed_lessons(
 @app.post("/api/admin/lessons/close")
 async def admin_close_lesson(payload: LessonCloseIn, admin: dict[str, Any] = Depends(require_admin)) -> dict[str, Any]:
     hh, mm = _parse_hhmm(payload.time)
+    if payload.decision == "canceled":
+        removed = await transactions.delete_manual_completed_lesson(payload.telegram_id, payload.date, hh, mm)
+        if removed:
+            await _audit(
+                int(admin["sub"]), "delete", "manual_completed_lesson",
+                {"telegram_id": payload.telegram_id, "date": payload.date.isoformat(), "time": payload.time},
+            )
+            return {"status": "deleted_manual_lesson"}
     exists = await transactions.find_payment(payload.telegram_id, payload.date, hh, mm)
     if exists:
         raise HTTPException(status_code=409, detail={"code": "ALREADY_PROCESSED", "message": "Решение уже принято"})
@@ -2586,6 +2594,9 @@ async def admin_close_lessons_bulk(payload: LessonCloseBulkIn, admin: dict[str, 
     for item in payload.items:
         hh, mm = _parse_hhmm(item.time)
         try:
+            if payload.decision == "canceled" and await transactions.delete_manual_completed_lesson(item.telegram_id, item.date, hh, mm):
+                processed += 1
+                continue
             exists = await transactions.find_payment(item.telegram_id, item.date, hh, mm)
             if exists:
                 skipped += 1
