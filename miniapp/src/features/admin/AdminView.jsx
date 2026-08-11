@@ -264,7 +264,7 @@ export function AdminView({ token }) {
   const [systemHealth, setSystemHealth] = useState(null)
   const [leads, setLeads] = useState([])
   const [leadSummary, setLeadSummary] = useState(null)
-  const [leadForm, setLeadForm] = useState({ full_name: '', telephone: '', source: 'direct', acquisition_campaign_id: '', direction: '', student_level: '', goal: '', qualification_status: 'new', desired_format: '', desired_budget: '', next_contact_at: '', stage: 'new', lost_reason: '', notes: '' })
+  const [leadForm, setLeadForm] = useState({ full_name: '', telephone: '', source: 'direct', acquisition_campaign_id: '', direction: '', student_level: '', goal: '', qualification_status: 'new', desired_format: '', desired_budget: '', offer_amount: '', next_contact_at: '', stage: 'new', lost_reason: '', notes: '' })
   const [backupStatus, setBackupStatus] = useState(null)
   const [workScheduleDays, setWorkScheduleDays] = useState([])
   const [workImpact, setWorkImpact] = useState(null)
@@ -373,10 +373,13 @@ export function AdminView({ token }) {
     setSuccess('Предоплата внесена, баланс пополнен')
   }
 
-  async function changeContactOpportunityStage(opportunityId, stage) {
+  async function changeContactOpportunityStage(opportunity, stage) {
     const contactId = selectedContact?.contact?.id
-    if (!contactId) return
-    await api(`/api/admin/leads/${opportunityId}`, { token, method: 'PATCH', body: { stage } })
+    if (!contactId || !opportunity?.id) return
+    if (stage === 'lost' && !opportunity.lost_reason) {
+      throw new Error('Сначала выберите причину отказа')
+    }
+    await api(`/api/admin/leads/${opportunity.id}`, { token, method: 'PATCH', body: { stage } })
     await Promise.all([selectContact(contactId), loadContacts(contactsPage, contactQuery), loadLeads()])
     setSuccess('Этап воронки обновлён')
   }
@@ -389,6 +392,9 @@ export function AdminView({ token }) {
   }
 
   async function moveContactToStage(contactId, stage) {
+    if (stage === 'lost') {
+      throw new Error('Для отказа откройте карточку лида и выберите причину')
+    }
     await api(`/api/admin/contacts/${contactId}/funnel-stage`, { token, method: 'PATCH', body: { stage } })
     await loadContacts(contactsPage, contactQuery)
     if (selectedContact?.contact?.id === contactId) await selectContact(contactId)
@@ -414,11 +420,15 @@ export function AdminView({ token }) {
   }
 
   async function createLead() {
+    if (leadForm.stage === 'lost' && !leadForm.lost_reason) {
+      throw new Error('Для этапа «Неактуально / отказ» выберите причину')
+    }
     const payload = Object.fromEntries(Object.entries(leadForm).filter(([, value]) => String(value || '').trim() !== ''))
     payload.acquisition_campaign_id = leadForm.acquisition_campaign_id ? Number(leadForm.acquisition_campaign_id) : null
     payload.desired_budget = leadForm.desired_budget ? Number(leadForm.desired_budget) : null
+    payload.offer_amount = leadForm.offer_amount ? Number(leadForm.offer_amount) : null
     const result = await api('/api/admin/leads', { token, method: 'POST', body: payload })
-    setLeadForm({ full_name: '', telephone: '', source: 'direct', acquisition_campaign_id: '', direction: '', student_level: '', goal: '', qualification_status: 'new', desired_format: '', desired_budget: '', next_contact_at: '', stage: 'new', lost_reason: '', notes: '' })
+    setLeadForm({ full_name: '', telephone: '', source: 'direct', acquisition_campaign_id: '', direction: '', student_level: '', goal: '', qualification_status: 'new', desired_format: '', desired_budget: '', offer_amount: '', next_contact_at: '', stage: 'new', lost_reason: '', notes: '' })
     setNewLeadOpen(false)
     await Promise.all([loadLeads(), loadContacts(1, '')])
     if (result.item?.contact_id) await selectContact(result.item.contact_id)
@@ -434,6 +444,9 @@ export function AdminView({ token }) {
   }
 
   async function changeLeadStage(lead, stage) {
+    if (stage === 'lost' && !lead.lost_reason) {
+      throw new Error('Сначала выберите причину отказа в паспорте лида')
+    }
     await api(`/api/admin/leads/${lead.id}`, { token, method: 'PATCH', body: { stage } })
     await loadLeads()
   }
@@ -1810,10 +1823,12 @@ export function AdminView({ token }) {
                     <label>Квалификация<select className="input" value={leadForm.qualification_status} onChange={e => setLeadForm(value => ({ ...value, qualification_status: e.target.value }))}><option value="new">Не оценен</option><option value="qualified">Квалифицирован</option><option value="not_qualified">Не подходит</option></select></label>
                     <label>Формат<input className="input" value={leadForm.desired_format} onChange={e => setLeadForm(value => ({ ...value, desired_format: e.target.value }))} placeholder="2 × 60 минут" /></label>
                     <label>Бюджет, ₽/занятие<input className="input" type="number" min="0" value={leadForm.desired_budget} onChange={e => setLeadForm(value => ({ ...value, desired_budget: e.target.value }))} /></label>
+                    <label>Предложение, ₽<input className="input" type="number" min="0" value={leadForm.offer_amount} onChange={e => setLeadForm(value => ({ ...value, offer_amount: e.target.value }))} placeholder="Стоимость предложенного формата" /></label>
                     <label>Следующее действие<input className="input" type="datetime-local" value={leadForm.next_contact_at} onChange={e => setLeadForm(value => ({ ...value, next_contact_at: e.target.value }))} /></label>
                     <label>Этап<select className="input" value={leadForm.stage} onChange={e => setLeadForm(value => ({ ...value, stage: e.target.value }))}>{funnelStages.map(stage => <option key={stage.key} value={stage.key}>{stage.name}</option>)}</select></label>
-                    {leadForm.stage === 'lost' ? <label>Причина отказа<select className="input" value={leadForm.lost_reason} onChange={e => setLeadForm(value => ({ ...value, lost_reason: e.target.value }))}><option value="">Не указана</option>{LOST_REASON_OPTIONS.map(([key, label]) => <option key={key} value={key}>{label}</option>)}</select></label> : null}
+                    <label>Причина отказа<select className="input" value={leadForm.lost_reason} onChange={e => setLeadForm(value => ({ ...value, lost_reason: e.target.value }))}><option value="">Не выбрана</option>{LOST_REASON_OPTIONS.map(([key, label]) => <option key={key} value={key}>{label}</option>)}</select><small>Заполняйте, если этап — «Неактуально / отказ».</small></label>
                     <label className="contact-field-wide">Цель ученика<textarea className="input" rows={3} value={leadForm.goal} onChange={e => setLeadForm(value => ({ ...value, goal: e.target.value }))} placeholder="Работа, подготовка, освоить конкретный навык" /></label>
+                    <label className="contact-field-wide">Заметки по обращению<textarea className="input" rows={3} value={leadForm.notes} onChange={e => setLeadForm(value => ({ ...value, notes: e.target.value }))} placeholder="Что сказал клиент, контекст запроса, договорённости" /></label>
                   </div>
                   <button className="btn contact-save" disabled={!leadForm.full_name.trim() && !leadForm.telephone.trim()} onClick={() => createLead().catch(e => setError(normalizeErrorMessage(e.message || e)))}>Создать лид</button>
                 </aside>
@@ -1862,15 +1877,17 @@ export function AdminView({ token }) {
                 {selectedContact.opportunities?.length ? <ul className="list list-compact">{selectedContact.opportunities.map(item => (
                   <li key={item.id} className="contact-opportunity-row" style={{ display: 'block' }}>
                     <div className="contact-edit-form">
-                      <label>Этап<select className="input" value={item.stage} onChange={e => changeContactOpportunityStage(item.id, e.target.value).catch(err => setError(normalizeErrorMessage(err.message || err)))}>{funnelStages.map(stage => <option key={stage.key} value={stage.key}>{stage.name}</option>)}</select></label>
+                      <label>Этап<select className="input" value={item.stage} onChange={e => changeContactOpportunityStage(item, e.target.value).catch(err => setError(normalizeErrorMessage(err.message || err)))}>{funnelStages.map(stage => <option key={stage.key} value={stage.key}>{stage.name}</option>)}</select></label>
                       <label>Квалификация<select className="input" defaultValue={item.qualification_status || 'new'} onChange={e => patchOpportunityMarketing(item.id, { qualification_status: e.target.value }).catch(err => setError(normalizeErrorMessage(err.message || err)))}><option value="new">Не оценен</option><option value="qualified">Квалифицирован</option><option value="not_qualified">Не подходит</option></select></label>
                       <label>Направление<input className="input" defaultValue={item.direction || ''} placeholder="DevOps, ИБ, Хакер" onBlur={e => patchOpportunityMarketing(item.id, { direction: e.target.value || null }).catch(err => setError(normalizeErrorMessage(err.message || err)))} /></label>
                       <label>Уровень<select className="input" defaultValue={item.student_level || ''} onChange={e => patchOpportunityMarketing(item.id, { student_level: e.target.value || null }).catch(err => setError(normalizeErrorMessage(err.message || err)))}><option value="">Не указан</option><option value="zero">С нуля</option><option value="beginner">Начальный</option><option value="intermediate">Средний</option><option value="advanced">Продвинутый</option></select></label>
                       <label>Формат<input className="input" defaultValue={item.desired_format || ''} placeholder="2 × 60 минут" onBlur={e => patchOpportunityMarketing(item.id, { desired_format: e.target.value || null }).catch(err => setError(normalizeErrorMessage(err.message || err)))} /></label>
                       <label>Бюджет, ₽/занятие<input className="input" type="number" min="0" defaultValue={item.desired_budget ?? ''} onBlur={e => patchOpportunityMarketing(item.id, { desired_budget: e.target.value ? Number(e.target.value) : null }).catch(err => setError(normalizeErrorMessage(err.message || err)))} /></label>
                       <label>Следующее действие<input className="input" type="datetime-local" defaultValue={item.next_contact_at || ''} onBlur={e => patchOpportunityMarketing(item.id, { next_contact_at: e.target.value || null }).catch(err => setError(normalizeErrorMessage(err.message || err)))} /></label>
-                      {item.stage === 'lost' ? <label>Причина отказа<select className="input" defaultValue={item.lost_reason || ''} onChange={e => patchOpportunityMarketing(item.id, { lost_reason: e.target.value || null }).catch(err => setError(normalizeErrorMessage(err.message || err)))}><option value="">Не указана</option>{LOST_REASON_OPTIONS.map(([key, label]) => <option key={key} value={key}>{label}</option>)}</select></label> : null}
+                      <label>Причина отказа<select className="input" defaultValue={item.lost_reason || ''} onChange={e => patchOpportunityMarketing(item.id, { lost_reason: e.target.value || null }).catch(err => setError(normalizeErrorMessage(err.message || err)))}><option value="">Не выбрана</option>{LOST_REASON_OPTIONS.map(([key, label]) => <option key={key} value={key}>{label}</option>)}</select><small>Нужна для этапа «Неактуально / отказ».</small></label>
+                      <label>Предложение, ₽<input className="input" type="number" min="0" defaultValue={item.offer_amount ?? ''} placeholder="Стоимость предложенного формата" onBlur={e => patchOpportunityMarketing(item.id, { offer_amount: e.target.value ? Number(e.target.value) : null }).catch(err => setError(normalizeErrorMessage(err.message || err)))} /></label>
                       <label className="contact-field-wide">Цель ученика<input className="input" defaultValue={item.goal || ''} placeholder="Работа, подготовка, освоить навык" onBlur={e => patchOpportunityMarketing(item.id, { goal: e.target.value || null }).catch(err => setError(normalizeErrorMessage(err.message || err)))} /></label>
+                      <label className="contact-field-wide">Заметки по обращению<textarea className="input" rows={3} defaultValue={item.notes || ''} placeholder="Контекст, договорённости, детали запроса" onBlur={e => patchOpportunityMarketing(item.id, { notes: e.target.value || null }).catch(err => setError(normalizeErrorMessage(err.message || err)))} /></label>
                     </div>
                     {!['won', 'lost'].includes(item.stage) ? <div className="custom-row" style={{ marginTop: 8 }}><label>Диагностика<input className="input" type="datetime-local" defaultValue={item.diagnostic_scheduled_at || ''} onBlur={e => patchOpportunityMarketing(item.id, { diagnostic_scheduled_at: e.target.value || null }).catch(err => setError(normalizeErrorMessage(err.message || err)))} /></label><button className="btn secondary compact" onClick={() => patchOpportunityMarketing(item.id, { diagnostic_held_at: new Date().toISOString().slice(0, 16) }).catch(err => setError(normalizeErrorMessage(err.message || err)))}>Диагностика проведена</button></div> : null}
                   </li>

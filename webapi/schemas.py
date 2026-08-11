@@ -208,6 +208,8 @@ class OpportunityMarketingPatchIn(BaseModel):
     first_response_at: str | None = Field(default=None, max_length=50)
     lost_reason: str | None = Field(default=None, max_length=255)
     next_contact_at: str | None = Field(default=None, max_length=50)
+    offer_amount: int | None = Field(default=None, ge=0)
+    notes: str | None = Field(default=None, max_length=1000)
 
 
 class ContactFunnelStageIn(BaseModel):
