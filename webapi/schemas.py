@@ -167,6 +167,13 @@ class ContactPatchIn(BaseModel):
     preferred_channel: str | None = Field(default=None, max_length=20)
     direction: str | None = Field(default=None, max_length=100)
     telegram_username: str | None = Field(default=None, max_length=100)
+    acquisition_source: str | None = Field(default=None, max_length=80)
+    acquisition_campaign: str | None = Field(default=None, max_length=120)
+
+
+class ContactPrepaymentIn(BaseModel):
+    amount: int = Field(gt=0, le=1_000_000)
+    note: str | None = Field(default=None, max_length=500)
 
 
 class WorkIntervalIn(BaseModel):

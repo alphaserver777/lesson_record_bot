@@ -132,8 +132,9 @@ export function AdminView({ token }) {
   const [navCollapsed, setNavCollapsed] = useState(false)
   const [selectedContact, setSelectedContact] = useState(null)
   const [contactEdit, setContactEdit] = useState({
-    first_name: '', last_name: '', telephone: '', telegram_username: '', status: 'active', preferred_channel: 'telegram', direction: '',
+    first_name: '', last_name: '', telephone: '', telegram_username: '', status: 'active', preferred_channel: 'telegram', direction: '', acquisition_source: 'unknown', acquisition_campaign: '',
   })
+  const [prepaymentAmount, setPrepaymentAmount] = useState('')
   const [clientOptions, setClientOptions] = useState([])
   const [clientSearch, setClientSearch] = useState('')
   const [selectedUser, setSelectedUser] = useState(null)
@@ -251,7 +252,8 @@ export function AdminView({ token }) {
   }
 
   async function selectContact(contactId) {
-    const data = await api(`/api/admin/contacts/${contactId}`, { token })
+    const [data, sources] = await Promise.all([api(`/api/admin/contacts/${contactId}`, { token }), api('/api/admin/marketing/sources', { token })])
+    setMarketingSources(sources.items || [])
     setSelectedContact(data)
     const contact = data.contact || {}
     setContactEdit({
@@ -262,6 +264,8 @@ export function AdminView({ token }) {
       status: contact.status || 'active',
       preferred_channel: contact.preferred_channel || 'telegram',
       direction: contact.direction || '',
+      acquisition_source: contact.acquisition_source || 'unknown',
+      acquisition_campaign: contact.acquisition_campaign || '',
     })
   }
 
@@ -281,6 +285,16 @@ export function AdminView({ token }) {
     setSelectedContact(null)
     await loadContacts(contactsPage, contactQuery)
     setSuccess('Профиль архивирован, история сохранена')
+  }
+
+  async function addPrepayment() {
+    const contactId = selectedContact?.contact?.id
+    const amount = Number(prepaymentAmount)
+    if (!contactId || !Number.isFinite(amount) || amount <= 0) return
+    await api(`/api/admin/contacts/${contactId}/prepayments`, { token, method: 'POST', body: { amount } })
+    setPrepaymentAmount('')
+    await Promise.all([selectContact(contactId), loadContacts(contactsPage, contactQuery)])
+    setSuccess('Предоплата внесена, баланс пополнен')
   }
 
   async function changeContactOpportunityStage(opportunityId, stage) {
@@ -1593,6 +1607,8 @@ export function AdminView({ token }) {
                       <label>Статус<select className="input" value={contactEdit.status} onChange={e => setContactEdit(value => ({ ...value, status: e.target.value }))}><option value="lead">Лид</option><option value="active">Активный</option><option value="student">Ученик</option><option value="archived">Архив</option></select></label>
                       <label>Канал связи<select className="input" value={contactEdit.preferred_channel} onChange={e => setContactEdit(value => ({ ...value, preferred_channel: e.target.value }))}><option value="telegram">Telegram</option><option value="phone">Телефон</option></select></label>
                       {selectedContact.contact?.is_student ? <label className="contact-field-wide">Направление<input className="input" value={contactEdit.direction} onChange={e => setContactEdit(value => ({ ...value, direction: e.target.value }))} placeholder="DevOps, ИБ, Хакер" /></label> : null}
+                      <label>Первый источник<select className="input" value={contactEdit.acquisition_source} onChange={e => setContactEdit(value => ({ ...value, acquisition_source: e.target.value }))}>{marketingSources.map(item => <option key={item.key} value={item.key}>{item.name}</option>)}</select></label>
+                      <label>Кампания первого касания<input className="input" value={contactEdit.acquisition_campaign} onChange={e => setContactEdit(value => ({ ...value, acquisition_campaign: e.target.value }))} placeholder="Объявление Avito / серия видео" /></label>
                     </div>
                     <button className="btn contact-save" onClick={() => saveContact().catch(e => setError(normalizeErrorMessage(e.message || e)))}>Сохранить изменения</button>
                     {selectedContact.contact?.is_student ? <button className="btn secondary contact-save" onClick={() => archiveContactProfile().catch(e => setError(normalizeErrorMessage(e.message || e)))}>Архивировать профиль</button> : null}
@@ -1602,6 +1618,7 @@ export function AdminView({ token }) {
                   <div><small>Баланс занятий</small><strong>{selectedContact.contact?.balance_lessons ?? 0}</strong></div>
                   <div><small>Оплаты (последние 12)</small><strong>{formatMoneyShort(selectedContact.paid_total_recent)}</strong></div>
                 </div>
+                {selectedContact.contact?.is_student ? <div className="custom-row" style={{ marginTop: 12 }}><input className="input" type="number" min="1" value={prepaymentAmount} onChange={e => setPrepaymentAmount(e.target.value)} placeholder="Предоплата, ₽" /><button className="btn" onClick={() => addPrepayment().catch(e => setError(normalizeErrorMessage(e.message || e)))}>Внести оплату и пополнить баланс</button></div> : null}
 
                 <h3>Сделки</h3>
                 {selectedContact.opportunities?.length ? <ul className="list list-compact">{selectedContact.opportunities.map(item => (

@@ -46,6 +46,7 @@ from webapi.schemas import (
     TelegramWidgetAuthIn,
     BookIn,
     BroadcastIn,
+    ContactPrepaymentIn,
     ContactPatchIn,
     ContactFunnelStageIn,
     LessonCloseIn,
@@ -974,6 +975,8 @@ def _contact_out(
         "status": contact.status,
         "is_archived": bool(contact.is_archived),
         "preferred_channel": contact.preferred_channel,
+        "acquisition_source": contact.acquisition_source or "unknown",
+        "acquisition_campaign": contact.acquisition_campaign,
         "telegram_id": identity.telegram_id if identity else None,
         "telegram_username": identity.username if identity else None,
         "is_student": profile is not None,
@@ -1115,6 +1118,13 @@ async def admin_patch_contact(
     updates = payload.model_dump(exclude_unset=True)
     direction = updates.pop("direction", None)
     telegram_username = updates.pop("telegram_username", None)
+    if "acquisition_source" in updates:
+        source_key = (updates["acquisition_source"] or "unknown").strip().lower()
+        if await session.get(MarketingSource, source_key) is None:
+            raise HTTPException(status_code=422, detail={"code": "INVALID_SOURCE", "message": "Выберите источник из справочника"})
+        updates["acquisition_source"] = source_key
+    if "acquisition_campaign" in updates:
+        updates["acquisition_campaign"] = (updates["acquisition_campaign"] or "").strip() or None
     for field, value in updates.items():
         setattr(contact, field, value)
     profile = (
@@ -1139,6 +1149,23 @@ async def admin_patch_contact(
     await session.commit()
     await _audit(int(admin["sub"]), "update", "contact", {"contact_id": contact.id, **payload.model_dump(exclude_unset=True)})
     return {"status": "ok"}
+
+
+@app.post("/api/admin/contacts/{contact_id}/prepayments")
+async def admin_add_contact_prepayment(contact_id: int, payload: ContactPrepaymentIn, admin: dict[str, Any] = Depends(require_admin)) -> dict[str, Any]:
+    """Register money received and credit the student balance."""
+    contact = await session.get(Contact, contact_id)
+    if contact is None:
+        raise HTTPException(status_code=404, detail={"code": "NOT_FOUND", "message": "Контакт не найден"})
+    identity = (await session.execute(select(TelegramIdentity).where(TelegramIdentity.contact_id == contact_id))).scalar_one_or_none()
+    profile = (await session.execute(select(StudentProfile).where(StudentProfile.contact_id == contact_id))).scalar_one_or_none()
+    if identity is None or profile is None:
+        raise HTTPException(status_code=409, detail={"code": "PROFILE_REQUIRED", "message": "Пополнение доступно только для профиля ученика с Telegram"})
+    now_local = datetime.datetime.now(get_calendar_tz()).replace(tzinfo=None)
+    payment = await transactions.add_payment(telegram_id=identity.telegram_id, full_name=_contact_name(contact), lesson_date=now_local.date(), hour=now_local.hour, minute=now_local.minute, duration_minutes=0, amount=payload.amount, status="paid", source="prepayment")
+    await transactions.change_balance(identity.telegram_id, payload.amount)
+    await _audit(int(admin["sub"]), "create", "prepayment", {"contact_id": contact_id, "payment_id": payment.id, "amount": payload.amount, "note": payload.note})
+    return {"status": "ok", "payment_id": payment.id, "balance_lessons": int((profile.balance_lessons or 0) + payload.amount)}
 
 
 @app.delete("/api/admin/contacts/{contact_id}/profile")
