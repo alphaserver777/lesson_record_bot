@@ -1,0 +1,6 @@
+BEGIN;
+
+ALTER TABLE opportunities
+  ADD COLUMN IF NOT EXISTS student_level VARCHAR(32);
+
+COMMIT;

@@ -1256,7 +1256,7 @@ def _lead_out(lead: Opportunity, contact: Contact, identity: TelegramIdentity | 
         "full_name": _contact_name(contact), "telephone": contact.telephone,
         "source": lead.source, "utm_medium": lead.utm_medium,
         "utm_campaign": lead.utm_campaign, "utm_content": lead.utm_content,
-        "direction": lead.direction, "goal": lead.goal, "stage": lead.stage,
+        "direction": lead.direction, "goal": lead.goal, "student_level": lead.student_level, "stage": lead.stage,
         "qualification_status": lead.qualification_status, "desired_format": lead.desired_format,
         "desired_budget": lead.desired_budget, "first_response_at": lead.first_response_at,
         "diagnostic_at": lead.diagnostic_at, "diagnostic_scheduled_at": lead.diagnostic_scheduled_at,

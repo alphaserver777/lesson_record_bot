@@ -191,6 +191,7 @@ class Opportunity(Base):
     utm_content = Column(String(120), nullable=True)
     direction = Column(String(80), nullable=True)
     goal = Column(String(500), nullable=True)
+    student_level = Column(String(32), nullable=True)
     qualification_status = Column(String(24), nullable=False, default="new", index=True)
     desired_format = Column(String(80), nullable=True)
     desired_budget = Column(Integer, nullable=True)
