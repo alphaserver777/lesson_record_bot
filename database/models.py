@@ -243,6 +243,8 @@ class MarketingCampaign(Base):
     id = Column(Integer, primary_key=True)
     source_key = Column(String(80), ForeignKey("marketing_sources.key", ondelete="RESTRICT"), nullable=False, index=True)
     name = Column(String(120), nullable=False)
+    active_from = Column(Date, nullable=True, index=True)
+    active_to = Column(Date, nullable=True, index=True)
     is_active = Column(Boolean, nullable=False, default=True)
     created_at = Column(String(50), nullable=False)
     updated_at = Column(String(50), nullable=False)
@@ -259,6 +261,16 @@ class MarketingExpense(Base):
     category = Column(String(32), nullable=False)
     note = Column(String(500), nullable=True)
     created_at = Column(String(50), nullable=False)
+    updated_at = Column(String(50), nullable=False)
+
+
+class MarketingCampaignMetric(Base):
+    __tablename__ = "marketing_campaign_metrics"
+
+    id = Column(Integer, primary_key=True)
+    campaign_id = Column(Integer, ForeignKey("marketing_campaigns.id", ondelete="CASCADE"), nullable=False, index=True)
+    metric_key = Column(String(48), nullable=False)
+    metric_value = Column(Integer, nullable=False, default=0)
     updated_at = Column(String(50), nullable=False)
 
 

@@ -25,7 +25,7 @@ from database.connect import (
     rollback_session,
     session,
 )
-from database.models import Contact, FunnelStage, MarketingCampaign, MarketingExpense, MarketingSource, Opportunity, OpportunityStageEvent, Payment, RecordDate, StudentProfile, TelegramIdentity
+from database.models import Contact, FunnelStage, MarketingCampaign, MarketingCampaignMetric, MarketingExpense, MarketingSource, Opportunity, OpportunityStageEvent, Payment, RecordDate, StudentProfile, TelegramIdentity
 from loader import bot
 from utils.calendar_backend import get_busy_intervals, get_calendar_tz
 from utils.schedule import WEEK_SCHEDULE, is_time_in_schedule, refresh_schedule_cache, slots_for_date
@@ -57,6 +57,7 @@ from webapi.schemas import (
     LeadPatchIn,
     ManualPaymentIn,
     MarketingCampaignIn,
+    MarketingCampaignMetricsIn,
     MarketingExpenseIn,
     OpportunityMarketingPatchIn,
     RegularLessonIn,
@@ -1395,7 +1396,7 @@ async def admin_marketing_campaigns(source_key: str | None = None, _: dict[str, 
     if source_key:
         statement = statement.where(MarketingCampaign.source_key == source_key)
     items = (await session.execute(statement)).scalars().all()
-    return {"items": [{"id": item.id, "source_key": item.source_key, "name": item.name, "is_active": bool(item.is_active)} for item in items]}
+    return {"items": [{"id": item.id, "source_key": item.source_key, "name": item.name, "active_from": item.active_from.isoformat() if item.active_from else None, "active_to": item.active_to.isoformat() if item.active_to else None, "is_active": bool(item.is_active)} for item in items]}
 
 
 @app.post("/api/admin/marketing/campaigns")
@@ -1403,12 +1404,28 @@ async def admin_create_marketing_campaign(payload: MarketingCampaignIn, admin: d
     if await session.get(MarketingSource, payload.source_key) is None:
         raise HTTPException(status_code=422, detail={"code": "INVALID_SOURCE", "message": "Источник не найден"})
     now = datetime.datetime.now(datetime.timezone.utc).isoformat()
-    item = MarketingCampaign(source_key=payload.source_key, name=payload.name.strip(), created_at=now, updated_at=now)
+    item = MarketingCampaign(source_key=payload.source_key, name=payload.name.strip(), active_from=payload.active_from, active_to=payload.active_to, created_at=now, updated_at=now)
     session.add(item)
     await session.commit()
     await session.refresh(item)
     await _audit(int(admin["sub"]), "create", "marketing_campaign", {"id": item.id, "source": item.source_key, "name": item.name})
-    return {"item": {"id": item.id, "source_key": item.source_key, "name": item.name}}
+    return {"item": {"id": item.id, "source_key": item.source_key, "name": item.name, "active_from": item.active_from.isoformat() if item.active_from else None, "active_to": item.active_to.isoformat() if item.active_to else None}}
+
+
+@app.put("/api/admin/marketing/campaigns/{campaign_id}/metrics")
+async def admin_set_marketing_campaign_metrics(campaign_id: int, payload: MarketingCampaignMetricsIn, admin: dict[str, Any] = Depends(require_admin)) -> dict[str, Any]:
+    if await session.get(MarketingCampaign, campaign_id) is None:
+        raise HTTPException(status_code=404, detail={"code": "NOT_FOUND", "message": "Кампания не найдена"})
+    now = datetime.datetime.now(datetime.timezone.utc).isoformat()
+    for key, value in payload.model_dump().items():
+        item = (await session.execute(select(MarketingCampaignMetric).where(MarketingCampaignMetric.campaign_id == campaign_id, MarketingCampaignMetric.metric_key == key))).scalar_one_or_none()
+        if item is None:
+            session.add(MarketingCampaignMetric(campaign_id=campaign_id, metric_key=key, metric_value=value, updated_at=now))
+        else:
+            item.metric_value, item.updated_at = value, now
+    await session.commit()
+    await _audit(int(admin["sub"]), "update", "marketing_campaign_metrics", {"campaign_id": campaign_id, **payload.model_dump()})
+    return {"status": "ok"}
 
 
 @app.get("/api/admin/marketing/expenses")
@@ -2606,6 +2623,11 @@ async def analytics_marketing(
     expenses = (await session.execute(select(MarketingExpense).where(MarketingExpense.spent_at.between(date_from, date_to)))).scalars().all()
     campaigns = (await session.execute(select(MarketingCampaign))).scalars().all()
     campaign_names = {item.id: item.name for item in campaigns}
+    campaign_meta = {item.id: item for item in campaigns}
+    metric_rows = (await session.execute(select(MarketingCampaignMetric))).scalars().all()
+    manual_metrics: dict[int, dict[str, int]] = {}
+    for item in metric_rows:
+        manual_metrics.setdefault(item.campaign_id, {})[item.metric_key] = int(item.metric_value or 0)
 
     contact_map = {item.id: item for item in contacts}
     scoped_contacts = [item for item in contacts if item.acquired_at and date_from <= item.acquired_at <= date_to]
@@ -2653,15 +2675,16 @@ async def analytics_marketing(
     diagnostics_held = sum("diagnostic_held" in event_roles.get(contact_id, set()) for contact_id in scoped_ids)
 
     rows = []
-    row_keys = {(item.acquisition_source or "unknown", item.acquisition_campaign or None) for item in scoped_contacts}
-    row_keys |= {(item.source_key, campaign_names.get(item.campaign_id)) for item in exp_scoped}
-    for key, campaign_name in sorted(row_keys, key=lambda item: (item[0], item[1] or "")):
+    row_keys = {(item.acquisition_source or "unknown", item.acquisition_campaign or None, next((campaign.id for campaign in campaigns if campaign.source_key == item.acquisition_source and campaign.name == item.acquisition_campaign), None)) for item in scoped_contacts}
+    row_keys |= {(item.source_key, campaign_names.get(item.campaign_id), item.campaign_id) for item in exp_scoped}
+    for key, campaign_name, campaign_id in sorted(row_keys, key=lambda item: (item[0], item[1] or "")):
         ids = {item.id for item in scoped_contacts if item.acquisition_source == key and (item.acquisition_campaign or None) == campaign_name}
         spend = sum(int(item.amount) for item in exp_scoped if item.source_key == key and campaign_names.get(item.campaign_id) == campaign_name)
         cash = sum(int(item.amount or 0) for item in cash_payments if item.contact_id in ids)
         new_clients = [item for contact_id, item in first_paid.items() if contact_id in ids and date_from <= item.lesson_date <= date_to]
         ltv = sum(int(item.amount or 0) for item in payments if item.contact_id in ids)
-        rows.append({"source_key": key, "source_name": source_names.get(key, key), "campaign_name": campaign_name, "spend": spend, "leads": len(ids), "qualified": sum("qualified" in event_roles.get(contact_id, set()) for contact_id in ids), "diagnostics_scheduled": sum("diagnostic_scheduled" in event_roles.get(contact_id, set()) for contact_id in ids), "diagnostics_held": sum("diagnostic_held" in event_roles.get(contact_id, set()) for contact_id in ids), "new_clients": len(new_clients), "first_revenue": sum(int(item.amount or 0) for item in new_clients), "cash_revenue": cash, "ltv": ltv, "cpl": ratio(spend, len(ids)), "cac": ratio(spend, len(new_clients)), "romi": romi(cash, spend)})
+        campaign_item = campaign_meta.get(campaign_id)
+        rows.append({"source_key": key, "source_name": source_names.get(key, key), "campaign_id": campaign_id, "campaign_name": campaign_name, "active_from": campaign_item.active_from.isoformat() if campaign_item and campaign_item.active_from else None, "active_to": campaign_item.active_to.isoformat() if campaign_item and campaign_item.active_to else None, "manual_metrics": manual_metrics.get(campaign_id, {}), "spend": spend, "leads": len(ids), "qualified": sum("qualified" in event_roles.get(contact_id, set()) for contact_id in ids), "diagnostics_scheduled": sum("diagnostic_scheduled" in event_roles.get(contact_id, set()) for contact_id in ids), "diagnostics_held": sum("diagnostic_held" in event_roles.get(contact_id, set()) for contact_id in ids), "new_clients": len(new_clients), "first_revenue": sum(int(item.amount or 0) for item in new_clients), "cash_revenue": cash, "ltv": ltv, "cpl": ratio(spend, len(ids)), "cac": ratio(spend, len(new_clients)), "romi": romi(cash, spend)})
 
     return {"period": {"date_from": date_from.isoformat(), "date_to": date_to.isoformat()}, "kpi": {"spend": total_spend, "leads": len(scoped_ids), "qualified": qualified, "diagnostics_scheduled": diagnostics_scheduled, "diagnostics_held": diagnostics_held, "new_clients": len(new_paid), "first_revenue": first_revenue, "cash_revenue": total_cash, "cpl": ratio(total_spend, len(scoped_ids)), "cpql": ratio(total_spend, qualified), "cac": ratio(total_spend, len(new_paid)), "avg_first_payment": ratio(first_revenue, len(new_paid)), "romi": romi(total_cash, total_spend)}, "funnel": [{"role": role, "count": sum(role in values for values in event_roles.values()), "conversion_from_leads": percent(sum(role in values for values in event_roles.values()), len(scoped_ids))} for role in ["new", "qualified", "diagnostic_scheduled", "diagnostic_held", "offer", "won", "lost"]], "rows": rows, "data_quality": {"contacts_unknown_source": sum(item.acquisition_source == "unknown" for item in contacts), "contacts_missing_campaign": sum(bool(item.acquisition_source not in {"unknown", "direct", "referral"} and not item.acquisition_campaign) for item in contacts), "opportunities_missing_next_contact": sum(bool(item.stage not in {"won", "lost"} and not item.next_contact_at) for item in opportunities)}}
 

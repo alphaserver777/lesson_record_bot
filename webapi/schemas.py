@@ -137,6 +137,13 @@ class FunnelStagePatchIn(BaseModel):
 class MarketingCampaignIn(BaseModel):
     source_key: str = Field(min_length=1, max_length=80)
     name: str = Field(min_length=1, max_length=120)
+    active_from: date | None = None
+    active_to: date | None = None
+
+
+class MarketingCampaignMetricsIn(BaseModel):
+    views: int = Field(default=0, ge=0)
+    dialogs: int = Field(default=0, ge=0)
 
 
 class MarketingExpenseIn(BaseModel):
