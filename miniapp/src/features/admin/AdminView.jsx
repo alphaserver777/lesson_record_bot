@@ -252,8 +252,9 @@ export function AdminView({ token }) {
   }
 
   async function selectContact(contactId) {
-    const [data, sources] = await Promise.all([api(`/api/admin/contacts/${contactId}`, { token }), api('/api/admin/marketing/sources', { token })])
+    const [data, sources, campaigns] = await Promise.all([api(`/api/admin/contacts/${contactId}`, { token }), api('/api/admin/marketing/sources', { token }), api('/api/admin/marketing/campaigns', { token })])
     setMarketingSources(sources.items || [])
+    setMarketingCampaigns(campaigns.items || [])
     setSelectedContact(data)
     const contact = data.contact || {}
     setContactEdit({
@@ -1607,9 +1608,10 @@ export function AdminView({ token }) {
                       <label>Статус<select className="input" value={contactEdit.status} onChange={e => setContactEdit(value => ({ ...value, status: e.target.value }))}><option value="lead">Лид</option><option value="active">Активный</option><option value="student">Ученик</option><option value="archived">Архив</option></select></label>
                       <label>Канал связи<select className="input" value={contactEdit.preferred_channel} onChange={e => setContactEdit(value => ({ ...value, preferred_channel: e.target.value }))}><option value="telegram">Telegram</option><option value="phone">Телефон</option></select></label>
                       {selectedContact.contact?.is_student ? <label className="contact-field-wide">Направление<input className="input" value={contactEdit.direction} onChange={e => setContactEdit(value => ({ ...value, direction: e.target.value }))} placeholder="DevOps, ИБ, Хакер" /></label> : null}
-                      <label>Первый источник<select className="input" value={contactEdit.acquisition_source} onChange={e => setContactEdit(value => ({ ...value, acquisition_source: e.target.value }))}>{marketingSources.map(item => <option key={item.key} value={item.key}>{item.name}</option>)}</select></label>
-                      <label>Кампания первого касания<input className="input" value={contactEdit.acquisition_campaign} onChange={e => setContactEdit(value => ({ ...value, acquisition_campaign: e.target.value }))} placeholder="Объявление Avito / серия видео" /></label>
+                      <label>Первый источник<select className="input" value={contactEdit.acquisition_source} onChange={e => setContactEdit(value => ({ ...value, acquisition_source: e.target.value, acquisition_campaign: '' }))}>{marketingSources.map(item => <option key={item.key} value={item.key}>{item.name}</option>)}</select></label>
+                      <label>Кампания первого касания<select className="input" value={contactEdit.acquisition_campaign} onChange={e => setContactEdit(value => ({ ...value, acquisition_campaign: e.target.value }))}><option value="">Без кампании</option>{contactEdit.acquisition_campaign && !marketingCampaigns.some(item => item.source_key === contactEdit.acquisition_source && item.name === contactEdit.acquisition_campaign) ? <option value={contactEdit.acquisition_campaign}>{contactEdit.acquisition_campaign}</option> : null}{marketingCampaigns.filter(item => item.source_key === contactEdit.acquisition_source).map(item => <option key={item.id} value={item.name}>{item.name}</option>)}</select></label>
                     </div>
+                    <small>Источник и кампания связывают клиента с расходами в «Аналитика → Маркетинг». Выберите ту же кампанию, на которую внесён расход.</small>
                     <button className="btn contact-save" onClick={() => saveContact().catch(e => setError(normalizeErrorMessage(e.message || e)))}>Сохранить изменения</button>
                     {selectedContact.contact?.is_student ? <button className="btn secondary contact-save" onClick={() => archiveContactProfile().catch(e => setError(normalizeErrorMessage(e.message || e)))}>Архивировать профиль</button> : null}
 
