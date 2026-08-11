@@ -83,6 +83,37 @@ function CampaignFunnel({ stages, onSelect }) {
   </svg></div>
 }
 
+function CampaignDetail({ campaign, onSavePeriod, onSaveMetrics }) {
+  const [selected, setSelected] = useState(null)
+  const [from, setFrom] = useState(campaign.active_from || '')
+  const [to, setTo] = useState(campaign.active_to || '')
+  const [targetLabel, setTargetLabel] = useState(campaign.target_action_label || 'Целевое действие')
+  const metrics = campaign.manual_metrics || {}
+  const stages = [
+    ['Просмотры объявления', metrics.views || 0, 'views'], ['Вступили в диалог', metrics.dialogs || 0, 'dialogs'],
+    [targetLabel, metrics.target_actions || 0, 'target_actions'], ['Лиды в CRM', campaign.leads, null],
+    ['Диагностика проведена', campaign.diagnostics_held, null], ['Первая оплата', campaign.new_clients, null],
+  ]
+  const status = !from && !to ? 'Период не задан' : to ? 'Завершена' : 'Активна'
+  const saveSelected = async () => {
+    const next = { views: metrics.views || 0, dialogs: metrics.dialogs || 0, target_actions: metrics.target_actions || 0, [selected.metricKey]: Number(selected.value || 0) }
+    await onSaveMetrics(campaign.campaign_id, next)
+    if (selected.metricKey === 'target_actions') await onSavePeriod(campaign.campaign_id, from, to, targetLabel)
+  }
+  return <Card title={`Кампания #${campaign.campaign_id}: ${campaign.campaign_name}`} subtitle="Реклама → лид → продажа">
+    <div className="analytics-kpi-grid">
+      <div className="analytics-kpi-card"><span>Источник</span><strong>{campaign.source_name}</strong><small>Кампания #{campaign.campaign_id}</small></div>
+      <div className="analytics-kpi-card"><span>Период · {status}</span><div className="custom-row"><input className="input" type="date" value={from} onChange={e => setFrom(e.target.value)} aria-label="Запуск" /><input className="input" type="date" value={to} onChange={e => setTo(e.target.value)} aria-label="Остановка" /></div><button className="btn secondary compact" onClick={() => onSavePeriod(campaign.campaign_id, from, to, targetLabel)}>Сохранить период</button></div>
+      <div className="analytics-kpi-card"><span>Потраченный бюджет</span><strong>{metricValue(campaign.spend, 'money')}</strong><small>учитывается из расходов</small></div>
+      <div className="analytics-kpi-card"><span>Выручка и эффективность</span><strong>{metricValue(campaign.cash_revenue, 'money')}</strong><small>ROMI {metricValue(campaign.romi, 'percent')} · CAC {metricValue(campaign.cac, 'money')}</small></div>
+    </div>
+    <div style={{ display: 'grid', gridTemplateColumns: selected ? 'minmax(0,1fr) 300px' : 'minmax(0,1fr)', gap: 18, marginTop: 18 }}>
+      <CampaignFunnel stages={stages} onSelect={setSelected} />
+      {selected ? <aside className="analytics-kpi-card" style={{ alignSelf: 'center' }}><span>Этап воронки</span><strong>{selected.label}</strong>{selected.metricKey ? <><label>Значение<input className="input" type="number" min="0" value={selected.value} onChange={e => setSelected(value => ({ ...value, value: e.target.value }))} /></label>{selected.metricKey === 'target_actions' ? <label>Название этапа<input className="input" value={targetLabel} onChange={e => setTargetLabel(e.target.value)} /></label> : null}<div className="custom-row"><button className="btn secondary compact" onClick={() => setSelected(value => ({ ...value, value: Math.max(0, Number(value.value) - 1) }))}>−</button><button className="btn secondary compact" onClick={() => setSelected(value => ({ ...value, value: Number(value.value) + 1 }))}>+</button></div><button className="btn" style={{ width: '100%' }} onClick={() => saveSelected().catch(() => {})}>Сохранить</button></> : <small>Этот этап считается CRM автоматически и не редактируется вручную.</small>}</aside> : null}
+    </div>
+  </Card>
+}
+
 function signalLabel(signal) {
   if (signal === 'progress') return 'Прогресс'
   if (signal === 'regress') return 'Регресс'
@@ -442,8 +473,8 @@ export function AdminView({ token }) {
     setSuccess('Показатели воронки сохранены')
   }
 
-  async function saveCampaignPeriod(campaignId, activeFrom, activeTo) {
-    await api(`/api/admin/marketing/campaigns/${campaignId}`, { token, method: 'PATCH', body: { active_from: activeFrom || null, active_to: activeTo || null } })
+  async function saveCampaignPeriod(campaignId, activeFrom, activeTo, targetActionLabel) {
+    await api(`/api/admin/marketing/campaigns/${campaignId}`, { token, method: 'PATCH', body: { active_from: activeFrom || null, active_to: activeTo || null, target_action_label: targetActionLabel } })
     await loadMarketingAnalytics()
     setSuccess('Период кампании сохранён')
   }

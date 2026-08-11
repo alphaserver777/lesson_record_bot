@@ -139,11 +139,13 @@ class MarketingCampaignIn(BaseModel):
     name: str = Field(min_length=1, max_length=120)
     active_from: date | None = None
     active_to: date | None = None
+    target_action_label: str = Field(default="Целевое действие", min_length=1, max_length=100)
 
 
 class MarketingCampaignPatchIn(BaseModel):
     active_from: date | None = None
     active_to: date | None = None
+    target_action_label: str | None = Field(default=None, min_length=1, max_length=100)
 
 
 class MarketingCampaignMetricsIn(BaseModel):

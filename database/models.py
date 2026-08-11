@@ -245,6 +245,7 @@ class MarketingCampaign(Base):
     name = Column(String(120), nullable=False)
     active_from = Column(Date, nullable=True, index=True)
     active_to = Column(Date, nullable=True, index=True)
+    target_action_label = Column(String(100), nullable=False, default="Целевое действие")
     is_active = Column(Boolean, nullable=False, default=True)
     created_at = Column(String(50), nullable=False)
     updated_at = Column(String(50), nullable=False)

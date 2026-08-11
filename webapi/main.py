@@ -1397,7 +1397,7 @@ async def admin_marketing_campaigns(source_key: str | None = None, _: dict[str, 
     if source_key:
         statement = statement.where(MarketingCampaign.source_key == source_key)
     items = (await session.execute(statement)).scalars().all()
-    return {"items": [{"id": item.id, "source_key": item.source_key, "name": item.name, "active_from": item.active_from.isoformat() if item.active_from else None, "active_to": item.active_to.isoformat() if item.active_to else None, "is_active": bool(item.is_active)} for item in items]}
+    return {"items": [{"id": item.id, "source_key": item.source_key, "name": item.name, "active_from": item.active_from.isoformat() if item.active_from else None, "active_to": item.active_to.isoformat() if item.active_to else None, "target_action_label": item.target_action_label, "is_active": bool(item.is_active)} for item in items]}
 
 
 @app.post("/api/admin/marketing/campaigns")
@@ -1405,12 +1405,12 @@ async def admin_create_marketing_campaign(payload: MarketingCampaignIn, admin: d
     if await session.get(MarketingSource, payload.source_key) is None:
         raise HTTPException(status_code=422, detail={"code": "INVALID_SOURCE", "message": "Источник не найден"})
     now = datetime.datetime.now(datetime.timezone.utc).isoformat()
-    item = MarketingCampaign(source_key=payload.source_key, name=payload.name.strip(), active_from=payload.active_from, active_to=payload.active_to, created_at=now, updated_at=now)
+    item = MarketingCampaign(source_key=payload.source_key, name=payload.name.strip(), active_from=payload.active_from, active_to=payload.active_to, target_action_label=payload.target_action_label.strip(), created_at=now, updated_at=now)
     session.add(item)
     await session.commit()
     await session.refresh(item)
     await _audit(int(admin["sub"]), "create", "marketing_campaign", {"id": item.id, "source": item.source_key, "name": item.name})
-    return {"item": {"id": item.id, "source_key": item.source_key, "name": item.name, "active_from": item.active_from.isoformat() if item.active_from else None, "active_to": item.active_to.isoformat() if item.active_to else None}}
+    return {"item": {"id": item.id, "source_key": item.source_key, "name": item.name, "active_from": item.active_from.isoformat() if item.active_from else None, "active_to": item.active_to.isoformat() if item.active_to else None, "target_action_label": item.target_action_label}}
 
 
 @app.patch("/api/admin/marketing/campaigns/{campaign_id}")
@@ -1421,10 +1421,12 @@ async def admin_patch_marketing_campaign(campaign_id: int, payload: MarketingCam
     if payload.active_from and payload.active_to and payload.active_from > payload.active_to:
         raise HTTPException(status_code=422, detail={"code": "INVALID_PERIOD", "message": "Дата окончания не может быть раньше даты запуска"})
     item.active_from, item.active_to = payload.active_from, payload.active_to
+    if payload.target_action_label is not None:
+        item.target_action_label = payload.target_action_label.strip()
     item.updated_at = datetime.datetime.now(datetime.timezone.utc).isoformat()
     await session.commit()
     await _audit(int(admin["sub"]), "update", "marketing_campaign", {"id": item.id, **payload.model_dump(mode="json")})
-    return {"item": {"id": item.id, "active_from": item.active_from.isoformat() if item.active_from else None, "active_to": item.active_to.isoformat() if item.active_to else None}}
+    return {"item": {"id": item.id, "active_from": item.active_from.isoformat() if item.active_from else None, "active_to": item.active_to.isoformat() if item.active_to else None, "target_action_label": item.target_action_label}}
 
 
 @app.put("/api/admin/marketing/campaigns/{campaign_id}/metrics")
@@ -2699,7 +2701,7 @@ async def analytics_marketing(
         new_clients = [item for contact_id, item in first_paid.items() if contact_id in ids and date_from <= item.lesson_date <= date_to]
         ltv = sum(int(item.amount or 0) for item in payments if item.contact_id in ids)
         campaign_item = campaign_meta.get(campaign_id)
-        rows.append({"source_key": key, "source_name": source_names.get(key, key), "campaign_id": campaign_id, "campaign_name": campaign_name, "active_from": campaign_item.active_from.isoformat() if campaign_item and campaign_item.active_from else None, "active_to": campaign_item.active_to.isoformat() if campaign_item and campaign_item.active_to else None, "manual_metrics": manual_metrics.get(campaign_id, {}), "spend": spend, "leads": len(ids), "qualified": sum("qualified" in event_roles.get(contact_id, set()) for contact_id in ids), "diagnostics_scheduled": sum("diagnostic_scheduled" in event_roles.get(contact_id, set()) for contact_id in ids), "diagnostics_held": sum("diagnostic_held" in event_roles.get(contact_id, set()) for contact_id in ids), "new_clients": len(new_clients), "first_revenue": sum(int(item.amount or 0) for item in new_clients), "cash_revenue": cash, "ltv": ltv, "cpl": ratio(spend, len(ids)), "cac": ratio(spend, len(new_clients)), "romi": romi(cash, spend)})
+        rows.append({"source_key": key, "source_name": source_names.get(key, key), "campaign_id": campaign_id, "campaign_name": campaign_name, "active_from": campaign_item.active_from.isoformat() if campaign_item and campaign_item.active_from else None, "active_to": campaign_item.active_to.isoformat() if campaign_item and campaign_item.active_to else None, "target_action_label": campaign_item.target_action_label if campaign_item else "Целевое действие", "manual_metrics": manual_metrics.get(campaign_id, {}), "spend": spend, "leads": len(ids), "qualified": sum("qualified" in event_roles.get(contact_id, set()) for contact_id in ids), "diagnostics_scheduled": sum("diagnostic_scheduled" in event_roles.get(contact_id, set()) for contact_id in ids), "diagnostics_held": sum("diagnostic_held" in event_roles.get(contact_id, set()) for contact_id in ids), "new_clients": len(new_clients), "first_revenue": sum(int(item.amount or 0) for item in new_clients), "cash_revenue": cash, "ltv": ltv, "cpl": ratio(spend, len(ids)), "cac": ratio(spend, len(new_clients)), "romi": romi(cash, spend)})
 
     return {"period": {"date_from": date_from.isoformat(), "date_to": date_to.isoformat()}, "kpi": {"spend": total_spend, "leads": len(scoped_ids), "qualified": qualified, "diagnostics_scheduled": diagnostics_scheduled, "diagnostics_held": diagnostics_held, "new_clients": len(new_paid), "first_revenue": first_revenue, "cash_revenue": total_cash, "cpl": ratio(total_spend, len(scoped_ids)), "cpql": ratio(total_spend, qualified), "cac": ratio(total_spend, len(new_paid)), "avg_first_payment": ratio(first_revenue, len(new_paid)), "romi": romi(total_cash, total_spend)}, "funnel": [{"role": role, "count": sum(role in values for values in event_roles.values()), "conversion_from_leads": percent(sum(role in values for values in event_roles.values()), len(scoped_ids))} for role in ["new", "qualified", "diagnostic_scheduled", "diagnostic_held", "offer", "won", "lost"]], "rows": rows, "data_quality": {"contacts_unknown_source": sum(item.acquisition_source == "unknown" for item in contacts), "contacts_missing_campaign": sum(bool(item.acquisition_source not in {"unknown", "direct", "referral"} and not item.acquisition_campaign) for item in contacts), "opportunities_missing_next_contact": sum(bool(item.stage not in {"won", "lost"} and not item.next_contact_at) for item in opportunities)}}
 
