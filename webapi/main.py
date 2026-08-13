@@ -949,7 +949,8 @@ async def public_create_test_drive(
         f"Телефон: {contact.telephone}\n"
         f"Персонаж: {payload.persona}\n"
         "Стоимость: 1 000 ₽\n"
-        f"Подтвердите оплату в CRM: {MINI_APP_URL}"
+        "Статус: ожидает онлайн-оплату Prodamus\n"
+        "После оплаты подтверждение и выручка появятся в CRM автоматически."
     )
     return {
         "status": "awaiting_payment",
