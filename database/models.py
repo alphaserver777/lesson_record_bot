@@ -1,5 +1,5 @@
 """Модели БД."""
-from sqlalchemy import Column, ForeignKey
+from sqlalchemy import Column, ForeignKey, UniqueConstraint
 from sqlalchemy.types import BigInteger, Boolean, Date, Integer, String
 
 from database.connect import Base
@@ -126,6 +126,7 @@ class Lead(Base):
     utm_medium = Column(String(80), nullable=True)
     utm_campaign = Column(String(120), nullable=True)
     utm_content = Column(String(120), nullable=True)
+    campaign_id = Column(Integer, ForeignKey("marketing_campaigns.id", ondelete="SET NULL"), nullable=True, index=True)
     direction = Column(String(80), nullable=True)
     goal = Column(String(500), nullable=True)
     stage = Column(String(32), nullable=False, default="new", index=True)
@@ -205,6 +206,15 @@ class Opportunity(Base):
     lost_reason = Column(String(255), nullable=True)
     next_contact_at = Column(String(50), nullable=True, index=True)
     notes = Column(String(1000), nullable=True)
+    landing_page = Column(String(500), nullable=True)
+    referrer = Column(String(500), nullable=True)
+    visitor_id = Column(String(64), nullable=True, index=True)
+    metrica_client_id = Column(String(64), nullable=True, index=True)
+    telegram_username_hint = Column(String(100), nullable=True)
+    brief_json = Column(String(4000), nullable=True)
+    consent_at = Column(String(50), nullable=True)
+    public_token = Column(String(64), nullable=True, unique=True, index=True)
+    idempotency_key = Column(String(80), nullable=True, unique=True, index=True)
     created_at = Column(String(50), nullable=False)
     updated_at = Column(String(50), nullable=False)
 
@@ -232,6 +242,84 @@ class OpportunityStageEvent(Base):
     occurred_at = Column(String(50), nullable=False, index=True)
     actor_id = Column(BigInteger, nullable=True)
     source = Column(String(32), nullable=False, default="admin")
+
+
+class TestDriveEnrollment(Base):
+    """Paid low-ticket product connecting cold traffic to mentorship."""
+
+    __tablename__ = "test_drive_enrollments"
+    __table_args__ = (
+        UniqueConstraint("idempotency_key", name="uq_test_drive_enrollment_idempotency"),
+    )
+
+    id = Column(Integer, primary_key=True)
+    public_token = Column(String(64), nullable=False, unique=True, index=True)
+    idempotency_key = Column(String(80), nullable=False, unique=True, index=True)
+    contact_id = Column(Integer, ForeignKey("contacts.id", ondelete="CASCADE"), nullable=False, index=True)
+    opportunity_id = Column(Integer, ForeignKey("opportunities.id", ondelete="CASCADE"), nullable=False, index=True)
+    persona = Column(String(32), nullable=False, index=True)
+    price_amount = Column(Integer, nullable=False, default=1500)
+    status = Column(String(32), nullable=False, default="awaiting_payment", index=True)
+    payment_id = Column(Integer, ForeignKey("payments.id", ondelete="SET NULL"), nullable=True, index=True)
+    quest_url = Column(String(500), nullable=True)
+    quest_opened_at = Column(String(50), nullable=True)
+    submission_url = Column(String(500), nullable=True)
+    submission_note = Column(String(1000), nullable=True)
+    submitted_at = Column(String(50), nullable=True)
+    reviewed_at = Column(String(50), nullable=True)
+    created_at = Column(String(50), nullable=False)
+    updated_at = Column(String(50), nullable=False)
+
+
+class ReviewBookingRequest(Base):
+    """Thirty-minute review unlocked after the test-drive quest is submitted."""
+
+    __tablename__ = "review_booking_requests"
+    __table_args__ = (
+        UniqueConstraint("idempotency_key", name="uq_review_booking_idempotency"),
+    )
+
+    id = Column(Integer, primary_key=True)
+    public_token = Column(String(64), nullable=False, unique=True, index=True)
+    idempotency_key = Column(String(80), nullable=False, unique=True, index=True)
+    contact_id = Column(Integer, ForeignKey("contacts.id", ondelete="CASCADE"), nullable=False, index=True)
+    opportunity_id = Column(Integer, ForeignKey("opportunities.id", ondelete="CASCADE"), nullable=False, index=True)
+    enrollment_id = Column(Integer, ForeignKey("test_drive_enrollments.id", ondelete="CASCADE"), nullable=False, index=True)
+    requested_date = Column(Date, nullable=False, index=True)
+    requested_hour = Column(Integer, nullable=False)
+    requested_minute = Column(Integer, nullable=False)
+    duration_minutes = Column(Integer, nullable=False, default=30)
+    hold_key = Column(String(80), nullable=True, unique=True, index=True)
+    status = Column(String(20), nullable=False, default="pending", index=True)
+    expires_at = Column(String(50), nullable=False, index=True)
+    admin_id = Column(BigInteger, nullable=True)
+    decided_at = Column(String(50), nullable=True)
+    created_at = Column(String(50), nullable=False)
+    updated_at = Column(String(50), nullable=False)
+
+
+class WebAnalyticsEvent(Base):
+    """First-party website events that can later be joined to a canonical contact."""
+
+    __tablename__ = "web_analytics_events"
+    __table_args__ = (
+        UniqueConstraint("event_id", name="uq_web_analytics_event_id"),
+    )
+
+    id = Column(Integer, primary_key=True)
+    event_id = Column(String(80), nullable=False, unique=True, index=True)
+    event_type = Column(String(40), nullable=False, index=True)
+    visitor_id = Column(String(64), nullable=False, index=True)
+    contact_id = Column(Integer, ForeignKey("contacts.id", ondelete="SET NULL"), nullable=True, index=True)
+    opportunity_id = Column(Integer, ForeignKey("opportunities.id", ondelete="SET NULL"), nullable=True, index=True)
+    path = Column(String(500), nullable=True)
+    utm_source = Column(String(80), nullable=True)
+    utm_medium = Column(String(80), nullable=True)
+    utm_campaign = Column(String(120), nullable=True)
+    utm_content = Column(String(120), nullable=True)
+    metrica_client_id = Column(String(64), nullable=True)
+    meta_json = Column(String(2000), nullable=True)
+    created_at = Column(String(50), nullable=False, index=True)
 
 
 class MarketingSource(Base):

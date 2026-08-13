@@ -1,114 +1,81 @@
-# Production Deployment
+# Production deployment
 
-## Сервер
+Актуально на 12 августа 2026 года. Рабочий production-контур находится не на
+Germany2, а в VM `vm-robots-dev1` (`192.168.122.10`) на edge-хосте
+`robots-dev1`.
 
-- production server: `Germany2.play2go.cloud`
-- checkout path: `/root/bot_service_appointment`
-- checkout mode: git-managed
-- tracked branch: `dev`
+## Сервисы и каталоги
 
-## Контейнеры
+| Сервис | Container | VM-каталог |
+|---|---|---|
+| PostgreSQL | `postgres-postgres-1` | `/srv/proffessor-it/postgres` |
+| API кабинета | `cabinet-api-1` | `/srv/proffessor-it/cabinet` |
+| Frontend кабинета | `cabinet-frontend-1` | `/srv/proffessor-it/cabinet` |
+| Telegram-бот | `cabinet-bot-1` | `/srv/proffessor-it/app` + bot compose overlay |
 
-- `bot_service_appointment_prod` — основной Telegram-бот
-- `bot_service_appointment_miniapi_prod` — FastAPI backend для Mini App
-- `bot_service_appointment_miniapp_front_prod` — React/Vite frontend Mini App
+Код приложения развёрнут в `/srv/proffessor-it/app`. PostgreSQL `proffessor_it`
+— единственный operational source of truth. SQLite и Germany2 считаются только
+legacy backup-материалами.
 
-## Источник истины для продового запуска
+## Сеть и домен
 
-Production stack должен подниматься через:
+`crm.befa-robotics.com` проходит через Traefik на `robots-dev1`, затем TCP
+bridge `:8082` и системный Nginx VM. Кабинет доступен по `/cabinet/`.
 
-- `docker-compose.prod.yml`
-- конкретный git commit в `/root/bot_service_appointment`
+Полная инфраструктурная карта, включая публичный сайт, находится в
+[`PLAN/14-production-infrastructure.md`](../../Marketing_proffessor_it/PLAN/14-production-infrastructure.md)
+в соседнем рабочем репозитории.
 
-Ручные `docker run` не должны быть основным способом выката.
-Ручная синхронизация отдельных файлов в production checkout не должна быть основным способом выката.
+## Перед deploy
 
-## Подготовка перед выкатом
-
-1. Убедиться, что актуальный код закоммичен.
-2. Зафиксировать commit, который выкатывается.
-3. Проверить, что локальный commit существует в `origin/dev`.
-4. На сервере сохранить backup текущего checkout.
-5. Если изменение затрагивает схему или данные БД, сохранить production БД локально в игнорируемую папку:
-   `backups/production-db/`
-6. На сервере перевести checkout на нужный commit.
-
-Последние локальные backup production БД:
-
-- `backups/production-db/germany2-database_prod-20260308-123933.db`
-- `backups/production-db/germany2-database_prod-20260308-130339.db`
+1. Закоммитить изменения атомарными commit'ами в локальном git-репозитории.
+2. Отправить commit в origin.
+3. На VM обновить `/srv/proffessor-it/app` до того же commit.
+4. Если меняются данные или schema — сделать PostgreSQL dump до deploy.
+5. Не запускать второго Telegram poller: активный бот только `cabinet-bot-1`.
 
 ## Deploy
 
-На `Germany2`:
+API и frontend:
 
 ```bash
-cd /root/bot_service_appointment
-git fetch origin
-git checkout dev
-git reset --hard <target-commit>
-docker compose -f docker-compose.prod.yml up -d --build
+ssh vm-robots-dev1
+cd /srv/proffessor-it/cabinet
+docker compose -f docker-compose.yml up -d --build
 ```
 
-Допустимые server-local файлы вне git:
+Telegram-бот использует compose overlay:
 
-- `.env.prod.docker`
-- `.env.prod.bak.*`
-- `database_prod/`
-- `logs_prod/`
+```bash
+ssh vm-robots-dev1
+cd /srv/proffessor-it/cabinet
+docker compose -f docker-compose.yml \
+  -f /srv/proffessor-it/app/deploy/cabinet/docker-compose.bot.yml \
+  up -d --build --force-recreate bot
+```
 
 ## Проверка
 
-Проверить git-версию:
-
 ```bash
-git rev-parse HEAD
-git branch --show-current
-git status --short
+ssh vm-robots-dev1 'docker ps --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}"'
+
+ssh vm-robots-dev1 \
+  'docker exec cabinet-bot-1 python -c "import urllib.request; print(urllib.request.urlopen(\"http://127.0.0.1:8081/ready\").read())"'
+
+ssh vm-robots-dev1 'docker logs --tail 80 cabinet-bot-1'
+ssh vm-robots-dev1 'docker logs --tail 80 cabinet-api-1'
+ssh vm-robots-dev1 'docker logs --tail 80 cabinet-frontend-1'
 ```
 
-Проверить контейнеры:
-
-```bash
-docker ps --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}" | grep bot_service_appointment
-```
-
-Проверить Mini App API:
-
-```bash
-curl -I http://127.0.0.1:28000/docs
-```
-
-Проверить логи:
-
-```bash
-docker logs --tail 50 bot_service_appointment_prod
-docker logs --tail 50 bot_service_appointment_miniapi_prod
-docker logs --tail 50 bot_service_appointment_miniapp_front_prod
-```
-
-## Важные детали
-
-- `miniapi` должен стартовать через `main_webapi.py`
-- Mini App frontend использует `VITE_API_BASE=https://axtar-b2b.ru/miniapi`
-- production calendar timezone для `app` и `miniapi` должна быть явно зафиксирована как `CALENDAR_TIMEZONE=Europe/Moscow`
-- bot и miniapi используют production volumes:
-  - `./database_prod:/app/data/`
-  - `./logs_prod:/app/logs/`
+Бот считается готовым, если `cabinet-bot-1` имеет `running/healthy`, `/ready`
+возвращает `{"status": "ready"}`, а логи содержат `Start polling`.
 
 ## Rollback
 
-1. Остановить текущие контейнеры.
-2. Вернуть production checkout на предыдущий commit или восстановить backup checkout.
-3. Если изменение затрагивало БД, восстановить нужный локальный backup production БД.
-4. Повторно выполнить:
+1. Вернуть `/srv/proffessor-it/app` на предыдущий known-good commit.
+2. Пересобрать только изменённые сервисы теми же compose-командами.
+3. При schema/data-ошибке восстановить заранее сделанный PostgreSQL dump.
+4. Проверить API, bot health и один тестовый сценарий записи.
 
-```bash
-docker compose -f docker-compose.prod.yml up -d --build
-```
-
-## Data Fix Notes
-
-- Для regular booking из Mini App source of truth серии остаётся `regular_lessons`.
-- Если в production обнаружены approved `record_dates.kind="regular"` без шаблона в `regular_lessons`, сначала делается локальный backup БД, затем выполняется точечный backfill шаблонов, и только после этого выкатывается код.
-- Если rollout меняет производные поля профилей (`student_profiles.full_name`), сначала делается локальный backup production БД, затем выкатывается commit, который выполняет мягкий backfill при startup.
+Не использовать Germany2 как rollback-цель без отдельного решения: это старый
+контур с отличающимся состоянием данных.

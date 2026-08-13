@@ -24,10 +24,14 @@
 
 Если изменение затрагивает Telegram Mini App, backend Mini App или их deployment, нужно учитывать текущее production-размещение:
 
-- сервер: `Germany2.play2go.cloud`
-- контейнер backend: `bot_service_appointment_miniapi_prod`
-- контейнер frontend: `bot_service_appointment_miniapp_front_prod`
-- контейнер основного бота: `bot_service_appointment_prod`
+- сервер приложений: `vm-robots-dev1` (`192.168.122.10`)
+- edge-host / TLS: `robots-dev1` (`176.9.11.143`)
+- контейнер backend: `cabinet-api-1`
+- контейнер frontend: `cabinet-frontend-1`
+- контейнер основного бота: `cabinet-bot-1`
+- PostgreSQL: `postgres-postgres-1`
+
+`Germany2` — только legacy-контур и не должен использоваться для нового deploy.
 
 ## Обязательный процесс работы
 

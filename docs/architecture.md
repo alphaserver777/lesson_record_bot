@@ -1,129 +1,79 @@
-# Архитектура Lesson Record Bot
+# Архитектура Proffessor IT platform
 
 ## Обзор
 
-Система разделена на четыре логические области:
+Платформа состоит из четырёх работающих частей:
 
-1. Telegram-бот
-2. API для Mini App
-3. frontend Mini App
-4. слой хранения данных и доменная логика
+1. Telegram-бот — авторизация, уведомления, сводка на день и напоминания.
+2. API кабинета — бизнес-логика CRM, расписания, финансов и маркетинга.
+3. React/Vite frontend — ученический кабинет и админ-панель.
+4. PostgreSQL — единый источник истины для всех рабочих данных.
 
-## Размещение
+Маркетинговый лендинг `professorit.ru` является отдельным статическим сервисом
+и не хранит клиентские данные. Его CTA направляют в Telegram-бот и кабинет.
 
-Текущее production-размещение Mini App подтверждено на сервере `Germany2.play2go.cloud`.
+## Production-размещение
 
-На этом сервере запущены как минимум следующие контейнеры проекта:
+Рабочая VM: `vm-robots-dev1` (`192.168.122.10`).
 
-- `bot_service_appointment_prod` — основной Telegram-бот
-- `bot_service_appointment_miniapi_prod` — backend Mini App
-- `bot_service_appointment_miniapp_front_prod` — frontend Mini App
+| Компонент | Production container | Роль |
+|---|---|---|
+| PostgreSQL | `postgres-postgres-1` | canonical data store |
+| Telegram bot | `cabinet-bot-1` | один Telegram poller, scheduler уведомлений |
+| API | `cabinet-api-1` | web API и доменные операции |
+| Frontend | `cabinet-frontend-1` | `/cabinet/` UI |
 
-Подтверждение было получено через `docker ps` на `Germany2`.
+Публичный TLS и доменные маршруты обслуживает Traefik на хосте `robots-dev1`.
+Полная схема и путь запросов описаны в
+[`PLAN/14-production-infrastructure.md`](../../Marketing_proffessor_it/PLAN/14-production-infrastructure.md).
 
-Production checkout расположен в:
-
-- `/root/bot_service_appointment`
-- это git-managed checkout, который должен соответствовать конкретному commit из `origin/dev`
-
-Production stack должен подниматься через:
-
-- `docker-compose.prod.yml`
-- production timezone для calendar/schedule/finance flows должна быть зафиксирована как `Europe/Moscow`
-
-Ручной запуск production-контейнеров через отдельные `docker run` больше не является основным способом деплоя.
+Germany2 — legacy-контур. Его контейнеры и SQLite не используются как рабочие
+сервисы и не являются источником runtime-настроек.
 
 ## Модули
 
 ### Telegram-бот
 
-- Точка входа: `main.py`
-- Инициализация бота: `loader.py`
-- Регистрация handlers: `handlers/routers.py`
-- Основная роль: пользовательские и административные взаимодействия внутри Telegram, callbacks, уведомления
-- В notification-only режиме бот также держит закрепляемую точку входа в Mini App:
-  - один bot entry-message
-  - только Telegram `web_app` кнопка
-  - без браузерной ссылки
+- точка входа: `main.py`;
+- инициализация: `loader.py`;
+- routes: `handlers/routers.py`;
+- background scheduler: `utils/restart_services.py`;
+- reminders и утренняя сводка: `utils/misc/reminder.py`.
 
-### API Mini App
+Бот не является самостоятельной базой: он работает с той же PostgreSQL, что API
+и админ-панель. В production одновременно разрешён только `cabinet-bot-1`.
 
-- Точка входа: `webapi/main.py`
-- Основная роль: backend для Telegram Mini App, booking/admin endpoints, операции с расписанием
-- В production развёрнут на сервере `Germany2.play2go.cloud`
-- Для production time-based flow используется `CALENDAR_TIMEZONE=Europe/Moscow`
+### API и frontend
 
-### Frontend Mini App
+- API entrypoint: `main_webapi.py` / `webapi/`;
+- frontend source: `miniapp/`;
+- user view: `miniapp/src/features/user/UserView.jsx`;
+- admin view: `miniapp/src/features/admin/AdminView.jsx`.
 
-- Расположение: `miniapp/`
-- Стек: React + Vite
-- Основная роль: пользовательский интерфейс внутри Telegram Mini App
-- В production развёрнут на сервере `Germany2.play2go.cloud`
-- `miniapp/src/App.jsx` теперь используется как тонкий composition-root:
-  - Telegram auth
-  - выбор admin/user view
-  - верхний error/toast layer
-- Основные feature-экраны вынесены в отдельные модули:
-  - `miniapp/src/features/user/UserView.jsx`
-  - `miniapp/src/features/admin/AdminView.jsx`
-- Общие frontend boundaries вынесены в shared-слой:
-  - `miniapp/src/shared/ui/`
-  - `miniapp/src/shared/hooks/`
-  - `miniapp/src/shared/lib/`
-- Это не финальная модульность frontend, но уже устраняет главный монолитный anti-pattern “весь Mini App живёт в одном App.jsx”
+Кабинет на `crm.befa-robotics.com/cabinet/` — единый web-интерфейс. Telegram
+только подтверждает identity и открывает его во встроенном браузере.
 
-### Хранение данных и доменная логика
+### Данные и доменная модель
 
-- DB session и engine: `database/connect.py`
-- Модели и транзакции: `database/`
-- Общая бизнес-логика: `utils/`
-- Для long-lived процессов проекта запрещено держать одну shared ORM session на весь runtime.
-- Session lifecycle должен быть привязан к короткоживущему unit of work: HTTP request, bot update или отдельная background job iteration.
-- Для профилей учеников `student_profiles.first_name` и `student_profiles.last_name` считаются источником истины для имени.
-- `student_profiles.full_name` хранится как производное поле в формате `Фамилия Имя`, а не как независимое свободное значение.
+- DB session и engine: `database/connect.py`;
+- модели и транзакции: `database/`;
+- rules и integrations: `utils/`.
 
-Дополнительно для регулярных занятий:
+Каноническая связь данных:
 
-- `regular_lessons` хранит шаблон повторения
-- `regular_lesson_exceptions` хранит исключения на конкретные даты
-- согласованная regular-заявка из Mini App должна материализоваться в `regular_lessons`, а не оставаться только `record_dates.kind="regular"` на одну дату
-- разовая отмена одного регулярного занятия больше не должна моделироваться как основной сценарий через `allow`
+```text
+Contact → Opportunity → Student profile → Lessons → Payments → LTV
+                    ↘ source / campaign / marketing spend
+```
 
-Дополнительно для доступности расписания:
+`contacts` — один человек; Telegram — опциональная identity; `opportunities` —
+коммерческая работа; уроки и платежи связаны с тем же `contact_id`. Имя,
+телефон и Telegram ID не должны копироваться в новые сущности.
 
-- недельный график остаётся базовым источником доступности
-- `date_availability_overrides` хранит разовые дополнительные окна доступности на конкретную дату (`extra_open`)
-- итоговые свободные слоты считаются как базовый график + `extra_open` окна на дату - занятые и подавленные слоты
+## Операционные правила
 
-Дополнительно для административной аналитики:
-
-- `payments` остаётся source of truth для выручки, LTV и проведённых уроков
-- `analytics_events` хранит операционные события записи и урока:
-  - booking / approval / rejection
-  - cancel by admin / cancel by client
-  - reschedule
-  - presence yes / no
-  - lesson close paid / unpaid / canceled
-- cancel/no-show/reschedule аналитика должна строиться из `analytics_events`, а не угадываться ретроспективно по текущему состоянию записи
-- для исторического периода до внедрения `analytics_events` такая аналитика считается неполной и должна явно маркироваться в UI
-
-Дополнительно для коммерческой воронки:
-
-- `leads` хранит отдельную запись обращения, этап и коммерческие поля;
-- `student_profiles` остаётся source of truth профиля, а `leads.telegram_id` связывает лид с подтверждённым Telegram-пользователем без дублирования клиента;
-- допустимый Telegram deep link имеет вид `start=src_<source>` и создаёт лид только при первом входе пользователя;
-- Twenty CRM не получает прямой доступ к этой БД: будущая синхронизация выполняется только через API.
-
-## Текущие ограничения
-
-- Проект сейчас использует SQLite, поэтому конкурентные сценарии записи должны оставаться консервативными.
-- Правила записи и расписания чувствительны и сейчас частично распределены между API и utility-модулями.
-- Legacy admin flows всё ещё существуют в Telegram-боте и могут сосуществовать с Mini App flow на этапе миграции.
-- В системе всё ещё может существовать legacy-state на базе `allow`, который поддерживается как переходная совместимость.
-
-## Целевое направление
-
-1. Держать правила расписания и записи централизованными.
-2. Снижать скрытую связанность между handlers и слоем хранения.
-3. Сделать локальную разработку на NixOS воспроизводимой через отдельный dev shell.
-4. Вести изменения через документированные задачи, а не через ad hoc-правки.
+- production timezone: `Europe/Moscow` для календаря, финансов и scheduler;
+- `CALENDAR_TIMEZONE=Europe/Moscow` должен быть задан у API и bot;
+- background jobs не используют shared ORM session на весь runtime;
+- активный bot health endpoint: `http://127.0.0.1:8081/ready` внутри контейнера;
+- Twenty CRM архивирован и исключён из рабочего контура.

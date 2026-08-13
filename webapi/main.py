@@ -6,6 +6,8 @@ import datetime
 import json
 import logging
 import os
+import re
+import time
 from uuid import uuid4
 from typing import Any
 
@@ -13,7 +15,8 @@ from aiogram.exceptions import TelegramBadRequest
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
-from sqlalchemy import func, or_, select, text
+from sqlalchemy import func, or_, select, text, update
+from sqlalchemy.exc import IntegrityError
 
 from config_data.config import ADMINS_TELEGRAM_ID
 from database import transactions
@@ -25,7 +28,7 @@ from database.connect import (
     rollback_session,
     session,
 )
-from database.models import Contact, FunnelStage, ManualWorkLog, MarketingCampaign, MarketingCampaignMetric, MarketingExpense, MarketingSource, Opportunity, OpportunityStageEvent, Payment, RecordDate, StudentProfile, TelegramIdentity
+from database.models import Contact, FunnelStage, ManualWorkLog, MarketingCampaign, MarketingCampaignMetric, MarketingExpense, MarketingSource, Opportunity, OpportunityStageEvent, Payment, RecordDate, ReviewBookingRequest, StudentProfile, TelegramIdentity, TestDriveEnrollment, WebAnalyticsEvent
 from loader import bot
 from utils.calendar_backend import get_busy_intervals, get_calendar_tz
 from utils.schedule import WEEK_SCHEDULE, is_time_in_schedule, refresh_schedule_cache, slots_for_date
@@ -64,6 +67,12 @@ from webapi.schemas import (
     MarketingExpenseIn,
     ManualWorkLogIn,
     OpportunityMarketingPatchIn,
+    PublicAnalyticsEventIn,
+    PublicBriefIn,
+    PublicReviewBookingIn,
+    ReviewBookingDecisionIn,
+    TestDrivePaymentConfirmIn,
+    TestDriveSubmissionIn,
     RegularLessonIn,
     SingleLessonIn,
     UserProfileIn,
@@ -78,10 +87,21 @@ app.state.ready = False
 ADMIN_MINIAPP_APPROVALS_ENABLED = os.getenv("ADMIN_MINIAPP_APPROVALS_ENABLED", "1").strip().lower() in {"1", "true", "yes", "on"}
 ADMIN_BOT_LEGACY_ENABLED = os.getenv("ADMIN_BOT_LEGACY_ENABLED", "1").strip().lower() in {"1", "true", "yes", "on"}
 MINI_APP_URL = os.getenv("MINI_APP_URL", "http://localhost:5173")
+PUBLIC_SITE_ORIGINS = {
+    origin.strip().rstrip("/")
+    for origin in os.getenv(
+        "PUBLIC_SITE_ORIGINS",
+        "https://professorit.ru,https://www.professorit.ru,http://localhost:4321",
+    ).split(",")
+    if origin.strip()
+}
+PUBLIC_REVIEW_DURATION = 30
+PUBLIC_REVIEW_HOLD_HOURS = 24
+PUBLIC_RATE_LIMIT: dict[str, list[float]] = {}
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=[*PUBLIC_SITE_ORIGINS, "https://crm.befa-robotics.com"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -107,6 +127,55 @@ async def db_session_middleware(request: Request, call_next):
 def _parse_hhmm(value: str) -> tuple[int, int]:
     hour_s, minute_s = value.split(":")
     return int(hour_s), int(minute_s)
+
+
+def _public_request_guard(request: Request, *, limit: int = 30, window_seconds: int = 60) -> None:
+    origin = (request.headers.get("origin") or "").rstrip("/")
+    if origin and origin not in PUBLIC_SITE_ORIGINS:
+        raise HTTPException(status_code=403, detail={"code": "ORIGIN_NOT_ALLOWED"})
+    forwarded = request.headers.get("x-forwarded-for", "").split(",", 1)[0].strip()
+    address = forwarded or (request.client.host if request.client else "unknown")
+    now = time.monotonic()
+    recent = [seen for seen in PUBLIC_RATE_LIMIT.get(address, []) if now - seen < window_seconds]
+    if len(recent) >= limit:
+        raise HTTPException(status_code=429, detail={"code": "RATE_LIMITED", "message": "Слишком много запросов. Попробуйте позже."})
+    recent.append(now)
+    PUBLIC_RATE_LIMIT[address] = recent
+
+
+def _normalize_phone(value: str) -> str:
+    digits = re.sub(r"\D", "", value or "")
+    if len(digits) == 11 and digits.startswith("8"):
+        digits = "7" + digits[1:]
+    if len(digits) == 10:
+        digits = "7" + digits
+    if len(digits) < 11 or len(digits) > 15:
+        raise HTTPException(status_code=422, detail={"code": "INVALID_PHONE", "message": "Введите номер телефона в формате 89881414232"})
+    return digits
+
+
+def _source_key_from_utm(value: str | None) -> str:
+    raw = (value or "").strip().lower()
+    if "avito" in raw:
+        return "avito"
+    if "youtube" in raw or "youtu.be" in raw:
+        return "youtube"
+    if "telegram" in raw or raw in {"tg", "t.me"}:
+        return "telegram"
+    if raw in {"referral", "recommendation", "recommend", "рекомендация"}:
+        return "referral"
+    if raw in {"direct", "none"}:
+        return "direct"
+    return "site" if not raw or raw in {"site", "search", "organic", "yandex", "google"} else "other"
+
+
+def _iso_utc_now() -> str:
+    return datetime.datetime.now(datetime.timezone.utc).isoformat()
+
+
+def _parse_iso_datetime(value: str) -> datetime.datetime:
+    parsed = datetime.datetime.fromisoformat(value.replace("Z", "+00:00"))
+    return parsed if parsed.tzinfo else parsed.replace(tzinfo=datetime.timezone.utc)
 
 
 def _is_valid_custom_step(hour: int, minute: int) -> bool:
@@ -688,6 +757,365 @@ async def user_book(payload: BookIn, user: dict[str, Any] = Depends(get_current_
             logger.warning("unexpected error sending approval request admin=%s booking=%s: %s", admin_id, booking_id, exc)
 
     return {"status": "pending", "booking_id": booking_id}
+
+
+async def _active_review_requests(date_value: datetime.date) -> list[ReviewBookingRequest]:
+    now = datetime.datetime.now(datetime.timezone.utc)
+    rows = (
+        await session.execute(
+            select(ReviewBookingRequest).where(
+                ReviewBookingRequest.requested_date == date_value,
+                ReviewBookingRequest.status.in_(["pending", "approved"]),
+            )
+        )
+    ).scalars().all()
+    active: list[ReviewBookingRequest] = []
+    changed = False
+    for item in rows:
+        if item.status == "pending" and _parse_iso_datetime(item.expires_at) <= now:
+            item.status = "expired"
+            item.hold_key = None
+            item.updated_at = now.isoformat()
+            changed = True
+        else:
+            active.append(item)
+    if changed:
+        await session.commit()
+    return active
+
+
+async def _review_slots(date_value: datetime.date) -> list[dict[str, Any]]:
+    if date_value < datetime.date.today() or date_value > datetime.date.today() + datetime.timedelta(days=30):
+        return []
+    base_slots = await _available_slots_for_date(date_value, PUBLIC_REVIEW_DURATION)
+    active = await _active_review_requests(date_value)
+    result: list[dict[str, Any]] = []
+    for slot in base_slots:
+        if not slot["available"]:
+            continue
+        hour, minute = _parse_hhmm(slot["time"])
+        start = hour * 60 + minute
+        end = start + PUBLIC_REVIEW_DURATION
+        occupied = any(
+            start < item.requested_hour * 60 + item.requested_minute + item.duration_minutes
+            and end > item.requested_hour * 60 + item.requested_minute
+            for item in active
+        )
+        if not occupied:
+            result.append({"time": slot["time"]})
+    return result
+
+
+async def _notify_admins(message: str) -> None:
+    for admin_id in ADMINS_TELEGRAM_ID:
+        try:
+            await bot.send_message(chat_id=int(admin_id), text=message)
+        except Exception as exc:  # pylint: disable=broad-except
+            logger.warning("failed to send website notification to admin=%s: %s", admin_id, exc)
+
+
+@app.post("/api/public/briefs")
+async def public_create_test_drive(
+    payload: PublicBriefIn,
+    request: Request,
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
+) -> dict[str, Any]:
+    _public_request_guard(request, limit=8, window_seconds=300)
+    if payload.honeypot:
+        return {"status": "accepted"}
+    if not payload.consent:
+        raise HTTPException(status_code=422, detail={"code": "CONSENT_REQUIRED", "message": "Нужно согласие на обработку данных"})
+    if not idempotency_key or not re.fullmatch(r"[A-Za-z0-9._:-]{12,80}", idempotency_key):
+        raise HTTPException(status_code=422, detail={"code": "INVALID_IDEMPOTENCY_KEY"})
+    existing = (
+        await session.execute(select(TestDriveEnrollment).where(TestDriveEnrollment.idempotency_key == idempotency_key))
+    ).scalar_one_or_none()
+    if existing is not None:
+        return {"status": existing.status, "enrollment_token": existing.public_token, "enrollment_id": existing.id}
+
+    phone = _normalize_phone(payload.telephone)
+    now = _iso_utc_now()
+    campaign = await session.get(MarketingCampaign, payload.campaign_id) if payload.campaign_id else None
+    source_key = campaign.source_key if campaign else _source_key_from_utm(payload.utm_source)
+    if await session.get(MarketingSource, source_key) is None:
+        source_key = "unknown"
+    contact = (
+        await session.execute(select(Contact).where(Contact.telephone == phone).order_by(Contact.id).limit(1))
+    ).scalar_one_or_none()
+    first_name, last_name = _split_contact_name(payload.full_name)
+    if contact is None:
+        contact = Contact(
+            first_name=first_name,
+            last_name=last_name,
+            telephone=phone,
+            preferred_channel="telegram" if payload.telegram_username else "phone",
+            status="lead",
+            is_archived=False,
+            acquisition_source=source_key,
+            acquisition_campaign_id=campaign.id if campaign else None,
+            acquisition_campaign=campaign.name if campaign else payload.utm_campaign,
+            acquired_at=datetime.date.today(),
+            created_at=now,
+            updated_at=now,
+        )
+        session.add(contact)
+        await session.flush()
+    else:
+        contact.first_name = contact.first_name or first_name
+        contact.last_name = contact.last_name or last_name
+        contact.updated_at = now
+        contact.is_archived = False
+        if contact.status == "archived":
+            contact.status = "lead"
+
+    stages = await _funnel_stages()
+    stage = stages[0].key
+    opportunity_token = uuid4().hex
+    brief = {
+        "current_problem": payload.current_problem,
+        "desired_timeline": payload.desired_timeline,
+        "weekly_hours": payload.weekly_hours,
+        "consent_version": payload.consent_version,
+        "entry_product": "test_drive",
+        "price": 1500,
+    }
+    opportunity = Opportunity(
+        contact_id=contact.id,
+        source=source_key,
+        utm_medium=payload.utm_medium,
+        utm_campaign=campaign.name if campaign else payload.utm_campaign,
+        utm_content=payload.utm_content,
+        direction=payload.persona,
+        goal=payload.goal,
+        student_level=payload.student_level,
+        qualification_status="new",
+        desired_format="test_drive",
+        desired_budget=1500,
+        stage=stage,
+        notes=payload.current_problem,
+        landing_page=payload.landing_page,
+        referrer=payload.referrer,
+        visitor_id=payload.visitor_id,
+        metrica_client_id=payload.metrica_client_id,
+        telegram_username_hint=(payload.telegram_username or "").lstrip("@") or None,
+        brief_json=json.dumps(brief, ensure_ascii=False),
+        consent_at=now,
+        public_token=opportunity_token,
+        idempotency_key=f"brief:{idempotency_key}",
+        offer_amount=1500,
+        created_at=now,
+        updated_at=now,
+    )
+    session.add(opportunity)
+    await session.flush()
+    enrollment = TestDriveEnrollment(
+        public_token=uuid4().hex,
+        idempotency_key=idempotency_key,
+        contact_id=contact.id,
+        opportunity_id=opportunity.id,
+        persona=payload.persona,
+        price_amount=1500,
+        status="awaiting_payment",
+        created_at=now,
+        updated_at=now,
+    )
+    session.add(enrollment)
+    session.add(OpportunityStageEvent(opportunity_id=opportunity.id, from_stage=None, to_stage=stage, occurred_at=now, source="website"))
+    await session.execute(
+        update(WebAnalyticsEvent)
+        .where(WebAnalyticsEvent.visitor_id == payload.visitor_id, WebAnalyticsEvent.contact_id.is_(None))
+        .values(contact_id=contact.id, opportunity_id=opportunity.id)
+    )
+    try:
+        await session.commit()
+    except IntegrityError:
+        await session.rollback()
+        existing = (
+            await session.execute(select(TestDriveEnrollment).where(TestDriveEnrollment.idempotency_key == idempotency_key))
+        ).scalar_one_or_none()
+        if existing is None:
+            raise
+        return {"status": existing.status, "enrollment_token": existing.public_token, "enrollment_id": existing.id}
+    await _notify_admins(
+        "🧭 Новая заявка на тест-драйв\n"
+        f"Контакт: {_contact_name(contact)}\n"
+        f"Телефон: {contact.telephone}\n"
+        f"Персонаж: {payload.persona}\n"
+        "Стоимость: 1 500 ₽\n"
+        f"Подтвердите оплату в CRM: {MINI_APP_URL}"
+    )
+    return {
+        "status": "awaiting_payment",
+        "enrollment_token": enrollment.public_token,
+        "enrollment_id": enrollment.id,
+        "price": 1500,
+        "message": "Заявка создана. Мы свяжемся с вами для подтверждения оплаты и выдачи мини-квеста.",
+    }
+
+
+@app.get("/api/public/test-drive/{enrollment_token}")
+async def public_test_drive_status(enrollment_token: str, request: Request) -> dict[str, Any]:
+    _public_request_guard(request, limit=60, window_seconds=60)
+    enrollment = (
+        await session.execute(select(TestDriveEnrollment).where(TestDriveEnrollment.public_token == enrollment_token))
+    ).scalar_one_or_none()
+    if enrollment is None:
+        raise HTTPException(status_code=404, detail={"code": "ENROLLMENT_NOT_FOUND"})
+    return {
+        "status": enrollment.status,
+        "persona": enrollment.persona,
+        "price": enrollment.price_amount,
+        "quest_url": enrollment.quest_url if enrollment.status in {"quest_ready", "quest_opened", "quest_submitted", "review_ready", "completed"} else None,
+        "can_submit": enrollment.status in {"quest_ready", "quest_opened"},
+        "can_book_review": enrollment.status in {"quest_submitted", "review_ready"},
+    }
+
+
+@app.post("/api/public/test-drive/submissions")
+async def public_submit_test_drive(payload: TestDriveSubmissionIn, request: Request) -> dict[str, Any]:
+    _public_request_guard(request, limit=8, window_seconds=300)
+    if payload.honeypot:
+        return {"status": "accepted"}
+    enrollment = (
+        await session.execute(select(TestDriveEnrollment).where(TestDriveEnrollment.public_token == payload.enrollment_token))
+    ).scalar_one_or_none()
+    if enrollment is None:
+        raise HTTPException(status_code=404, detail={"code": "ENROLLMENT_NOT_FOUND"})
+    if enrollment.status not in {"quest_ready", "quest_opened"}:
+        raise HTTPException(status_code=409, detail={"code": "QUEST_NOT_AVAILABLE"})
+    now = _iso_utc_now()
+    enrollment.submission_url = payload.submission_url
+    enrollment.submission_note = payload.submission_note
+    enrollment.submitted_at = now
+    enrollment.status = "quest_submitted"
+    enrollment.updated_at = now
+    await session.commit()
+    contact = await session.get(Contact, enrollment.contact_id)
+    await _notify_admins(
+        "✅ Участник сдал мини-квест\n"
+        f"Контакт: {_contact_name(contact) if contact else enrollment.contact_id}\n"
+        f"Персонаж: {enrollment.persona}\n"
+        f"Проверьте работу в CRM: {MINI_APP_URL}"
+    )
+    return {"status": "quest_submitted", "can_book_review": True}
+
+
+@app.get("/api/public/review-slots")
+async def public_review_slots(request: Request, enrollment_token: str, date: datetime.date | None = None) -> dict[str, Any]:
+    _public_request_guard(request, limit=60, window_seconds=60)
+    enrollment = (
+        await session.execute(select(TestDriveEnrollment).where(TestDriveEnrollment.public_token == enrollment_token))
+    ).scalar_one_or_none()
+    if enrollment is None or enrollment.status not in {"quest_submitted", "review_ready"}:
+        raise HTTPException(status_code=403, detail={"code": "REVIEW_NOT_UNLOCKED"})
+    if date is not None:
+        return {"date": date.isoformat(), "slots": await _review_slots(date)}
+    days = []
+    for offset in range(1, 15):
+        day = datetime.date.today() + datetime.timedelta(days=offset)
+        slots = await _review_slots(day)
+        if slots:
+            days.append({"date": day.isoformat(), "slots": slots})
+    return {"days": days}
+
+
+@app.post("/api/public/review-bookings")
+async def public_create_review_booking(
+    payload: PublicReviewBookingIn,
+    request: Request,
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
+) -> dict[str, Any]:
+    _public_request_guard(request, limit=8, window_seconds=300)
+    if payload.honeypot:
+        return {"status": "accepted"}
+    if not idempotency_key or not re.fullmatch(r"[A-Za-z0-9._:-]{12,80}", idempotency_key):
+        raise HTTPException(status_code=422, detail={"code": "INVALID_IDEMPOTENCY_KEY"})
+    existing = (
+        await session.execute(select(ReviewBookingRequest).where(ReviewBookingRequest.idempotency_key == idempotency_key))
+    ).scalar_one_or_none()
+    if existing is not None:
+        return {"status": existing.status, "booking_id": existing.id}
+    enrollment = (
+        await session.execute(select(TestDriveEnrollment).where(TestDriveEnrollment.public_token == payload.enrollment_token))
+    ).scalar_one_or_none()
+    if enrollment is None or enrollment.status not in {"quest_submitted", "review_ready"}:
+        raise HTTPException(status_code=403, detail={"code": "REVIEW_NOT_UNLOCKED"})
+    available = {item["time"] for item in await _review_slots(payload.date)}
+    if payload.time not in available:
+        raise HTTPException(status_code=409, detail={"code": "SLOT_BUSY", "message": "Это время уже недоступно"})
+    hour, minute = _parse_hhmm(payload.time)
+    now_dt = datetime.datetime.now(datetime.timezone.utc)
+    booking = ReviewBookingRequest(
+        public_token=uuid4().hex,
+        idempotency_key=idempotency_key,
+        hold_key=f"{payload.date.isoformat()}:{payload.time}",
+        contact_id=enrollment.contact_id,
+        opportunity_id=enrollment.opportunity_id,
+        enrollment_id=enrollment.id,
+        requested_date=payload.date,
+        requested_hour=hour,
+        requested_minute=minute,
+        duration_minutes=PUBLIC_REVIEW_DURATION,
+        status="pending",
+        expires_at=(now_dt + datetime.timedelta(hours=PUBLIC_REVIEW_HOLD_HOURS)).isoformat(),
+        created_at=now_dt.isoformat(),
+        updated_at=now_dt.isoformat(),
+    )
+    session.add(booking)
+    try:
+        await session.commit()
+    except IntegrityError as exc:
+        await session.rollback()
+        raise HTTPException(status_code=409, detail={"code": "SLOT_BUSY", "message": "Это время уже выбрал другой участник"}) from exc
+    contact = await session.get(Contact, enrollment.contact_id)
+    await _notify_admins(
+        "🗓 Запрос 30-минутного разбора\n"
+        f"Контакт: {_contact_name(contact) if contact else enrollment.contact_id}\n"
+        f"Дата: {payload.date.isoformat()} {payload.time}\n"
+        f"Подтвердите в CRM: {MINI_APP_URL}"
+    )
+    return {"status": "pending", "booking_id": booking.id, "expires_at": booking.expires_at}
+
+
+@app.post("/api/public/events", status_code=202)
+async def public_track_event(payload: PublicAnalyticsEventIn, request: Request) -> dict[str, Any]:
+    _public_request_guard(request, limit=120, window_seconds=60)
+    if (await session.execute(select(WebAnalyticsEvent.id).where(WebAnalyticsEvent.event_id == payload.event_id))).scalar_one_or_none():
+        return {"status": "accepted"}
+    enrollment = None
+    opportunity = None
+    if payload.brief_token:
+        enrollment = (
+            await session.execute(select(TestDriveEnrollment).where(TestDriveEnrollment.public_token == payload.brief_token))
+        ).scalar_one_or_none()
+        if enrollment:
+            opportunity = await session.get(Opportunity, enrollment.opportunity_id)
+    resolved_campaign_id = None
+    if payload.campaign_id:
+        resolved_campaign_id = (
+            await session.execute(select(MarketingCampaign.id).where(MarketingCampaign.id == payload.campaign_id))
+        ).scalar_one_or_none()
+    session.add(WebAnalyticsEvent(
+        event_id=payload.event_id,
+        event_type=payload.event_type,
+        visitor_id=payload.visitor_id,
+        contact_id=enrollment.contact_id if enrollment else None,
+        opportunity_id=opportunity.id if opportunity else None,
+        path=payload.path,
+        utm_source=payload.utm_source,
+        utm_medium=payload.utm_medium,
+        utm_campaign=payload.utm_campaign,
+        utm_content=payload.utm_content,
+        campaign_id=resolved_campaign_id,
+        metrica_client_id=payload.metrica_client_id,
+        meta_json=json.dumps(payload.meta, ensure_ascii=False)[:2000],
+        created_at=_iso_utc_now(),
+    ))
+    try:
+        await session.commit()
+    except IntegrityError:
+        await session.rollback()
+    return {"status": "accepted"}
 
 
 @app.get("/api/user/bookings")
@@ -1279,6 +1707,180 @@ async def admin_list_leads(_: dict[str, Any] = Depends(require_admin)) -> dict[s
         .order_by(Opportunity.updated_at.desc(), Opportunity.id.desc())
     )
     return {"items": [_lead_out(opportunity, contact, identity) for opportunity, contact, identity in result.all()]}
+
+
+def _test_drive_out(enrollment: TestDriveEnrollment, contact: Contact, opportunity: Opportunity) -> dict[str, Any]:
+    return {
+        "id": enrollment.id,
+        "contact_id": contact.id,
+        "opportunity_id": opportunity.id,
+        "full_name": _contact_name(contact),
+        "telephone": contact.telephone,
+        "telegram_username": opportunity.telegram_username_hint,
+        "persona": enrollment.persona,
+        "price": enrollment.price_amount,
+        "status": enrollment.status,
+        "payment_id": enrollment.payment_id,
+        "quest_url": enrollment.quest_url,
+        "submission_url": enrollment.submission_url,
+        "submission_note": enrollment.submission_note,
+        "submitted_at": enrollment.submitted_at,
+        "created_at": enrollment.created_at,
+    }
+
+
+@app.get("/api/admin/test-drives")
+async def admin_test_drives(_: dict[str, Any] = Depends(require_admin)) -> dict[str, Any]:
+    rows = await session.execute(
+        select(TestDriveEnrollment, Contact, Opportunity)
+        .join(Contact, Contact.id == TestDriveEnrollment.contact_id)
+        .join(Opportunity, Opportunity.id == TestDriveEnrollment.opportunity_id)
+        .order_by(TestDriveEnrollment.updated_at.desc(), TestDriveEnrollment.id.desc())
+    )
+    return {"items": [_test_drive_out(enrollment, contact, opportunity) for enrollment, contact, opportunity in rows.all()]}
+
+
+@app.post("/api/admin/test-drives/{enrollment_id}/confirm-payment")
+async def admin_confirm_test_drive_payment(
+    enrollment_id: int,
+    payload: TestDrivePaymentConfirmIn,
+    admin: dict[str, Any] = Depends(require_admin),
+) -> dict[str, Any]:
+    enrollment = await session.get(TestDriveEnrollment, enrollment_id)
+    if enrollment is None:
+        raise HTTPException(status_code=404, detail={"code": "ENROLLMENT_NOT_FOUND"})
+    contact = await session.get(Contact, enrollment.contact_id)
+    opportunity = await session.get(Opportunity, enrollment.opportunity_id)
+    if contact is None or opportunity is None:
+        raise HTTPException(status_code=409, detail={"code": "CANONICAL_DATA_MISSING"})
+    if enrollment.payment_id is None:
+        now_local = datetime.datetime.now(get_calendar_tz())
+        payment = Payment(
+            contact_id=contact.id,
+            full_name=_contact_name(contact),
+            lesson_date=now_local.date(),
+            hour=now_local.hour,
+            minute=now_local.minute,
+            duration_minutes=0,
+            amount=payload.amount,
+            status="paid",
+            source="test_drive",
+            created_at=_iso_utc_now(),
+        )
+        session.add(payment)
+        await session.flush()
+        enrollment.payment_id = payment.id
+    now = _iso_utc_now()
+    enrollment.price_amount = payload.amount
+    enrollment.quest_url = payload.quest_url or enrollment.quest_url
+    enrollment.status = "quest_ready"
+    enrollment.updated_at = now
+    opportunity.paid_amount = int(opportunity.paid_amount or 0) + (0 if opportunity.paid_amount else payload.amount)
+    opportunity.updated_at = now
+    await session.commit()
+    await _audit(int(admin["sub"]), "confirm_payment", "test_drive", {"enrollment_id": enrollment.id, "amount": payload.amount})
+    return {"item": _test_drive_out(enrollment, contact, opportunity)}
+
+
+@app.post("/api/admin/test-drives/{enrollment_id}/mark-reviewed")
+async def admin_mark_test_drive_reviewed(enrollment_id: int, admin: dict[str, Any] = Depends(require_admin)) -> dict[str, Any]:
+    enrollment = await session.get(TestDriveEnrollment, enrollment_id)
+    if enrollment is None:
+        raise HTTPException(status_code=404, detail={"code": "ENROLLMENT_NOT_FOUND"})
+    now = _iso_utc_now()
+    enrollment.reviewed_at = now
+    enrollment.status = "completed"
+    enrollment.updated_at = now
+    await session.commit()
+    await _audit(int(admin["sub"]), "complete", "test_drive", {"enrollment_id": enrollment.id})
+    return {"status": "completed"}
+
+
+@app.get("/api/admin/review-bookings")
+async def admin_review_bookings(_: dict[str, Any] = Depends(require_admin)) -> dict[str, Any]:
+    now = datetime.datetime.now(datetime.timezone.utc)
+    rows = await session.execute(
+        select(ReviewBookingRequest, Contact)
+        .join(Contact, Contact.id == ReviewBookingRequest.contact_id)
+        .order_by(ReviewBookingRequest.requested_date, ReviewBookingRequest.requested_hour, ReviewBookingRequest.requested_minute)
+    )
+    items = []
+    changed = False
+    for booking, contact in rows.all():
+        if booking.status == "pending" and _parse_iso_datetime(booking.expires_at) <= now:
+            booking.status = "expired"
+            booking.hold_key = None
+            booking.updated_at = now.isoformat()
+            changed = True
+        items.append({
+            "id": booking.id,
+            "contact_id": contact.id,
+            "full_name": _contact_name(contact),
+            "telephone": contact.telephone,
+            "date": booking.requested_date.isoformat(),
+            "time": f"{booking.requested_hour:02d}:{booking.requested_minute:02d}",
+            "status": booking.status,
+            "expires_at": booking.expires_at,
+        })
+    if changed:
+        await session.commit()
+    return {"items": items}
+
+
+@app.post("/api/admin/review-bookings/{booking_id}/decision")
+async def admin_decide_review_booking(
+    booking_id: int,
+    payload: ReviewBookingDecisionIn,
+    admin: dict[str, Any] = Depends(require_admin),
+) -> dict[str, Any]:
+    booking = await session.get(ReviewBookingRequest, booking_id)
+    if booking is None:
+        raise HTTPException(status_code=404, detail={"code": "BOOKING_NOT_FOUND"})
+    if booking.status != "pending":
+        raise HTTPException(status_code=409, detail={"code": "ALREADY_PROCESSED", "status": booking.status})
+    now = _iso_utc_now()
+    booking.status = payload.status
+    booking.admin_id = int(admin["sub"])
+    booking.decided_at = now
+    booking.updated_at = now
+    enrollment = await session.get(TestDriveEnrollment, booking.enrollment_id)
+    opportunity = await session.get(Opportunity, booking.opportunity_id)
+    if payload.status == "approved":
+        occupied = await transactions.is_slot_overlapping_local(
+            booking.requested_date,
+            booking.requested_hour,
+            booking.requested_minute,
+            booking.duration_minutes,
+        )
+        if occupied:
+            raise HTTPException(status_code=409, detail={"code": "SLOT_BUSY"})
+        session.add(RecordDate(
+            contact_id=booking.contact_id,
+            telegram_id=None,
+            record_date=booking.requested_date,
+            hour=booking.requested_hour,
+            minute=booking.requested_minute,
+            duration_minutes=booking.duration_minutes,
+            kind="diagnostic",
+            note="Разбор тест-драйва",
+            booking_status="approved",
+            approval_admin_id=int(admin["sub"]),
+            approval_updated_at=now,
+        ))
+        if opportunity:
+            opportunity.diagnostic_scheduled_at = datetime.datetime.combine(
+                booking.requested_date,
+                datetime.time(booking.requested_hour, booking.requested_minute),
+            ).isoformat()
+            opportunity.updated_at = now
+        if enrollment:
+            enrollment.status = "review_ready"
+            enrollment.updated_at = now
+    else:
+        booking.hold_key = None
+    await session.commit()
+    await _audit(int(admin["sub"]), payload.status, "review_booking", {"booking_id": booking.id})
+    return {"status": booking.status}
 
 
 @app.post("/api/admin/leads")
@@ -2751,9 +3353,36 @@ async def analytics_marketing(
     campaign_names = {item.id: item.name for item in campaigns}
     campaign_meta = {item.id: item for item in campaigns}
     metric_rows = (await session.execute(select(MarketingCampaignMetric))).scalars().all()
+    web_events = (
+        await session.execute(
+            select(WebAnalyticsEvent).where(
+                WebAnalyticsEvent.created_at >= date_from.isoformat(),
+                WebAnalyticsEvent.created_at < (date_to + datetime.timedelta(days=1)).isoformat(),
+            )
+        )
+    ).scalars().all()
+    if source_key:
+        web_events = [item for item in web_events if _source_key_from_utm(item.utm_source) == source_key]
+    if campaign_id is not None:
+        web_events = [item for item in web_events if item.campaign_id == campaign_id]
+    elif campaign:
+        web_events = [item for item in web_events if item.utm_campaign == campaign]
     manual_metrics: dict[int, dict[str, int]] = {}
     for item in metric_rows:
         manual_metrics.setdefault(item.campaign_id, {})[item.metric_key] = int(item.metric_value or 0)
+
+    longread_event_types = [
+        "longread_view", "longread_25", "longread_50", "longread_75",
+        "longread_100", "longread_completed", "longread_cta_clicked",
+        "profession_interest_clicked",
+    ]
+
+    def unique_web_visitors(event_type: str, items: list[WebAnalyticsEvent] | None = None) -> int:
+        rows_for_event = web_events if items is None else items
+        return len({item.visitor_id for item in rows_for_event if item.event_type == event_type})
+
+    def web_funnel_for(items: list[WebAnalyticsEvent]) -> dict[str, int]:
+        return {key: len({item.visitor_id for item in items if item.event_type == key}) for key in longread_event_types}
 
     contact_map = {item.id: item for item in contacts}
     scoped_contacts = [item for item in contacts if item.acquired_at and date_from <= item.acquired_at <= date_to]
@@ -2846,13 +3475,16 @@ async def analytics_marketing(
         new_clients = [item for contact_id, item in first_paid.items() if contact_id in ids and date_from <= item.lesson_date <= date_to]
         ltv = sum(int(item.amount or 0) for item in payments if item.contact_id in ids)
         campaign_item = campaign_meta.get(campaign_id)
-        rows.append({"source_key": key, "source_name": source_names.get(key, key), "campaign_id": campaign_id, "campaign_name": campaign_name, "active_from": campaign_item.active_from.isoformat() if campaign_item and campaign_item.active_from else None, "active_to": campaign_item.active_to.isoformat() if campaign_item and campaign_item.active_to else None, "target_action_label": campaign_item.target_action_label if campaign_item else "Целевое действие", "manual_metrics": manual_metrics.get(campaign_id, {}), "spend": spend, "leads": len(ids), "qualified": len(contacts_with("qualified", ids)), "diagnostics_scheduled": len(contacts_with("diagnostic_scheduled", ids)), "diagnostics_held": len(contacts_with("diagnostic_held", ids)), "new_clients": len(new_clients), "first_revenue": sum(int(item.amount or 0) for item in new_clients), "cash_revenue": cash, "ltv": ltv, "cpl": ratio(spend, len(ids)), "cac": ratio(spend, len(new_clients)), "roas": ratio(cash, spend), "ltv_cac": ratio(ltv, spend), "romi": romi(cash, spend), "avg_days_to_first_payment": average_sales_cycle(ids)})
+        campaign_web_events = [item for item in web_events if item.campaign_id == campaign_id] if campaign_id else []
+        rows.append({"source_key": key, "source_name": source_names.get(key, key), "campaign_id": campaign_id, "campaign_name": campaign_name, "active_from": campaign_item.active_from.isoformat() if campaign_item and campaign_item.active_from else None, "active_to": campaign_item.active_to.isoformat() if campaign_item and campaign_item.active_to else None, "target_action_label": campaign_item.target_action_label if campaign_item else "Целевое действие", "manual_metrics": manual_metrics.get(campaign_id, {}), "longread": web_funnel_for(campaign_web_events), "spend": spend, "leads": len(ids), "qualified": len(contacts_with("qualified", ids)), "diagnostics_scheduled": len(contacts_with("diagnostic_scheduled", ids)), "diagnostics_held": len(contacts_with("diagnostic_held", ids)), "new_clients": len(new_clients), "first_revenue": sum(int(item.amount or 0) for item in new_clients), "cash_revenue": cash, "ltv": ltv, "cpl": ratio(spend, len(ids)), "cac": ratio(spend, len(new_clients)), "roas": ratio(cash, spend), "ltv_cac": ratio(ltv, spend), "romi": romi(cash, spend), "avg_days_to_first_payment": average_sales_cycle(ids)})
 
     funnel_counts = {
         "qualified": qualified, "diagnostic_scheduled": diagnostics_scheduled, "diagnostic_held": diagnostics_held,
         **{role: sum(role in values for values in event_roles.values()) for role in ["new", "offer", "won", "lost"]},
     }
-    return {"period": {"date_from": date_from.isoformat(), "date_to": date_to.isoformat()}, "kpi": {"spend": total_spend, "leads": len(scoped_ids), "qualified": qualified, "diagnostics_scheduled": diagnostics_scheduled, "diagnostics_held": diagnostics_held, "new_clients": len(new_paid), "first_revenue": first_revenue, "cash_revenue": total_cash, "cpl": ratio(total_spend, len(scoped_ids)), "cpql": ratio(total_spend, qualified), "cac": ratio(total_spend, len(new_paid)), "avg_first_payment": ratio(first_revenue, len(new_paid)), "avg_days_to_first_payment": average_sales_cycle(scoped_ids), "roas": ratio(total_cash, total_spend), "ltv_cac": ratio(total_ltv, total_spend), "romi": romi(total_cash, total_spend)}, "funnel": [{"role": role, "count": funnel_counts[role], "conversion_from_leads": percent(funnel_counts[role], len(scoped_ids))} for role in ["new", "qualified", "diagnostic_scheduled", "diagnostic_held", "offer", "won", "lost"]], "rows": rows, "data_quality": {"contacts_unknown_source": sum(item.acquisition_source == "unknown" for item in contacts), "contacts_missing_campaign": sum(bool(item.acquisition_source not in {"unknown", "direct", "referral"} and not item.acquisition_campaign_id) for item in contacts), "opportunities_missing_next_contact": sum(bool(item.stage not in {"won", "lost"} and not item.next_contact_at) for item in opportunities)}}
+    web_funnel = web_funnel_for(web_events)
+    web_funnel["longread_view"] = unique_web_visitors("longread_view")
+    return {"period": {"date_from": date_from.isoformat(), "date_to": date_to.isoformat()}, "kpi": {"spend": total_spend, "leads": len(scoped_ids), "qualified": qualified, "diagnostics_scheduled": diagnostics_scheduled, "diagnostics_held": diagnostics_held, "new_clients": len(new_paid), "first_revenue": first_revenue, "cash_revenue": total_cash, "cpl": ratio(total_spend, len(scoped_ids)), "cpql": ratio(total_spend, qualified), "cac": ratio(total_spend, len(new_paid)), "avg_first_payment": ratio(first_revenue, len(new_paid)), "avg_days_to_first_payment": average_sales_cycle(scoped_ids), "roas": ratio(total_cash, total_spend), "ltv_cac": ratio(total_ltv, total_spend), "romi": romi(total_cash, total_spend)}, "web_funnel": web_funnel, "funnel": [{"role": role, "count": funnel_counts[role], "conversion_from_leads": percent(funnel_counts[role], len(scoped_ids))} for role in ["new", "qualified", "diagnostic_scheduled", "diagnostic_held", "offer", "won", "lost"]], "rows": rows, "data_quality": {"contacts_unknown_source": sum(item.acquisition_source == "unknown" for item in contacts), "contacts_missing_campaign": sum(bool(item.acquisition_source not in {"unknown", "direct", "referral"} and not item.acquisition_campaign_id) for item in contacts), "opportunities_missing_next_contact": sum(bool(item.stage not in {"won", "lost"} and not item.next_contact_at) for item in opportunities)}}
 
 
 def _effective_rate_out(

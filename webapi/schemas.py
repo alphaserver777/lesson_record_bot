@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from datetime import date
+from typing import Any
 from pydantic import BaseModel, Field
 
 
@@ -294,3 +295,66 @@ class AdminExtraAvailabilityIn(BaseModel):
     start_time: str = Field(pattern=r"^\d{2}:\d{2}$")
     end_time: str = Field(pattern=r"^\d{2}:\d{2}$")
     note: str | None = None
+
+
+class PublicBriefIn(BaseModel):
+    full_name: str = Field(min_length=2, max_length=100)
+    telephone: str = Field(min_length=10, max_length=24)
+    telegram_username: str | None = Field(default=None, max_length=100)
+    persona: str = Field(pattern=r"^(devops|security|hacker)$")
+    student_level: str = Field(pattern=r"^(beginner|basic|junior|middle|senior)$")
+    goal: str = Field(min_length=5, max_length=500)
+    current_problem: str = Field(min_length=3, max_length=700)
+    desired_timeline: str = Field(min_length=1, max_length=80)
+    weekly_hours: str = Field(min_length=1, max_length=80)
+    desired_format: str = Field(default="test_drive", pattern=r"^(test_drive|single|sprint|project|interview|unsure)$")
+    consent: bool
+    consent_version: str = Field(default="2026-08-12", max_length=32)
+    honeypot: str = Field(default="", max_length=200)
+    visitor_id: str = Field(min_length=8, max_length=64)
+    metrica_client_id: str | None = Field(default=None, max_length=64)
+    landing_page: str | None = Field(default=None, max_length=500)
+    referrer: str | None = Field(default=None, max_length=500)
+    utm_source: str | None = Field(default=None, max_length=80)
+    utm_medium: str | None = Field(default=None, max_length=80)
+    utm_campaign: str | None = Field(default=None, max_length=120)
+    utm_content: str | None = Field(default=None, max_length=120)
+    campaign_id: int | None = Field(default=None, ge=1)
+
+
+class PublicReviewBookingIn(BaseModel):
+    enrollment_token: str = Field(min_length=20, max_length=64)
+    date: date
+    time: str = Field(pattern=r"^\d{2}:\d{2}$")
+    honeypot: str = Field(default="", max_length=200)
+
+
+class PublicAnalyticsEventIn(BaseModel):
+    event_id: str = Field(min_length=8, max_length=80)
+    event_type: str = Field(pattern=r"^(landing_view|persona_selected|checkout_started|brief_started|brief_step_completed|brief_submitted|payment_confirmed|quest_opened|quest_submitted|slots_viewed|review_requested|review_confirmed|mentorship_offered|mentorship_won|longread_view|longread_25|longread_50|longread_75|longread_100|longread_part_completed|longread_completed|longread_next_clicked|longread_cta_clicked|profession_interest_clicked)$")
+    visitor_id: str = Field(min_length=8, max_length=64)
+    brief_token: str | None = Field(default=None, max_length=64)
+    path: str | None = Field(default=None, max_length=500)
+    utm_source: str | None = Field(default=None, max_length=80)
+    utm_medium: str | None = Field(default=None, max_length=80)
+    utm_campaign: str | None = Field(default=None, max_length=120)
+    utm_content: str | None = Field(default=None, max_length=120)
+    campaign_id: int | None = Field(default=None, ge=1)
+    metrica_client_id: str | None = Field(default=None, max_length=64)
+    meta: dict[str, Any] = Field(default_factory=dict)
+
+
+class ReviewBookingDecisionIn(BaseModel):
+    status: str = Field(pattern=r"^(approved|rejected)$")
+
+
+class TestDrivePaymentConfirmIn(BaseModel):
+    amount: int = Field(default=1500, ge=1, le=1_000_000)
+    quest_url: str | None = Field(default=None, max_length=500)
+
+
+class TestDriveSubmissionIn(BaseModel):
+    enrollment_token: str = Field(min_length=20, max_length=64)
+    submission_url: str | None = Field(default=None, max_length=500)
+    submission_note: str = Field(min_length=10, max_length=1000)
+    honeypot: str = Field(default="", max_length=200)
