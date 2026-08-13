@@ -20,7 +20,10 @@ def _normalized(value: Any) -> Any:
 def sign_payload(payload: Mapping[str, Any], secret_key: str) -> str:
     """Return the HMAC-SHA256 signature required by Prodamus."""
     normalized = _normalized(payload)
-    serialized = json.dumps(normalized, ensure_ascii=True, separators=(",", ":")).replace("/", r"\/")
+    # PHP's json_encode (used by the official Prodamus Hmac library) keeps
+    # Unicode characters as UTF-8 by default. Escaping Cyrillic as \uXXXX
+    # produces a different byte sequence and therefore a different HMAC.
+    serialized = json.dumps(normalized, ensure_ascii=False, separators=(",", ":")).replace("/", r"\/")
     return hmac.new(secret_key.encode("utf-8"), serialized.encode("utf-8"), hashlib.sha256).hexdigest()
 
 
