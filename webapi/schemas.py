@@ -349,7 +349,7 @@ class ReviewBookingDecisionIn(BaseModel):
 
 
 class TestDrivePaymentConfirmIn(BaseModel):
-    amount: int = Field(default=1500, ge=1, le=1_000_000)
+    amount: int = Field(default=1000, ge=1, le=1_000_000)
     quest_url: str | None = Field(default=None, max_length=500)
 
 
