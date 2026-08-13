@@ -877,7 +877,7 @@ async def public_create_test_drive(
         "weekly_hours": payload.weekly_hours,
         "consent_version": payload.consent_version,
         "entry_product": "test_drive",
-        "price": 1500,
+        "price": 1000,
     }
     opportunity = Opportunity(
         contact_id=contact.id,
@@ -890,7 +890,7 @@ async def public_create_test_drive(
         student_level=payload.student_level,
         qualification_status="new",
         desired_format="test_drive",
-        desired_budget=1500,
+        desired_budget=1000,
         stage=stage,
         notes=payload.current_problem,
         landing_page=payload.landing_page,
@@ -902,7 +902,7 @@ async def public_create_test_drive(
         consent_at=now,
         public_token=opportunity_token,
         idempotency_key=f"brief:{idempotency_key}",
-        offer_amount=1500,
+        offer_amount=1000,
         created_at=now,
         updated_at=now,
     )
@@ -914,7 +914,7 @@ async def public_create_test_drive(
         contact_id=contact.id,
         opportunity_id=opportunity.id,
         persona=payload.persona,
-        price_amount=1500,
+        price_amount=1000,
         status="awaiting_payment",
         created_at=now,
         updated_at=now,
@@ -941,14 +941,14 @@ async def public_create_test_drive(
         f"Контакт: {_contact_name(contact)}\n"
         f"Телефон: {contact.telephone}\n"
         f"Персонаж: {payload.persona}\n"
-        "Стоимость: 1 500 ₽\n"
+        "Стоимость: 1 000 ₽\n"
         f"Подтвердите оплату в CRM: {MINI_APP_URL}"
     )
     return {
         "status": "awaiting_payment",
         "enrollment_token": enrollment.public_token,
         "enrollment_id": enrollment.id,
-        "price": 1500,
+        "price": 1000,
         "message": "Заявка создана. Мы свяжемся с вами для подтверждения оплаты и выдачи мини-квеста.",
     }
 

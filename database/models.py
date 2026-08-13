@@ -258,7 +258,7 @@ class TestDriveEnrollment(Base):
     contact_id = Column(Integer, ForeignKey("contacts.id", ondelete="CASCADE"), nullable=False, index=True)
     opportunity_id = Column(Integer, ForeignKey("opportunities.id", ondelete="CASCADE"), nullable=False, index=True)
     persona = Column(String(32), nullable=False, index=True)
-    price_amount = Column(Integer, nullable=False, default=1500)
+    price_amount = Column(Integer, nullable=False, default=1000)
     status = Column(String(32), nullable=False, default="awaiting_payment", index=True)
     payment_id = Column(Integer, ForeignKey("payments.id", ondelete="SET NULL"), nullable=True, index=True)
     quest_url = Column(String(500), nullable=True)
