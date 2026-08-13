@@ -103,6 +103,7 @@ PUBLIC_REVIEW_HOLD_HOURS = 24
 PUBLIC_RATE_LIMIT: dict[str, list[float]] = {}
 PRODAMUS_FORM_URL = os.getenv("PRODAMUS_FORM_URL", "").strip()
 PRODAMUS_SECRET_KEY = os.getenv("PRODAMUS_SECRET_KEY", "").strip()
+PRODAMUS_DEMO_MODE = os.getenv("PRODAMUS_DEMO_MODE", "0").strip().lower() in {"1", "true", "yes", "on"}
 PRODAMUS_SUCCESS_URL = os.getenv("PRODAMUS_SUCCESS_URL", "https://professorit.ru/payment/success/").strip()
 PRODAMUS_FAIL_URL = os.getenv("PRODAMUS_FAIL_URL", "https://professorit.ru/payment/failed/").strip()
 
@@ -1011,7 +1012,11 @@ def _prodamus_payment_url(enrollment: TestDriveEnrollment, contact: Contact) -> 
         "urlSuccess": success_url,
         "_param_enrollment_token": enrollment.public_token,
     }
-    return build_payment_url(PRODAMUS_FORM_URL, payload, PRODAMUS_SECRET_KEY)
+    # Prodamus intentionally requires a different request signature while the
+    # payment page is in demo mode. Webhook verification continues to use the
+    # production key, so a demo payment can never be recorded as real revenue.
+    checkout_secret = f"{PRODAMUS_SECRET_KEY}demo" if PRODAMUS_DEMO_MODE else PRODAMUS_SECRET_KEY
+    return build_payment_url(PRODAMUS_FORM_URL, payload, checkout_secret)
 
 
 @app.post("/api/public/test-drive/{enrollment_token}/payment-link")
