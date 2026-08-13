@@ -317,6 +317,7 @@ class WebAnalyticsEvent(Base):
     utm_medium = Column(String(80), nullable=True)
     utm_campaign = Column(String(120), nullable=True)
     utm_content = Column(String(120), nullable=True)
+    campaign_id = Column(Integer, ForeignKey("marketing_campaigns.id", ondelete="SET NULL"), nullable=True, index=True)
     metrica_client_id = Column(String(64), nullable=True)
     meta_json = Column(String(2000), nullable=True)
     created_at = Column(String(50), nullable=False, index=True)
