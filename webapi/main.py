@@ -8,12 +8,14 @@ import logging
 import os
 import re
 import time
+from decimal import Decimal, InvalidOperation
 from uuid import uuid4
 from typing import Any
 
 from aiogram.exceptions import TelegramBadRequest
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request
+from fastapi.responses import PlainTextResponse
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import func, or_, select, text, update
 from sqlalchemy.exc import IntegrityError
@@ -39,6 +41,7 @@ from webapi.auth import (
     verify_session_token,
 )
 from webapi.probes import router as probes_router
+from webapi.prodamus import build_payment_url, verify_signature
 from webapi.schemas import (
     AdminBlockCreateIn,
     AdminBlockDeleteIn,
@@ -98,6 +101,10 @@ PUBLIC_SITE_ORIGINS = {
 PUBLIC_REVIEW_DURATION = 30
 PUBLIC_REVIEW_HOLD_HOURS = 24
 PUBLIC_RATE_LIMIT: dict[str, list[float]] = {}
+PRODAMUS_FORM_URL = os.getenv("PRODAMUS_FORM_URL", "").strip()
+PRODAMUS_SECRET_KEY = os.getenv("PRODAMUS_SECRET_KEY", "").strip()
+PRODAMUS_SUCCESS_URL = os.getenv("PRODAMUS_SUCCESS_URL", "https://professorit.ru/payment/success/").strip()
+PRODAMUS_FAIL_URL = os.getenv("PRODAMUS_FAIL_URL", "https://professorit.ru/payment/failed/").strip()
 
 app.add_middleware(
     CORSMiddleware,
@@ -969,6 +976,186 @@ async def public_test_drive_status(enrollment_token: str, request: Request) -> d
         "can_submit": enrollment.status in {"quest_ready", "quest_opened"},
         "can_book_review": enrollment.status in {"quest_submitted", "review_ready"},
     }
+
+
+def _prodamus_order_number(enrollment: TestDriveEnrollment) -> str:
+    return f"td-{enrollment.id}-{enrollment.public_token}"
+
+
+def _prodamus_payment_url(enrollment: TestDriveEnrollment, contact: Contact) -> str:
+    if not PRODAMUS_FORM_URL or not PRODAMUS_SECRET_KEY:
+        raise HTTPException(
+            status_code=503,
+            detail={"code": "PAYMENT_NOT_CONFIGURED", "message": "Онлайн-оплата временно недоступна"},
+        )
+    success_url = f"{PRODAMUS_SUCCESS_URL}?enrollment={enrollment.public_token}"
+    fail_url = f"{PRODAMUS_FAIL_URL}?enrollment={enrollment.public_token}"
+    payload: dict[str, Any] = {
+        "order_id": _prodamus_order_number(enrollment),
+        "customer_phone": contact.telephone,
+        "customer_extra": f"Тест-драйв IT-профессии: {enrollment.persona}",
+        "products": [
+            {
+                "name": "Тест-драйв IT-профессии",
+                "price": str(enrollment.price_amount),
+                "quantity": "1",
+                "sku": f"test-drive-{enrollment.persona}",
+            }
+        ],
+        "do": "pay",
+        "currency": "rub",
+        "payments_limit": "1",
+        "installments_disabled": "1",
+        "urlReturn": fail_url,
+        "urlSuccess": success_url,
+        "_param_enrollment_token": enrollment.public_token,
+    }
+    return build_payment_url(PRODAMUS_FORM_URL, payload, PRODAMUS_SECRET_KEY)
+
+
+@app.post("/api/public/test-drive/{enrollment_token}/payment-link")
+async def public_test_drive_payment_link(enrollment_token: str, request: Request) -> dict[str, Any]:
+    _public_request_guard(request, limit=12, window_seconds=300)
+    enrollment = (
+        await session.execute(select(TestDriveEnrollment).where(TestDriveEnrollment.public_token == enrollment_token))
+    ).scalar_one_or_none()
+    if enrollment is None:
+        raise HTTPException(status_code=404, detail={"code": "ENROLLMENT_NOT_FOUND"})
+    if enrollment.payment_id is not None or enrollment.status != "awaiting_payment":
+        return {"status": enrollment.status, "already_paid": True}
+    contact = await session.get(Contact, enrollment.contact_id)
+    if contact is None:
+        raise HTTPException(status_code=409, detail={"code": "CANONICAL_DATA_MISSING"})
+    return {"status": "awaiting_payment", "payment_url": _prodamus_payment_url(enrollment, contact)}
+
+
+def _nested_form_payload(flat: dict[str, Any]) -> dict[str, Any]:
+    """Convert PHP-style form keys such as products[0][name] back to nested data."""
+    result: dict[str, Any] = {}
+    for raw_key, value in flat.items():
+        base = raw_key.split("[", 1)[0]
+        nested = re.findall(r"\[([^\]]*)\]", raw_key)
+        keys = [base, *nested]
+        if not base:
+            result[raw_key] = value
+            continue
+        current: Any = result
+        for index, key in enumerate(keys):
+            is_last = index == len(keys) - 1
+            next_is_index = not is_last and keys[index + 1].isdigit()
+            if isinstance(current, list):
+                position = int(key)
+                while len(current) <= position:
+                    current.append({} if not next_is_index else [])
+                if is_last:
+                    current[position] = value
+                else:
+                    if not isinstance(current[position], (dict, list)):
+                        current[position] = [] if next_is_index else {}
+                    current = current[position]
+            else:
+                if is_last:
+                    current[key] = value
+                else:
+                    current.setdefault(key, [] if next_is_index else {})
+                    current = current[key]
+    return result
+
+
+def _prodamus_enrollment_token(payload: dict[str, Any]) -> str | None:
+    direct = str(payload.get("_param_enrollment_token") or "").strip()
+    if re.fullmatch(r"[a-f0-9]{32,64}", direct):
+        return direct
+    order_number = str(payload.get("order_num") or payload.get("order_id") or "")
+    match = re.fullmatch(r"td-\d+-([a-f0-9]{32,64})", order_number)
+    return match.group(1) if match else None
+
+
+@app.post("/api/public/payments/prodamus/webhook", response_class=PlainTextResponse)
+async def public_prodamus_webhook(request: Request) -> PlainTextResponse:
+    if not PRODAMUS_SECRET_KEY:
+        raise HTTPException(status_code=503, detail={"code": "PAYMENT_NOT_CONFIGURED"})
+    form = await request.form()
+    flat_payload = {str(key): str(value) for key, value in form.multi_items()}
+    payload = _nested_form_payload(flat_payload)
+    signature = request.headers.get("Sign")
+    if not verify_signature(payload, signature, PRODAMUS_SECRET_KEY):
+        logger.warning("Rejected Prodamus webhook with an invalid signature")
+        raise HTTPException(status_code=403, detail={"code": "INVALID_PAYMENT_SIGNATURE"})
+    if str(payload.get("payment_status") or "").lower() != "success":
+        return PlainTextResponse("ok")
+    enrollment_token = _prodamus_enrollment_token(payload)
+    if enrollment_token is None:
+        raise HTTPException(status_code=422, detail={"code": "PAYMENT_ORDER_NOT_RECOGNIZED"})
+    try:
+        paid_amount = Decimal(str(payload.get("sum") or "0").replace(",", "."))
+    except InvalidOperation as exc:
+        raise HTTPException(status_code=422, detail={"code": "INVALID_PAYMENT_AMOUNT"}) from exc
+    enrollment = (
+        await session.execute(
+            select(TestDriveEnrollment)
+            .where(TestDriveEnrollment.public_token == enrollment_token)
+            .with_for_update()
+        )
+    ).scalar_one_or_none()
+    if enrollment is None:
+        raise HTTPException(status_code=404, detail={"code": "ENROLLMENT_NOT_FOUND"})
+    if paid_amount != Decimal(enrollment.price_amount):
+        logger.error("Prodamus amount mismatch for enrollment=%s: %s", enrollment.id, paid_amount)
+        raise HTTPException(status_code=409, detail={"code": "PAYMENT_AMOUNT_MISMATCH"})
+    if enrollment.payment_id is not None:
+        return PlainTextResponse("ok")
+    contact = await session.get(Contact, enrollment.contact_id)
+    opportunity = await session.get(Opportunity, enrollment.opportunity_id)
+    if contact is None or opportunity is None:
+        raise HTTPException(status_code=409, detail={"code": "CANONICAL_DATA_MISSING"})
+    now = _iso_utc_now()
+    now_local = datetime.datetime.now(get_calendar_tz())
+    payment = Payment(
+        contact_id=contact.id,
+        full_name=_contact_name(contact),
+        lesson_date=now_local.date(),
+        hour=now_local.hour,
+        minute=now_local.minute,
+        duration_minutes=0,
+        amount=enrollment.price_amount,
+        status="paid",
+        source="test_drive_prodamus",
+        created_at=now,
+    )
+    session.add(payment)
+    await session.flush()
+    enrollment.payment_id = payment.id
+    enrollment.status = "quest_ready"
+    enrollment.updated_at = now
+    if not int(opportunity.paid_amount or 0):
+        opportunity.paid_amount = enrollment.price_amount
+    opportunity.updated_at = now
+    provider_order_id = str(payload.get("order_id") or payload.get("order_num") or enrollment.id)
+    session.add(
+        WebAnalyticsEvent(
+            event_id=f"prodamus:{provider_order_id}"[:80],
+            event_type="payment_confirmed",
+            visitor_id=opportunity.visitor_id or f"contact-{contact.id}",
+            contact_id=contact.id,
+            opportunity_id=opportunity.id,
+            path="/api/public/payments/prodamus/webhook",
+            utm_source=opportunity.source,
+            utm_medium=opportunity.utm_medium,
+            utm_campaign=opportunity.utm_campaign,
+            utm_content=opportunity.utm_content,
+            metrica_client_id=opportunity.metrica_client_id,
+            meta_json=json.dumps({"provider": "prodamus", "amount": enrollment.price_amount}, ensure_ascii=False),
+            created_at=now,
+        )
+    )
+    await session.commit()
+    await _notify_admins(
+        "💳 Оплата тест-драйва подтверждена Prodamus\n"
+        f"Контакт: {_contact_name(contact)}\n"
+        f"Сумма: {enrollment.price_amount:,} ₽".replace(",", " ")
+    )
+    return PlainTextResponse("ok")
 
 
 @app.post("/api/public/test-drive/submissions")
