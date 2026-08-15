@@ -680,6 +680,10 @@ body {
   grid-template-columns: repeat(3, minmax(0, 1fr));
 }
 
+.bottom-nav-seven {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
 .detail-grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(145px, 1fr));
@@ -2501,7 +2505,8 @@ body {
 
   .bottom-nav-two,
   .bottom-nav-five,
-  .bottom-nav-six {
+  .bottom-nav-six,
+  .bottom-nav-seven {
     grid-template-columns: none;
   }
 

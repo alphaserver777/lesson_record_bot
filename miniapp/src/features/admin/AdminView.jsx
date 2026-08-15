@@ -162,6 +162,12 @@ export function AdminView({ token }) {
   const [workLogForm, setWorkLogForm] = useState(() => ({ worked_on: new Date().toISOString().slice(0, 10), category: 'prep', minutes: '', note: '' }))
   const [analyticsLoading, setAnalyticsLoading] = useState(false)
   const [marketingMetrics, setMarketingMetrics] = useState(null)
+  const [longreadAnalytics, setLongreadAnalytics] = useState(null)
+  const [websiteAnalyticsLoading, setWebsiteAnalyticsLoading] = useState(false)
+  const [websiteFilters, setWebsiteFilters] = useState(() => ({
+    date_from: new Date(new Date().getFullYear(), new Date().getMonth(), 1).toISOString().slice(0, 10),
+    date_to: new Date().toISOString().slice(0, 10),
+  }))
   const [marketingSources, setMarketingSources] = useState([])
   const [marketingCampaigns, setMarketingCampaigns] = useState([])
   const [marketingLoading, setMarketingLoading] = useState(false)
@@ -289,6 +295,7 @@ export function AdminView({ token }) {
     ['manage', 'Управление', '◫'],
     ['analytics', 'Аналитика', '◷'],
     ['marketing', 'Маркетинг', '◒'],
+    ['websites', 'Сайты', '◎'],
   ]
 
   async function loadUsers(page = usersPage, q = query) {
@@ -520,6 +527,17 @@ export function AdminView({ token }) {
       }
     } finally {
       setMarketingLoading(false)
+    }
+  }
+
+  async function loadWebsiteAnalytics() {
+    setWebsiteAnalyticsLoading(true)
+    try {
+      const params = new URLSearchParams(websiteFilters)
+      const report = await api(`/api/admin/analytics/longread?${params}`, { token })
+      setLongreadAnalytics(report || null)
+    } finally {
+      setWebsiteAnalyticsLoading(false)
     }
   }
 
@@ -1103,6 +1121,11 @@ export function AdminView({ token }) {
   useEffect(() => {
     if (activeTab !== 'marketing') return
     loadMarketingAnalytics().catch(e => setError(normalizeErrorMessage(e.message || e)))
+  }, [activeTab])
+
+  useEffect(() => {
+    if (activeTab !== 'websites') return
+    loadWebsiteAnalytics().catch(e => setError(normalizeErrorMessage(e.message || e)))
   }, [activeTab])
 
   useEffect(() => {
@@ -2221,6 +2244,32 @@ export function AdminView({ token }) {
           </div>
         ) : null}
 
+        {activeTab === 'websites' ? (
+          <div className="stack analytics-stack">
+            <Card title="Аналитика сайтов" subtitle="Что читатели открыли, до какой части дошли и где остановились">
+              <div className="custom-row">
+                <label>Период с<input type="date" className="input" value={websiteFilters.date_from} onChange={e => setWebsiteFilters(value => ({ ...value, date_from: e.target.value }))} /></label>
+                <label>по<input type="date" className="input" value={websiteFilters.date_to} onChange={e => setWebsiteFilters(value => ({ ...value, date_to: e.target.value }))} /></label>
+                <button className="btn" onClick={() => loadWebsiteAnalytics().catch(e => setError(normalizeErrorMessage(e.message || e)))}>Обновить</button>
+              </div>
+              {websiteAnalyticsLoading ? <div className="loading">Собираем путь читателей...</div> : null}
+              <div className="analytics-kpi-grid" style={{ marginTop: 16 }}>
+                <div className="analytics-kpi-card"><span>Сессии</span><strong>{longreadAnalytics?.summary?.sessions ?? 0}</strong><small>отдельные визиты</small></div>
+                <div className="analytics-kpi-card"><span>Уникальные читатели</span><strong>{longreadAnalytics?.summary?.visitors ?? 0}</strong><small>по идентификатору браузера</small></div>
+                <div className="analytics-kpi-card"><span>Дошли до финала</span><strong>{longreadAnalytics?.summary?.completed_series ?? 0}</strong><small>прочитали четвёртую часть</small></div>
+                <div className="analytics-kpi-card"><span>Нажали CTA</span><strong>{longreadAnalytics?.summary?.cta_sessions ?? 0}</strong><small>перешли к тест-драйву</small></div>
+              </div>
+            </Card>
+            <Card title="Лонгрид «Точка входа в IT — 2026»" subtitle="Путь по четырём частям: от открытия до перехода к тест-драйву">
+              <div className="contacts-table-wrap"><table className="contacts-table"><thead><tr><th>Часть</th><th>Открыли</th><th>25%</th><th>50%</th><th>75%</th><th>Дочитали</th><th>Перешли дальше</th><th>CTA</th><th>От предыдущей</th></tr></thead><tbody>{(longreadAnalytics?.parts || []).map(item => <tr key={item.part}><td><strong>Часть {item.part}</strong></td><td>{item.opened}</td><td>{item.depth_25}</td><td>{item.depth_50}</td><td>{item.depth_75}</td><td>{item.completed}</td><td>{item.next_clicked}</td><td>{item.cta_clicked}</td><td>{item.conversion_from_previous == null ? 'база' : `${item.conversion_from_previous}%`}</td></tr>)}</tbody></table></div>
+            </Card>
+            <Card title="Последние читательские сессии" subtitle="Здесь видно, на какой части и глубине остановился каждый визит">
+              {(longreadAnalytics?.sessions || []).length ? <div className="contacts-table-wrap"><table className="contacts-table"><thead><tr><th>Начало</th><th>Источник</th><th>Путь</th><th>Последняя точка</th><th>Активное время</th><th>Кампания</th></tr></thead><tbody>{longreadAnalytics.sessions.map(item => <tr key={item.session_id}><td>{new Date(item.first_seen).toLocaleString('ru-RU')}</td><td>{item.source}{item.medium !== '—' ? ` / ${item.medium}` : ''}</td><td>{item.visited_parts.join(' → ')}</td><td>{item.outcome}</td><td>{item.engaged_seconds ? `${item.engaged_seconds} сек.` : item.elapsed_seconds ? `≈ ${item.elapsed_seconds} сек.` : 'пока нет данных'}</td><td>{item.campaign_id ? `#${item.campaign_id} · ` : ''}{item.campaign}</td></tr>)}</tbody></table></div> : <div className="placeholder-box">За выбранный период читательских сессий нет.</div>}
+              <small style={{ display: 'block', marginTop: 12 }}>Отчёт фиксирует успешные загрузки сайта. Если запрос не дошёл до сервера из-за сетевой недоступности, такой визит технически нельзя увидеть без отдельного счётчика выдачи ссылки.</small>
+            </Card>
+          </div>
+        ) : null}
+
         {(activeTab === 'analytics' || activeTab === 'marketing') ? (
           <div className="stack analytics-stack">
             {activeTab === 'marketing' ? (
@@ -2243,9 +2292,6 @@ export function AdminView({ token }) {
                 </Card>
                 <Card title="Маркетинговая воронка" subtitle="Конверсия от лидов к бизнес-этапу">
                   <div className="analytics-kpi-grid">{(marketingMetrics?.funnel || []).map(item => <div className="analytics-kpi-card" key={item.role}><span>{MARKETING_ROLE_LABELS[item.role] || item.role}</span><strong>{item.count}</strong><small>{item.conversion_from_leads === null ? 'нет данных' : `${item.conversion_from_leads}% от лидов`}</small></div>)}</div>
-                </Card>
-                <Card title="Воронка лонгрида" subtitle="Уникальные посетители карты «Точка входа в IT — 2026»">
-                  {(() => { const funnel = marketingMetrics?.web_funnel || {}; const stages = [['Открыли карту', funnel.longread_view], ['Прочитали 25%', funnel.longread_25], ['Прочитали 50%', funnel.longread_50], ['Прочитали 75%', funnel.longread_75], ['Дочитали карту', funnel.longread_completed], ['Нажали CTA', funnel.longread_cta_clicked]]; const base = Number(stages[0][1] || 0); return <div className="analytics-kpi-grid">{stages.map(([label, value]) => <div className="analytics-kpi-card" key={label}><span>{label}</span><strong>{Number(value || 0)}</strong><small>{base ? `${Math.round(Number(value || 0) / base * 100)}% от читателей` : 'пока нет данных'}</small></div>)}</div> })()}
                 </Card>
                 {false ? <Card title="Кампания: показатели и воронка" subtitle="Выберите кампанию: сверху — ручные рекламные показатели, ниже — CRM-результат">
                   <select className="input" value={selectedMarketingCampaignId} onChange={e => setSelectedMarketingCampaignId(e.target.value)}>{(marketingMetrics?.rows || []).filter(row => row.campaign_id).map(row => <option key={row.campaign_id} value={row.campaign_id}>#{row.campaign_id} · {row.source_name} · {row.campaign_name}</option>)}</select>
@@ -2591,7 +2637,7 @@ export function AdminView({ token }) {
         />
       </div>
 
-      <nav className="bottom-nav bottom-nav-six">
+      <nav className="bottom-nav bottom-nav-seven">
         <button className="nav-collapse-toggle" onClick={() => setNavCollapsed(value => !value)} aria-label={navCollapsed ? 'Развернуть меню' : 'Свернуть меню'} title={navCollapsed ? 'Развернуть меню' : 'Свернуть меню'}>{navCollapsed ? '›' : '‹'}</button>
         {adminTabs.map(([key, label, icon]) => (
           <button key={key} className={`bottom-item ${activeTab === key ? 'active' : ''}`} onClick={() => setActiveTab(key)}>

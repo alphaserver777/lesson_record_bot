@@ -332,7 +332,7 @@ class PublicReviewBookingIn(BaseModel):
 
 class PublicAnalyticsEventIn(BaseModel):
     event_id: str = Field(min_length=8, max_length=80)
-    event_type: str = Field(pattern=r"^(landing_view|persona_selected|checkout_started|brief_started|brief_step_completed|brief_submitted|checkout_contact_channel_clicked|payment_confirmed|quest_opened|quest_submitted|slots_viewed|review_requested|review_confirmed|mentorship_offered|mentorship_won|longread_view|longread_25|longread_50|longread_75|longread_100|longread_part_completed|longread_completed|longread_next_clicked|longread_cta_clicked|profession_interest_clicked)$")
+    event_type: str = Field(pattern=r"^(landing_view|persona_selected|checkout_started|brief_started|brief_step_completed|brief_submitted|checkout_contact_channel_clicked|payment_confirmed|quest_opened|quest_submitted|slots_viewed|review_requested|review_confirmed|mentorship_offered|mentorship_won|longread_view|longread_25|longread_50|longread_75|longread_100|longread_engaged|longread_part_completed|longread_completed|longread_next_clicked|longread_cta_clicked|profession_interest_clicked)$")
     visitor_id: str = Field(min_length=8, max_length=64)
     brief_token: str | None = Field(default=None, max_length=64)
     path: str | None = Field(default=None, max_length=500)

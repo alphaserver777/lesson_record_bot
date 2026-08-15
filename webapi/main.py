@@ -3532,6 +3532,155 @@ async def stats_month(year: int, month: int, _: dict[str, Any] = Depends(require
     return await transactions.payments_summary_for_range(start, end)
 
 
+def _longread_report(events: list[WebAnalyticsEvent]) -> dict[str, Any]:
+    """Build a part-by-part report and reader journeys from raw browser events."""
+    parsed: list[tuple[WebAnalyticsEvent, dict[str, Any]]] = []
+    for item in events:
+        try:
+            meta = json.loads(item.meta_json or "{}")
+        except (TypeError, ValueError, json.JSONDecodeError):
+            meta = {}
+        if meta.get("series") != "it-entry-map-2026" and not (item.path or "").startswith("/guide/kak-voiti-v-it"):
+            continue
+        parsed.append((item, meta))
+
+    def part_number(item: WebAnalyticsEvent, meta: dict[str, Any]) -> int | None:
+        try:
+            value = int(meta.get("part"))
+            return value if 1 <= value <= 4 else None
+        except (TypeError, ValueError):
+            match = re.search(r"/kak-voiti-v-it(?:/(\d))?/?", item.path or "")
+            return int(match.group(1) or 1) if match else None
+
+    sessions: dict[str, dict[str, Any]] = {}
+    for item, meta in parsed:
+        part = part_number(item, meta)
+        if part is None:
+            continue
+        session_key = str(meta.get("sid") or f"visitor:{item.visitor_id}")
+        row = sessions.setdefault(session_key, {
+            "session_id": session_key,
+            "visitor_id": item.visitor_id,
+            "first_seen": item.created_at,
+            "last_seen": item.created_at,
+            "source": item.utm_source or "direct",
+            "medium": item.utm_medium or "—",
+            "campaign": item.utm_campaign or "—",
+            "campaign_id": item.campaign_id,
+            "entry_path": item.path,
+            "parts": {},
+            "cta_clicked": False,
+        })
+        row["first_seen"] = min(row["first_seen"], item.created_at)
+        row["last_seen"] = max(row["last_seen"], item.created_at)
+        part_row = row["parts"].setdefault(part, {
+            "part": part, "opened": True, "depth": 0, "completed": False,
+            "next_clicked": False, "cta_clicked": False, "engaged_seconds": 0,
+        })
+        depth_by_event = {"longread_25": 25, "longread_50": 50, "longread_75": 75, "longread_100": 100}
+        part_row["depth"] = max(part_row["depth"], depth_by_event.get(item.event_type, 0))
+        if item.event_type in {"longread_part_completed", "longread_completed"}:
+            part_row["completed"] = True
+            part_row["depth"] = max(part_row["depth"], 90)
+        if item.event_type == "longread_next_clicked":
+            part_row["next_clicked"] = True
+        if item.event_type == "longread_cta_clicked":
+            part_row["cta_clicked"] = True
+            row["cta_clicked"] = True
+        if item.event_type == "longread_engaged":
+            try:
+                part_row["engaged_seconds"] = max(part_row["engaged_seconds"], int(meta.get("engaged_seconds") or 0))
+            except (TypeError, ValueError):
+                pass
+
+    part_rows = []
+    previous_opened = None
+    for part in range(1, 5):
+        part_sessions = [row for row in sessions.values() if part in row["parts"]]
+        opened = len(part_sessions)
+        result = {
+            "part": part,
+            "opened": opened,
+            "depth_25": sum(row["parts"][part]["depth"] >= 25 for row in part_sessions),
+            "depth_50": sum(row["parts"][part]["depth"] >= 50 for row in part_sessions),
+            "depth_75": sum(row["parts"][part]["depth"] >= 75 for row in part_sessions),
+            "completed": sum(row["parts"][part]["completed"] for row in part_sessions),
+            "next_clicked": sum(row["parts"][part]["next_clicked"] for row in part_sessions),
+            "cta_clicked": sum(row["parts"][part]["cta_clicked"] for row in part_sessions),
+            "conversion_from_previous": round(opened / previous_opened * 100, 1) if previous_opened else None,
+        }
+        part_rows.append(result)
+        previous_opened = opened
+
+    def session_out(row: dict[str, Any]) -> dict[str, Any]:
+        visited = sorted(row["parts"])
+        last_part = visited[-1]
+        last = row["parts"][last_part]
+        try:
+            first_dt = datetime.datetime.fromisoformat(str(row["first_seen"]).replace("Z", "+00:00"))
+            last_dt = datetime.datetime.fromisoformat(str(row["last_seen"]).replace("Z", "+00:00"))
+            elapsed = max(0, int((last_dt - first_dt).total_seconds()))
+        except (TypeError, ValueError):
+            elapsed = 0
+        engaged = sum(int(item["engaged_seconds"] or 0) for item in row["parts"].values())
+        if row["cta_clicked"]:
+            outcome = "Нажал CTA"
+        elif last["next_clicked"]:
+            outcome = f"Перешёл после части {last_part}"
+        elif last["completed"]:
+            outcome = f"Дочитал часть {last_part}"
+        elif last["depth"]:
+            outcome = f"Часть {last_part}: {last['depth']}%"
+        else:
+            outcome = f"Только открыл часть {last_part}"
+        return {
+            **{key: row[key] for key in ["session_id", "visitor_id", "first_seen", "last_seen", "source", "medium", "campaign", "campaign_id", "entry_path"]},
+            "visited_parts": visited,
+            "last_part": last_part,
+            "last_depth": last["depth"],
+            "engaged_seconds": engaged,
+            "elapsed_seconds": elapsed,
+            "cta_clicked": row["cta_clicked"],
+            "outcome": outcome,
+        }
+
+    session_rows = sorted((session_out(row) for row in sessions.values()), key=lambda row: row["last_seen"], reverse=True)
+    return {
+        "summary": {
+            "sessions": len(session_rows),
+            "visitors": len({row["visitor_id"] for row in session_rows}),
+            "completed_series": sum(bool(row["last_part"] == 4 and row["last_depth"] >= 90) for row in session_rows),
+            "cta_sessions": sum(row["cta_clicked"] for row in session_rows),
+        },
+        "parts": part_rows,
+        "sessions": session_rows[:100],
+    }
+
+
+@app.get("/api/admin/analytics/longread")
+async def analytics_longread(
+    date_from: datetime.date,
+    date_to: datetime.date,
+    source_key: str | None = None,
+    campaign_id: int | None = None,
+    _: dict[str, Any] = Depends(require_admin),
+) -> dict[str, Any]:
+    events = (
+        await session.execute(
+            select(WebAnalyticsEvent).where(
+                WebAnalyticsEvent.created_at >= date_from.isoformat(),
+                WebAnalyticsEvent.created_at < (date_to + datetime.timedelta(days=1)).isoformat(),
+                WebAnalyticsEvent.event_type.like("longread_%"),
+            )
+        )
+    ).scalars().all()
+    if source_key:
+        events = [item for item in events if _source_key_from_utm(item.utm_source) == source_key]
+    if campaign_id is not None:
+        events = [item for item in events if item.campaign_id == campaign_id]
+    return _longread_report(events)
+
+
 @app.get("/api/admin/analytics/marketing")
 async def analytics_marketing(
     date_from: datetime.date,
