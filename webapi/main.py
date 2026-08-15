@@ -3557,7 +3557,10 @@ def _longread_report(events: list[WebAnalyticsEvent]) -> dict[str, Any]:
         part = part_number(item, meta)
         if part is None:
             continue
-        session_key = str(meta.get("sid") or f"visitor:{item.visitor_id}")
+        # Older public links accidentally exposed sid in the URL, so several
+        # browsers could inherit it. visitor_id safely separates those readers.
+        raw_sid = str(meta.get("sid") or "legacy")
+        session_key = f"{raw_sid}:{item.visitor_id}"
         row = sessions.setdefault(session_key, {
             "session_id": session_key,
             "visitor_id": item.visitor_id,
