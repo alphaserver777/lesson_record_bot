@@ -3597,10 +3597,11 @@ def _longread_report(events: list[WebAnalyticsEvent]) -> dict[str, Any]:
                 pass
 
     part_rows = []
-    previous_opened = None
+    previous_sessions: list[dict[str, Any]] = []
     for part in range(1, 5):
         part_sessions = [row for row in sessions.values() if part in row["parts"]]
         opened = len(part_sessions)
+        continued = sum(part in row["parts"] for row in previous_sessions) if part > 1 else None
         result = {
             "part": part,
             "opened": opened,
@@ -3610,10 +3611,11 @@ def _longread_report(events: list[WebAnalyticsEvent]) -> dict[str, Any]:
             "completed": sum(row["parts"][part]["completed"] for row in part_sessions),
             "next_clicked": sum(row["parts"][part]["next_clicked"] for row in part_sessions),
             "cta_clicked": sum(row["parts"][part]["cta_clicked"] for row in part_sessions),
-            "conversion_from_previous": round(opened / previous_opened * 100, 1) if previous_opened else None,
+            "continued_from_previous": continued,
+            "conversion_from_previous": round(continued / len(previous_sessions) * 100, 1) if previous_sessions else None,
         }
         part_rows.append(result)
-        previous_opened = opened
+        previous_sessions = part_sessions
 
     def session_out(row: dict[str, Any]) -> dict[str, Any]:
         visited = sorted(row["parts"])
@@ -3652,7 +3654,7 @@ def _longread_report(events: list[WebAnalyticsEvent]) -> dict[str, Any]:
         "summary": {
             "sessions": len(session_rows),
             "visitors": len({row["visitor_id"] for row in session_rows}),
-            "completed_series": sum(bool(row["last_part"] == 4 and row["last_depth"] >= 90) for row in session_rows),
+            "completed_series": sum(bool(set(row["visited_parts"]) == {1, 2, 3, 4} and row["last_depth"] >= 90) for row in session_rows),
             "cta_sessions": sum(row["cta_clicked"] for row in session_rows),
         },
         "parts": part_rows,
