@@ -1,0 +1,100 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: postgres-postgres-1
+    restart: unless-stopped
+    env_file:
+      - {{ runtime_root }}/secrets/postgres.env
+    environment:
+      TZ: {{ timezone }}
+    volumes:
+      - professorit_postgres_data:/var/lib/postgresql/data
+    networks:
+      - runtime
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  api:
+    build:
+      context: {{ runtime_root }}/current
+    image: professorit-api:local
+    container_name: professorit-api
+    restart: unless-stopped
+    env_file:
+      - {{ runtime_root }}/secrets/app.env
+      - {{ runtime_root }}/secrets/database.env
+    environment:
+      WEBAPI_PORT: 8000
+      TZ: {{ timezone }}
+      CALENDAR_TIMEZONE: {{ timezone }}
+      MINI_APP_URL: https://crm.befa-robotics.com/cabinet/
+    entrypoint: ["python", "main_webapi.py"]
+    ports:
+      - "127.0.0.1:18000:8000"
+    networks:
+      - runtime
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=5)\""]
+      interval: 20s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+
+  frontend:
+    build:
+      context: {{ runtime_root }}/current
+      dockerfile: infra/docker/frontend.Dockerfile
+    image: professorit-frontend:local
+    container_name: professorit-frontend
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:15173:80"
+    networks:
+      - runtime
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://127.0.0.1/"]
+      interval: 20s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+
+  bot:
+    profiles: ["bot"]
+    build:
+      context: {{ runtime_root }}/current
+    image: professorit-bot:local
+    container_name: professorit-bot
+    restart: unless-stopped
+    env_file:
+      - {{ runtime_root }}/secrets/app.env
+      - {{ runtime_root }}/secrets/database.env
+    environment:
+      TZ: {{ timezone }}
+      CALENDAR_TIMEZONE: {{ timezone }}
+      BOT_HEALTH_PORT: 8081
+      MINI_APP_URL: https://crm.befa-robotics.com/cabinet/
+    networks:
+      - runtime
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:8081/ready', timeout=5)\""]
+      interval: 20s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+
+volumes:
+  professorit_postgres_data:
+    name: professorit_postgres_data
+networks:
+  runtime:
+    external: true
+    name: {{ runtime_network }}

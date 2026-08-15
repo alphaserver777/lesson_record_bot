@@ -1,0 +1,56 @@
+---
+- name: Provision unified Professor IT runtime
+  hosts: professorit_app
+  become: true
+  gather_facts: true
+
+  pre_tasks:
+    - name: Require Ubuntu 24.04
+      ansible.builtin.assert:
+        that:
+          - ansible_distribution == "Ubuntu"
+          - ansible_distribution_version is version('24.04', '>=')
+
+  tasks:
+    - name: Create runtime directory layout
+      ansible.builtin.file:
+        path: "{{ item.path }}"
+        state: directory
+        owner: root
+        group: root
+        mode: "{{ item.mode }}"
+      loop:
+        - {path: "{{ runtime_root }}", mode: "0755"}
+        - {path: "{{ runtime_root }}/releases", mode: "0755"}
+        - {path: "{{ runtime_root }}/secrets", mode: "0700"}
+        - {path: "{{ runtime_root }}/backups", mode: "0700"}
+
+    - name: Create shared private Docker network
+      community.docker.docker_network:
+        name: "{{ runtime_network }}"
+        driver: bridge
+        state: present
+
+    - name: Check required runtime secrets
+      ansible.builtin.stat:
+        path: "{{ runtime_root }}/secrets/{{ item }}"
+      loop:
+        - app.env
+        - database.env
+        - postgres.env
+      register: runtime_secrets
+
+    - name: Report secrets that must be installed before deploy
+      ansible.builtin.debug:
+        msg: >-
+          Missing runtime secret files are expected only on the first run:
+          {{ runtime_secrets.results | rejectattr('stat.exists') | map(attribute='item') | list }}
+
+    - name: Restrict installed secret files
+      ansible.builtin.file:
+        path: "{{ item.stat.path }}"
+        owner: root
+        group: root
+        mode: "0600"
+      loop: "{{ runtime_secrets.results }}"
+      when: item.stat.exists

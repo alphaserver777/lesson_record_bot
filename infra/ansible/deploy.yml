@@ -1,0 +1,107 @@
+---
+- name: Deploy unified Professor IT runtime
+  hosts: professorit_app
+  become: true
+  gather_facts: false
+
+  vars:
+    release_path: "{{ runtime_root }}/releases/{{ release_id }}"
+
+  pre_tasks:
+    - name: Require explicit release identifier
+      ansible.builtin.assert:
+        that:
+          - release_id is defined
+          - release_id | length > 0
+
+    - name: Require all runtime secrets
+      ansible.builtin.stat:
+        path: "{{ runtime_root }}/secrets/{{ item }}"
+      loop:
+        - app.env
+        - database.env
+        - postgres.env
+      register: deploy_secrets
+      failed_when: not deploy_secrets.stat.exists
+
+  tasks:
+    - name: Create immutable release directory
+      ansible.builtin.file:
+        path: "{{ release_path }}"
+        state: directory
+        owner: root
+        group: root
+        mode: "0755"
+
+    - name: Upload application source
+      ansible.posix.synchronize:
+        src: "{{ playbook_dir }}/../../"
+        dest: "{{ release_path }}/"
+        archive: true
+        delete: true
+        rsync_opts:
+          - "--chown=root:root"
+          - "--exclude=.git"
+          - "--exclude=.env*"
+          - "--exclude=node_modules"
+          - "--exclude=miniapp/node_modules"
+          - "--exclude=miniapp/dist"
+          - "--exclude=database/*.db"
+          - "--exclude=database_prod"
+          - "--exclude=database_dev"
+          - "--exclude=logs*"
+          - "--exclude=backups"
+
+    - name: Point current symlink to release
+      ansible.builtin.file:
+        src: "{{ release_path }}"
+        dest: "{{ runtime_root }}/current"
+        state: link
+        force: true
+
+    - name: Render runtime Compose project
+      ansible.builtin.template:
+        src: compose.yml.j2
+        dest: "{{ runtime_root }}/compose.yml"
+        owner: root
+        group: root
+        mode: "0644"
+
+    - name: Start database, API and frontend
+      community.docker.docker_compose_v2:
+        project_src: "{{ runtime_root }}"
+        files: [compose.yml]
+        state: present
+        build: always
+        profiles: "{{ ['bot'] if app_enable_bot else omit }}"
+      register: runtime_compose
+
+    - name: Verify API health on the host
+      ansible.builtin.uri:
+        url: http://127.0.0.1:18000/health
+        status_code: 200
+      register: api_health
+      retries: 10
+      delay: 3
+      until: api_health.status == 200
+
+    - name: Verify frontend health on the host
+      ansible.builtin.uri:
+        url: http://127.0.0.1:15173/
+        status_code: 200
+      register: frontend_health
+      retries: 10
+      delay: 3
+      until: frontend_health.status == 200
+
+    - name: Find stale releases
+      ansible.builtin.find:
+        paths: "{{ runtime_root }}/releases"
+        file_type: directory
+      register: runtime_releases
+
+    - name: Remove stale releases
+      ansible.builtin.file:
+        path: "{{ item.path }}"
+        state: absent
+      loop: "{{ (runtime_releases.files | sort(attribute='mtime', reverse=true))[releases_to_keep:] }}"
