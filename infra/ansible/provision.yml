@@ -54,3 +54,43 @@
         mode: "0600"
       loop: "{{ runtime_secrets.results }}"
       when: item.stat.exists
+
+    - name: Install PostgreSQL backup script
+      ansible.builtin.template:
+        src: templates/backup-postgres.sh.j2
+        dest: /usr/local/sbin/professorit-backup-postgres
+        owner: root
+        group: root
+        mode: "0750"
+
+    - name: Install PostgreSQL backup service
+      ansible.builtin.template:
+        src: templates/professorit-db-backup.service.j2
+        dest: /etc/systemd/system/professorit-db-backup.service
+        owner: root
+        group: root
+        mode: "0644"
+      notify: Reload systemd
+
+    - name: Install PostgreSQL backup timer
+      ansible.builtin.template:
+        src: templates/professorit-db-backup.timer.j2
+        dest: /etc/systemd/system/professorit-db-backup.timer
+        owner: root
+        group: root
+        mode: "0644"
+      notify: Reload systemd
+
+    - name: Apply systemd configuration
+      ansible.builtin.meta: flush_handlers
+
+    - name: Enable daily PostgreSQL backups
+      ansible.builtin.systemd_service:
+        name: professorit-db-backup.timer
+        enabled: true
+        state: started
+
+  handlers:
+    - name: Reload systemd
+      ansible.builtin.systemd_service:
+        daemon_reload: true

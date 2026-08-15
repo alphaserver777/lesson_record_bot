@@ -30,7 +30,7 @@ services:
       WEBAPI_PORT: 8000
       TZ: {{ timezone }}
       CALENDAR_TIMEZONE: {{ timezone }}
-      MINI_APP_URL: https://crm.befa-robotics.com/cabinet/
+      MINI_APP_URL: https://crm.professorit.ru/cabinet/
     entrypoint: ["python", "main_webapi.py"]
     ports:
       - "127.0.0.1:18000:8000"
@@ -78,7 +78,7 @@ services:
       TZ: {{ timezone }}
       CALENDAR_TIMEZONE: {{ timezone }}
       BOT_HEALTH_PORT: 8081
-      MINI_APP_URL: https://crm.befa-robotics.com/cabinet/
+      MINI_APP_URL: https://crm.professorit.ru/cabinet/
     networks:
       - runtime
     depends_on:

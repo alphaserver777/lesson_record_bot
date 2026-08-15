@@ -109,7 +109,11 @@ PRODAMUS_FAIL_URL = os.getenv("PRODAMUS_FAIL_URL", "https://professorit.ru/payme
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[*PUBLIC_SITE_ORIGINS, "https://crm.befa-robotics.com"],
+    allow_origins=[
+        *PUBLIC_SITE_ORIGINS,
+        "https://crm.professorit.ru",
+        "https://crm.befa-robotics.com",
+    ],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
