@@ -194,7 +194,7 @@ export function AdminView({ token }) {
   const [selectedContact, setSelectedContact] = useState(null)
   const [newLeadOpen, setNewLeadOpen] = useState(false)
   const [contactEdit, setContactEdit] = useState({
-    first_name: '', last_name: '', telephone: '', telegram_username: '', status: 'active', preferred_channel: 'telegram', direction: '', acquisition_source: 'unknown', acquisition_campaign_id: '',
+    first_name: '', last_name: '', telephone: '', telegram_username: '', status: 'active', preferred_channel: 'telegram', direction: '', price: '', acquisition_source: 'unknown', acquisition_campaign_id: '',
   })
   const [prepaymentAmount, setPrepaymentAmount] = useState('')
   const [clientOptions, setClientOptions] = useState([])
@@ -207,7 +207,6 @@ export function AdminView({ token }) {
     first_name: '',
     last_name: '',
     telephone: '',
-    price: '',
     balance_set: '',
     balance_add: '',
   })
@@ -264,7 +263,7 @@ export function AdminView({ token }) {
   const [systemHealth, setSystemHealth] = useState(null)
   const [leads, setLeads] = useState([])
   const [leadSummary, setLeadSummary] = useState(null)
-  const [leadForm, setLeadForm] = useState({ full_name: '', telephone: '', source: 'direct', acquisition_campaign_id: '', direction: '', student_level: '', goal: '', qualification_status: 'new', desired_format: '', desired_budget: '', offer_amount: '', next_contact_at: '', stage: 'new', lost_reason: '', notes: '' })
+  const [leadForm, setLeadForm] = useState({ full_name: '', telephone: '', source: 'direct', acquisition_campaign_id: '', direction: '', student_level: '', goal: '', qualification_status: 'new', desired_format: '', next_contact_at: '', stage: 'new', lost_reason: '', notes: '' })
   const [backupStatus, setBackupStatus] = useState(null)
   const [workScheduleDays, setWorkScheduleDays] = useState([])
   const [workImpact, setWorkImpact] = useState(null)
@@ -337,6 +336,7 @@ export function AdminView({ token }) {
       status: contact.status || 'active',
       preferred_channel: contact.preferred_channel || 'telegram',
       direction: contact.direction || '',
+      price: String(contact.price ?? 0),
       acquisition_source: contact.acquisition_source || 'unknown',
       acquisition_campaign_id: contact.acquisition_campaign_id ? String(contact.acquisition_campaign_id) : '',
     })
@@ -348,7 +348,15 @@ export function AdminView({ token }) {
   async function saveContact() {
     const contactId = selectedContact?.contact?.id
     if (!contactId) return
-    await api(`/api/admin/contacts/${contactId}`, { token, method: 'PATCH', body: { ...contactEdit, acquisition_campaign_id: contactEdit.acquisition_campaign_id ? Number(contactEdit.acquisition_campaign_id) : null } })
+    await api(`/api/admin/contacts/${contactId}`, {
+      token,
+      method: 'PATCH',
+      body: {
+        ...contactEdit,
+        price: selectedContact.contact?.is_student ? Number(contactEdit.price || 0) : undefined,
+        acquisition_campaign_id: contactEdit.acquisition_campaign_id ? Number(contactEdit.acquisition_campaign_id) : null,
+      },
+    })
     await Promise.all([selectContact(contactId), loadContacts(contactsPage, contactQuery)])
     setSuccess('Карточка клиента обновлена')
   }
@@ -425,10 +433,8 @@ export function AdminView({ token }) {
     }
     const payload = Object.fromEntries(Object.entries(leadForm).filter(([, value]) => String(value || '').trim() !== ''))
     payload.acquisition_campaign_id = leadForm.acquisition_campaign_id ? Number(leadForm.acquisition_campaign_id) : null
-    payload.desired_budget = leadForm.desired_budget ? Number(leadForm.desired_budget) : null
-    payload.offer_amount = leadForm.offer_amount ? Number(leadForm.offer_amount) : null
     const result = await api('/api/admin/leads', { token, method: 'POST', body: payload })
-    setLeadForm({ full_name: '', telephone: '', source: 'direct', acquisition_campaign_id: '', direction: '', student_level: '', goal: '', qualification_status: 'new', desired_format: '', desired_budget: '', offer_amount: '', next_contact_at: '', stage: 'new', lost_reason: '', notes: '' })
+    setLeadForm({ full_name: '', telephone: '', source: 'direct', acquisition_campaign_id: '', direction: '', student_level: '', goal: '', qualification_status: 'new', desired_format: '', next_contact_at: '', stage: 'new', lost_reason: '', notes: '' })
     setNewLeadOpen(false)
     await Promise.all([loadLeads(), loadContacts(1, '')])
     if (result.item?.contact_id) await selectContact(result.item.contact_id)
@@ -567,7 +573,6 @@ export function AdminView({ token }) {
       first_name: data.first_name || '',
       last_name: data.last_name || '',
       telephone: data.phone || '',
-      price: String(data.price ?? ''),
       balance_set: String(data.balance_lessons ?? ''),
       balance_add: '',
     })
@@ -619,7 +624,7 @@ export function AdminView({ token }) {
     setSelectedUser(null)
     setSelectedUserUpcoming([])
     setSelectedUserArchive([])
-    setUserEdit({ telegram_id: '', first_name: '', last_name: '', telephone: '', price: '', balance_set: '', balance_add: '' })
+    setUserEdit({ telegram_id: '', first_name: '', last_name: '', telephone: '', balance_set: '', balance_add: '' })
     await loadUsers(1, query).catch(() => {})
     setUsersPage(1)
     setSuccess('Клиент удален')
@@ -1822,8 +1827,6 @@ export function AdminView({ token }) {
                     <label>Уровень<select className="input" value={leadForm.student_level} onChange={e => setLeadForm(value => ({ ...value, student_level: e.target.value }))}><option value="">Не указан</option><option value="zero">С нуля</option><option value="beginner">Начальный</option><option value="intermediate">Средний</option><option value="advanced">Продвинутый</option></select></label>
                     <label>Квалификация<select className="input" value={leadForm.qualification_status} onChange={e => setLeadForm(value => ({ ...value, qualification_status: e.target.value }))}><option value="new">Не оценен</option><option value="qualified">Квалифицирован</option><option value="not_qualified">Не подходит</option></select></label>
                     <label>Формат<input className="input" value={leadForm.desired_format} onChange={e => setLeadForm(value => ({ ...value, desired_format: e.target.value }))} placeholder="2 × 60 минут" /></label>
-                    <label>Бюджет, ₽/занятие<input className="input" type="number" min="0" value={leadForm.desired_budget} onChange={e => setLeadForm(value => ({ ...value, desired_budget: e.target.value }))} /></label>
-                    <label>Предложение, ₽<input className="input" type="number" min="0" value={leadForm.offer_amount} onChange={e => setLeadForm(value => ({ ...value, offer_amount: e.target.value }))} placeholder="Стоимость предложенного формата" /></label>
                     <label>Следующее действие<input className="input" type="datetime-local" value={leadForm.next_contact_at} onChange={e => setLeadForm(value => ({ ...value, next_contact_at: e.target.value }))} /></label>
                     <label>Этап<select className="input" value={leadForm.stage} onChange={e => setLeadForm(value => ({ ...value, stage: e.target.value }))}>{funnelStages.map(stage => <option key={stage.key} value={stage.key}>{stage.name}</option>)}</select></label>
                     <label>Причина отказа<select className="input" value={leadForm.lost_reason} onChange={e => setLeadForm(value => ({ ...value, lost_reason: e.target.value }))}><option value="">Не выбрана</option>{LOST_REASON_OPTIONS.map(([key, label]) => <option key={key} value={key}>{label}</option>)}</select><small>Заполняйте, если этап — «Неактуально / отказ».</small></label>
@@ -1848,6 +1851,7 @@ export function AdminView({ token }) {
                       <label>Статус<select className="input" value={contactEdit.status} onChange={e => setContactEdit(value => ({ ...value, status: e.target.value }))}><option value="lead">Лид</option><option value="active">Активный</option><option value="student">Ученик</option><option value="archived">Архив</option></select></label>
                       <label>Канал связи<select className="input" value={contactEdit.preferred_channel} onChange={e => setContactEdit(value => ({ ...value, preferred_channel: e.target.value }))}><option value="telegram">Telegram</option><option value="phone">Телефон</option></select></label>
                       {selectedContact.contact?.is_student ? <label className="contact-field-wide">Направление<input className="input" value={contactEdit.direction} onChange={e => setContactEdit(value => ({ ...value, direction: e.target.value }))} placeholder="DevOps, ИБ, Хакер" /></label> : null}
+                      {selectedContact.contact?.is_student ? <label className="contact-field-wide">Цена за занятие, ₽<input className="input" type="number" min="0" step="100" value={contactEdit.price} onChange={e => setContactEdit(value => ({ ...value, price: e.target.value }))} /><small>Базовая цена за 60 минут. Для занятий другой длительности сумма рассчитывается пропорционально.</small></label> : null}
                       <label>Первый источник<select className="input" value={contactEdit.acquisition_source} onChange={e => setContactEdit(value => ({ ...value, acquisition_source: e.target.value, acquisition_campaign_id: '' }))}>{marketingSources.map(item => <option key={item.key} value={item.key}>{item.name}</option>)}</select></label>
                       <label>Кампания первого касания<select className="input" value={contactEdit.acquisition_campaign_id} onChange={e => setContactEdit(value => ({ ...value, acquisition_campaign_id: e.target.value }))}><option value="">Без кампании</option>{marketingCampaigns.filter(item => item.source_key === contactEdit.acquisition_source).map(item => <option key={item.id} value={String(item.id)}>#{item.id} · {item.name}</option>)}</select></label>
                     </div>
@@ -1882,10 +1886,8 @@ export function AdminView({ token }) {
                       <label>Направление<input className="input" defaultValue={item.direction || ''} placeholder="DevOps, ИБ, Хакер" onBlur={e => patchOpportunityMarketing(item.id, { direction: e.target.value || null }).catch(err => setError(normalizeErrorMessage(err.message || err)))} /></label>
                       <label>Уровень<select className="input" defaultValue={item.student_level || ''} onChange={e => patchOpportunityMarketing(item.id, { student_level: e.target.value || null }).catch(err => setError(normalizeErrorMessage(err.message || err)))}><option value="">Не указан</option><option value="zero">С нуля</option><option value="beginner">Начальный</option><option value="intermediate">Средний</option><option value="advanced">Продвинутый</option></select></label>
                       <label>Формат<input className="input" defaultValue={item.desired_format || ''} placeholder="2 × 60 минут" onBlur={e => patchOpportunityMarketing(item.id, { desired_format: e.target.value || null }).catch(err => setError(normalizeErrorMessage(err.message || err)))} /></label>
-                      <label>Бюджет, ₽/занятие<input className="input" type="number" min="0" defaultValue={item.desired_budget ?? ''} onBlur={e => patchOpportunityMarketing(item.id, { desired_budget: e.target.value ? Number(e.target.value) : null }).catch(err => setError(normalizeErrorMessage(err.message || err)))} /></label>
                       <label>Следующее действие<input className="input" type="datetime-local" defaultValue={item.next_contact_at || ''} onBlur={e => patchOpportunityMarketing(item.id, { next_contact_at: e.target.value || null }).catch(err => setError(normalizeErrorMessage(err.message || err)))} /></label>
                       <label>Причина отказа<select className="input" defaultValue={item.lost_reason || ''} onChange={e => patchOpportunityMarketing(item.id, { lost_reason: e.target.value || null }).catch(err => setError(normalizeErrorMessage(err.message || err)))}><option value="">Не выбрана</option>{LOST_REASON_OPTIONS.map(([key, label]) => <option key={key} value={key}>{label}</option>)}</select><small>Нужна для этапа «Неактуально / отказ».</small></label>
-                      <label>Предложение, ₽<input className="input" type="number" min="0" defaultValue={item.offer_amount ?? ''} placeholder="Стоимость предложенного формата" onBlur={e => patchOpportunityMarketing(item.id, { offer_amount: e.target.value ? Number(e.target.value) : null }).catch(err => setError(normalizeErrorMessage(err.message || err)))} /></label>
                       <label className="contact-field-wide">Цель ученика<input className="input" defaultValue={item.goal || ''} placeholder="Работа, подготовка, освоить навык" onBlur={e => patchOpportunityMarketing(item.id, { goal: e.target.value || null }).catch(err => setError(normalizeErrorMessage(err.message || err)))} /></label>
                       <label className="contact-field-wide">Заметки по обращению<textarea className="input" rows={3} defaultValue={item.notes || ''} placeholder="Контекст, договорённости, детали запроса" onBlur={e => patchOpportunityMarketing(item.id, { notes: e.target.value || null }).catch(err => setError(normalizeErrorMessage(err.message || err)))} /></label>
                     </div>
@@ -1976,15 +1978,12 @@ export function AdminView({ token }) {
                             <input className="input" value={userEdit.last_name} onChange={e => setUserEdit(v => ({ ...v, last_name: e.target.value }))} placeholder="Фамилия" />
                             <small>Телефон</small>
                             <input className="input" value={userEdit.telephone} onChange={e => setUserEdit(v => ({ ...v, telephone: e.target.value }))} placeholder="+7..." />
-                            <small>Цена за 60 мин (₽)</small>
-                            <input className="input" value={userEdit.price} onChange={e => setUserEdit(v => ({ ...v, price: e.target.value }))} placeholder="Например: 1500" />
                             <div className="mini-actions-row">
                               <button className="btn" onClick={() => saveUserPatch({
                                 telegram_id_new: Number(userEdit.telegram_id || selectedUser.telegram_id),
                                 first_name: userEdit.first_name,
                                 last_name: userEdit.last_name,
                                 telephone: userEdit.telephone,
-                                price: userEdit.price === '' ? null : Number(userEdit.price),
                               }, 'Профиль сохранен').catch(e => setError(String(e.message || e)))}>
                                 Сохранить профиль
                               </button>

@@ -1745,6 +1745,8 @@ async def admin_patch_contact(
     updates = payload.model_dump(exclude_unset=True)
     direction = updates.pop("direction", None)
     telegram_username = updates.pop("telegram_username", None)
+    price_is_set = "price" in updates
+    price = updates.pop("price", None)
     if "acquisition_source" in updates:
         source_key = (updates["acquisition_source"] or "unknown").strip().lower()
         if await session.get(MarketingSource, source_key) is None:
@@ -1778,6 +1780,13 @@ async def admin_patch_contact(
             profile.direction = direction
         if telegram_username is not None:
             profile.telegram_username = telegram_username.strip().lstrip("@") or None
+        if price_is_set:
+            profile.price = int(price or 0)
+    elif price_is_set:
+        raise HTTPException(
+            status_code=409,
+            detail={"code": "PROFILE_REQUIRED", "message": "Цена занятия доступна только для профиля ученика"},
+        )
     if telegram_username is not None:
         identity = (
             await session.execute(select(TelegramIdentity).where(TelegramIdentity.contact_id == contact.id))

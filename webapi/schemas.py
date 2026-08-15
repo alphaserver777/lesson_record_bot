@@ -228,6 +228,7 @@ class ContactPatchIn(BaseModel):
     acquisition_source: str | None = Field(default=None, max_length=80)
     acquisition_campaign_id: int | None = Field(default=None, ge=1)
     acquisition_campaign: str | None = Field(default=None, max_length=120)
+    price: int | None = Field(default=None, ge=0, le=1_000_000)
 
 
 class ContactPrepaymentIn(BaseModel):
