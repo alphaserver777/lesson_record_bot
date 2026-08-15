@@ -15,6 +15,7 @@ else:
     load_dotenv()
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
+TELEGRAM_PROXY_URL = os.getenv("TELEGRAM_PROXY_URL") or None
 START_MESSAGE = os.getenv("START_MESSAGE") or DEFAULT_START_MESSAGE
 BEGINNING_WORKING_DAY = int(os.getenv("BEGINNING_WORKING_DAY"))
 END_WORKING_DAY = int(os.getenv("END_WORKING_DAY"))

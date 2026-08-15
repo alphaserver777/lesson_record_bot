@@ -3,4 +3,4 @@ runtime_root: /srv/professorit-app
 runtime_network: professorit_runtime
 timezone: Europe/Moscow
 releases_to_keep: 5
-app_enable_bot: false
+app_enable_bot: true
