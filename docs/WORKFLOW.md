@@ -24,11 +24,11 @@
 
 Если изменение затрагивает Telegram Mini App, backend Mini App или их deployment, нужно учитывать текущее production-размещение:
 
-- сервер приложений: `vm-robots-dev1` (`192.168.122.10`)
-- edge-host / TLS: `robots-dev1` (`176.9.11.143`)
-- контейнер backend: `cabinet-api-1`
-- контейнер frontend: `cabinet-frontend-1`
-- контейнер основного бота: `cabinet-bot-1`
+- сервер приложений: VM 201 `professorit-web` (`192.168.50.111`)
+- edge / TLS: CT 202 `edge-proxy` (`192.168.50.112`)
+- контейнер backend: `professorit-api`
+- контейнер frontend: `professorit-frontend`
+- контейнер основного бота: `professorit-bot`
 - PostgreSQL: `postgres-postgres-1`
 
 `Germany2` — только legacy-контур и не должен использоваться для нового deploy.

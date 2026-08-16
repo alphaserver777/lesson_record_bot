@@ -14,16 +14,18 @@
 
 ## Production-размещение
 
-Рабочая VM: `vm-robots-dev1` (`192.168.122.10`).
+Рабочая VM: `professorit-web`, VM 201 (`192.168.50.111`) в российском
+Proxmox-контуре.
 
 | Компонент | Production container | Роль |
 |---|---|---|
 | PostgreSQL | `postgres-postgres-1` | canonical data store |
-| Telegram bot | `cabinet-bot-1` | один Telegram poller, scheduler уведомлений |
-| API | `cabinet-api-1` | web API и доменные операции |
-| Frontend | `cabinet-frontend-1` | `/cabinet/` UI |
+| Telegram bot | `professorit-bot` | один Telegram poller, scheduler уведомлений |
+| API | `professorit-api` | web API и доменные операции |
+| Frontend | `professorit-frontend` | `/cabinet/` UI |
 
-Публичный TLS и доменные маршруты обслуживает Traefik на хосте `robots-dev1`.
+Публичный TLS и доменные маршруты обслуживает Traefik в CT 202
+`edge-proxy` (`192.168.50.112`).
 Полная схема и путь запросов описаны в
 [`PLAN/14-production-infrastructure.md`](../../Marketing_proffessor_it/PLAN/14-production-infrastructure.md).
 
@@ -50,7 +52,7 @@ Germany2 — legacy-контур. Его контейнеры и SQLite не и�
 - user view: `miniapp/src/features/user/UserView.jsx`;
 - admin view: `miniapp/src/features/admin/AdminView.jsx`.
 
-Кабинет на `crm.befa-robotics.com/cabinet/` — единый web-интерфейс. Telegram
+Кабинет на `crm.professorit.ru/cabinet/` — единый web-интерфейс. Telegram
 только подтверждает identity и открывает его во встроенном браузере.
 
 ### Данные и доменная модель
@@ -62,7 +64,7 @@ Germany2 — legacy-контур. Его контейнеры и SQLite не и�
 Каноническая связь данных:
 
 ```text
-Contact → Opportunity → Student profile → Lessons → Payments → LTV
+Contact → Opportunity → Student profile → RecordDate ← Payment → LTV
                     ↘ source / campaign / marketing spend
 ```
 
@@ -70,10 +72,18 @@ Contact → Opportunity → Student profile → Lessons → Payments → LTV
 коммерческая работа; уроки и платежи связаны с тем же `contact_id`. Имя,
 телефон и Telegram ID не должны копироваться в новые сущности.
 
+`record_dates.id` — постоянный идентификатор экземпляра занятия. Текущее
+финансовое решение связано с ним через `payments.lesson_id`; дата и время в
+`payments` являются только историческим snapshot. Регулярный шаблон
+материализуется в `record_dates` до финансового закрытия. Подробности — в
+[ADR-003](adr/ADR-003-canonical-lesson-financial-status.md).
+
 ## Операционные правила
 
 - production timezone: `Europe/Moscow` для календаря, финансов и scheduler;
 - `CALENDAR_TIMEZONE=Europe/Moscow` должен быть задан у API и bot;
 - background jobs не используют shared ORM session на весь runtime;
 - активный bot health endpoint: `http://127.0.0.1:8081/ready` внутри контейнера;
+- production разворачивается воспроизводимо через `infra/ansible` в
+  `/srv/professorit-app`;
 - Twenty CRM архивирован и исключён из рабочего контура.
