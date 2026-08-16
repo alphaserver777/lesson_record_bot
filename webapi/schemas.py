@@ -73,6 +73,7 @@ class ManualPaymentIn(BaseModel):
 
 
 class LessonCloseIn(BaseModel):
+    lesson_id: int | None = Field(default=None, ge=1)
     telegram_id: int
     date: date
     time: str = Field(pattern=r"^\d{2}:\d{2}$")
@@ -83,6 +84,7 @@ class LessonCloseIn(BaseModel):
 
 
 class LessonCloseBulkItemIn(BaseModel):
+    lesson_id: int | None = Field(default=None, ge=1)
     telegram_id: int
     date: date
     time: str = Field(pattern=r"^\d{2}:\d{2}$")

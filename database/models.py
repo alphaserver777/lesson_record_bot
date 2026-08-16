@@ -391,6 +391,13 @@ class Payment(Base):
     __table_args__ = {'extend_existing': True}
 
     id = Column(Integer, primary_key=True)
+    # Canonical link to the lesson occurrence.  Date/time fields below remain
+    # immutable audit snapshots and a compatibility fallback for legacy rows.
+    lesson_id = Column(
+        Integer,
+        ForeignKey("record_dates.id", ondelete="SET NULL"),
+        nullable=True,
+    )
     contact_id = Column(Integer, ForeignKey("contacts.id", ondelete="SET NULL"), nullable=True, index=True)
     telegram_id = Column(BigInteger, ForeignKey("student_profiles.telegram_id", ondelete="SET NULL"), nullable=True)
     full_name = Column(String(100), nullable=True)

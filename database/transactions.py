@@ -58,7 +58,9 @@ async def init_db() -> None:
     # PostgreSQL is created from the complete SQLAlchemy schema, so those
     # SQLite-only PRAGMA/ALTER statements must never run there.
     if engine.dialect.name != "sqlite":
+        await _ensure_payment_lesson_link()
         await _ensure_indexes()
+        await _log_payment_lesson_integrity()
         await refresh_schedule_cache()
         return
     await _ensure_event_id_column()
@@ -74,7 +76,9 @@ async def init_db() -> None:
     await _ensure_analytics_events_table()
     await _ensure_booking_status_columns()
     await _normalize_record_kinds()
+    await _ensure_payment_lesson_link()
     await _ensure_indexes()
+    await _log_payment_lesson_integrity()
     await refresh_schedule_cache()
 
 
@@ -95,6 +99,191 @@ async def _ensure_indexes() -> None:
     for statement in statements:
         await session.execute(text(statement))
     await session.commit()
+
+
+async def _ensure_payment_lesson_link() -> None:
+    """Add and backfill the canonical Payment -> RecordDate relationship.
+
+    Existing databases used the mutable tuple (telegram_id, date, hour,
+    minute).  Missing historical lesson occurrences are restored from the
+    latest decision for every tuple, then that decision is linked.  Older
+    duplicate decisions remain intact as audit history.  Prepayments and
+    rows whose deleted owner can no longer be identified stay unlinked.
+    """
+    if engine.dialect.name == "postgresql":
+        # API and Telegram bot can start together against the same database.
+        # Serialize this additive migration across processes.
+        await session.execute(
+            text("SELECT pg_advisory_xact_lock(hashtext('canonical_lesson_payment_migration'))")
+        )
+        await session.execute(text("ALTER TABLE payments ADD COLUMN IF NOT EXISTS lesson_id INTEGER"))
+        await session.execute(
+            text(
+                """
+                DO $$
+                BEGIN
+                    IF NOT EXISTS (
+                        SELECT 1
+                        FROM pg_constraint c
+                        JOIN pg_attribute a
+                          ON a.attrelid = c.conrelid
+                         AND a.attnum = ANY(c.conkey)
+                        WHERE c.contype = 'f'
+                          AND c.conrelid = 'payments'::regclass
+                          AND a.attname = 'lesson_id'
+                    ) THEN
+                        ALTER TABLE payments
+                        ADD CONSTRAINT fk_payments_lesson_id
+                        FOREIGN KEY (lesson_id) REFERENCES record_dates(id)
+                        ON DELETE SET NULL;
+                    END IF;
+                END $$
+                """
+            )
+        )
+    else:
+        columns = await session.execute(text("PRAGMA table_info('payments')"))
+        column_names = {row[1] for row in columns}
+        if "lesson_id" not in column_names:
+            await session.execute(text("ALTER TABLE payments ADD COLUMN lesson_id INTEGER"))
+
+    # Old cleanup jobs removed lesson occurrences after seven days while
+    # retaining their financial decisions. Recreate those occurrences once
+    # so every identifiable decision gets a stable lesson identity.
+    await session.execute(
+        text(
+            """
+            INSERT INTO record_dates (
+                contact_id,
+                telegram_id,
+                record_date,
+                hour,
+                minute,
+                duration_minutes,
+                kind,
+                presence_status,
+                note,
+                event_id,
+                booking_status
+            )
+            SELECT
+                (SELECT sp.contact_id
+                 FROM student_profiles sp
+                 WHERE sp.telegram_id = payments.telegram_id),
+                payments.telegram_id,
+                payments.lesson_date,
+                payments.hour,
+                payments.minute,
+                payments.duration_minutes,
+                CASE WHEN payments.source = 'manual' THEN 'manual' ELSE 'historical' END,
+                CASE WHEN payments.status = 'canceled' THEN 'no' ELSE 'yes' END,
+                'Восстановлено из истории оплат',
+                NULL,
+                'approved'
+            FROM payments
+            WHERE payments.lesson_id IS NULL
+              AND payments.telegram_id IS NOT NULL
+              AND payments.duration_minutes > 0
+              AND payments.id = (
+                  SELECT MAX(p2.id)
+                  FROM payments p2
+                  WHERE p2.telegram_id = payments.telegram_id
+                    AND p2.lesson_date = payments.lesson_date
+                    AND p2.hour = payments.hour
+                    AND p2.minute = payments.minute
+              )
+              AND NOT EXISTS (
+                  SELECT 1
+                  FROM record_dates rd
+                  WHERE rd.telegram_id = payments.telegram_id
+                    AND rd.record_date = payments.lesson_date
+                    AND rd.hour = payments.hour
+                    AND rd.minute = payments.minute
+                    AND rd.kind NOT IN ('block', 'allow')
+              )
+            """
+        )
+    )
+    await session.execute(
+        text(
+            """
+            UPDATE payments
+            SET lesson_id = (
+                SELECT MIN(rd.id)
+                FROM record_dates rd
+                WHERE rd.telegram_id = payments.telegram_id
+                  AND rd.record_date = payments.lesson_date
+                  AND rd.hour = payments.hour
+                  AND rd.minute = payments.minute
+                  AND rd.kind NOT IN ('block', 'allow')
+            )
+            WHERE lesson_id IS NULL
+              AND telegram_id IS NOT NULL
+              AND duration_minutes > 0
+              AND id = (
+                  SELECT MAX(p2.id)
+                  FROM payments p2
+                  WHERE p2.telegram_id = payments.telegram_id
+                    AND p2.lesson_date = payments.lesson_date
+                    AND p2.hour = payments.hour
+                    AND p2.minute = payments.minute
+              )
+              AND EXISTS (
+                  SELECT 1
+                  FROM record_dates rd
+                  WHERE rd.telegram_id = payments.telegram_id
+                    AND rd.record_date = payments.lesson_date
+                    AND rd.hour = payments.hour
+                    AND rd.minute = payments.minute
+                    AND rd.kind NOT IN ('block', 'allow')
+              )
+            """
+        )
+    )
+    await session.execute(
+        text(
+            "CREATE UNIQUE INDEX IF NOT EXISTS uq_payments_lesson_id "
+            "ON payments(lesson_id) WHERE lesson_id IS NOT NULL"
+        )
+    )
+    await session.commit()
+
+
+async def payment_lesson_integrity_report() -> dict[str, int]:
+    row = (
+        await session.execute(
+            select(
+                func.count(Payment.id),
+                func.sum(case((Payment.lesson_id.is_not(None), 1), else_=0)),
+                func.sum(
+                    case(
+                        (
+                            (Payment.lesson_id.is_(None))
+                            & (Payment.telegram_id.is_not(None))
+                            & (Payment.duration_minutes > 0),
+                            1,
+                        ),
+                        else_=0,
+                    )
+                ),
+            )
+        )
+    ).one()
+    return {
+        "payments": int(row[0] or 0),
+        "linked_lessons": int(row[1] or 0),
+        "unlinked_identifiable_lessons": int(row[2] or 0),
+    }
+
+
+async def _log_payment_lesson_integrity() -> None:
+    report = await payment_lesson_integrity_report()
+    logger.info(
+        "payment lesson integrity: payments=%s linked=%s unlinked_identifiable_lessons=%s",
+        report["payments"],
+        report["linked_lessons"],
+        report["unlinked_identifiable_lessons"],
+    )
 
 
 async def _ensure_event_id_column() -> None:
@@ -594,7 +783,17 @@ async def find_regular_lesson_for_occurrence(
 
 async def deleting_records_older_7_days() -> None:
     cutoff = datetime.date.today() - datetime.timedelta(days=7)
-    await session.execute(delete(RecordDate).where(RecordDate.record_date < cutoff))
+    # Lesson occurrences are canonical business records and must survive a
+    # restart, reschedule and financial audit.  Only technical availability
+    # rows and rejected requests are eligible for the legacy cleanup.
+    await session.execute(
+        delete(RecordDate).where(
+            RecordDate.record_date < cutoff,
+            (RecordDate.telegram_id.is_(None))
+            | (RecordDate.kind.in_(["block", "allow"]))
+            | (RecordDate.booking_status == "rejected"),
+        )
+    )
     await session.commit()
 
 
@@ -1007,7 +1206,13 @@ async def add_manual_completed_lesson(
     if existing is not None:
         if existing.kind != "manual":
             return None, False, "slot_exists"
-        existing_payment = await find_payment(telegram_id, date, hour, minute)
+        existing_payment = await find_payment(
+            telegram_id,
+            date,
+            hour,
+            minute,
+            lesson_id=int(existing.id),
+        )
         if existing_payment and existing_payment.status == "canceled":
             # A cancellation of a manually recorded lesson means "entered by
             # mistake".  Remove the technical cancellation so it can be
@@ -1087,7 +1292,13 @@ async def delete_manual_completed_lesson(
     record = result.scalar_one_or_none()
     if record is None:
         return False
-    payment = await find_payment(telegram_id, date, hour, minute)
+    payment = await find_payment(
+        telegram_id,
+        date,
+        hour,
+        minute,
+        lesson_id=int(record.id),
+    )
     if payment is not None:
         await session.delete(payment)
     await session.delete(record)
@@ -2822,6 +3033,17 @@ async def reschedule_single_slot(
     if not record:
         return False
 
+    # Capture the financial decision before changing mutable slot fields.
+    # New rows are found by the canonical FK; legacy rows still use the old
+    # tuple and become linked during this operation.
+    linked_payment = await find_payment(
+        telegram_id,
+        old_date,
+        old_hour,
+        old_minute,
+        lesson_id=int(record.id),
+    )
+
     duration = duration_minutes or record.duration_minutes or SLOT_DURATION_MINUTES
     profile = await session.get(StudentProfile, telegram_id)
     summary_text = _build_event_summary(profile.full_name if profile else None, "single")
@@ -2854,6 +3076,12 @@ async def reschedule_single_slot(
     record.presence_status = None
     record.presence_last_reminder = None
     record.presence_message_id = None
+    if linked_payment is not None:
+        linked_payment.lesson_id = int(record.id)
+        linked_payment.lesson_date = new_date
+        linked_payment.hour = new_hour
+        linked_payment.minute = new_minute
+        linked_payment.duration_minutes = duration
     await log_analytics_event(
         "rescheduled_from",
         telegram_id=telegram_id,
@@ -3112,6 +3340,7 @@ async def lessons_for_date_details(date: datetime.date) -> list[dict[str, Any]]:
 async def lessons_for_date(date: datetime.date) -> list[Any]:
     single = await session.execute(
         select(
+            RecordDate.id,
             RecordDate.telegram_id,
             RecordDate.hour,
             RecordDate.minute,
@@ -3133,6 +3362,7 @@ async def lessons_for_date(date: datetime.date) -> list[Any]:
             row.minute,
             row.duration_minutes or SLOT_DURATION_MINUTES,
             row.kind or "single",
+            int(row.id),
         ))
 
     weekday = date.weekday()
@@ -3174,9 +3404,77 @@ async def lessons_for_date(date: datetime.date) -> list[Any]:
             row.minute,
             row.duration_minutes or SLOT_DURATION_MINUTES,
             "regular",
+            None,
         ))
 
     return result
+
+
+async def resolve_lesson_record(
+    telegram_id: int,
+    lesson_date: datetime.date,
+    hour: int,
+    minute: int,
+    *,
+    lesson_id: int | None = None,
+    materialize_regular: bool = False,
+) -> RecordDate | None:
+    """Resolve a stable lesson occurrence, optionally materializing a regular one.
+
+    ``lesson_id`` is authoritative when supplied.  The mutable slot tuple is
+    retained only for legacy callers and for the first materialization of a
+    regular occurrence.
+    """
+    if lesson_id is not None:
+        record = await session.get(RecordDate, lesson_id)
+        if (
+            record is not None
+            and record.telegram_id == telegram_id
+            and (record.kind or "single") not in {"block", "allow"}
+        ):
+            return record
+        return None
+
+    result = await session.execute(
+        select(RecordDate)
+        .where(
+            RecordDate.telegram_id == telegram_id,
+            RecordDate.record_date == lesson_date,
+            RecordDate.hour == hour,
+            RecordDate.minute == minute,
+            RecordDate.kind.not_in(["block", "allow"]),
+            (RecordDate.booking_status.is_(None)) | (RecordDate.booking_status == "approved"),
+        )
+        .order_by(RecordDate.id.asc())
+    )
+    record = result.scalars().first()
+    if record is not None or not materialize_regular:
+        return record
+
+    regular = await find_regular_lesson_for_occurrence(
+        telegram_id,
+        lesson_date,
+        hour,
+        minute,
+    )
+    if regular is None:
+        return None
+
+    profile = await session.get(StudentProfile, telegram_id)
+    record = RecordDate(
+        contact_id=profile.contact_id if profile else None,
+        telegram_id=telegram_id,
+        record_date=lesson_date,
+        hour=hour,
+        minute=minute,
+        duration_minutes=int(regular.duration_minutes or SLOT_DURATION_MINUTES),
+        kind="regular",
+        booking_status="approved",
+        event_id=None,
+    )
+    session.add(record)
+    await session.flush()
+    return record
 
 
 async def get_lesson_kind(date: datetime.date, hour: int, minute: int, telegram_id: int | None) -> str | None:
@@ -4093,9 +4391,30 @@ async def add_payment(
         amount: int | None,
         status: str,
         source: str | None = None,
+        lesson_id: int | None = None,
 ) -> Payment:
+    lesson: RecordDate | None = None
+    if telegram_id is not None and duration_minutes > 0:
+        lesson = await resolve_lesson_record(
+            telegram_id,
+            lesson_date,
+            hour,
+            minute,
+            lesson_id=lesson_id,
+            materialize_regular=True,
+        )
+        if lesson is not None:
+            lesson_id = int(lesson.id)
+            # Store a snapshot of the canonical occurrence, not stale request
+            # coordinates that may have changed during a reschedule.
+            lesson_date = lesson.record_date
+            hour = int(lesson.hour)
+            minute = int(lesson.minute)
+            duration_minutes = int(lesson.duration_minutes or duration_minutes)
+
     for attempt in range(3):
         pay = Payment(
+            lesson_id=lesson_id,
             telegram_id=telegram_id,
             full_name=full_name,
             lesson_date=lesson_date,
@@ -4152,14 +4471,27 @@ async def find_payment(
     lesson_date: datetime.date,
     hour: int,
     minute: int,
+    lesson_id: int | None = None,
 ) -> Payment | None:
+    if lesson_id is not None:
+        linked = await session.execute(
+            select(Payment)
+            .where(Payment.lesson_id == lesson_id)
+            .order_by(Payment.id.desc())
+        )
+        payment = linked.scalars().first()
+        if payment is not None:
+            return payment
+
     res = await session.execute(
-        select(Payment).where(
+        select(Payment)
+        .where(
             Payment.telegram_id == telegram_id,
             Payment.lesson_date == lesson_date,
             Payment.hour == hour,
             Payment.minute == minute,
         )
+        .order_by(Payment.id.desc())
     )
     return res.scalars().first()
 

@@ -907,6 +907,7 @@ export function AdminView({ token }) {
       token,
       method: 'POST',
       body: {
+        lesson_id: item.lesson_id || null,
         telegram_id: Number(item.telegram_id),
         date: item.date,
         time: item.time,
@@ -933,6 +934,7 @@ export function AdminView({ token }) {
       body: {
         decision,
         items: selectedItems.map(item => ({
+          lesson_id: item.lesson_id || null,
           telegram_id: Number(item.telegram_id),
           date: item.date,
           time: item.time,

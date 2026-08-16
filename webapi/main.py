@@ -3294,7 +3294,10 @@ async def admin_unclosed_lessons(
             if slot_dt >= now_local:
                 continue
 
-            exists_payment = await transactions.find_payment(int(telegram_id), date_value, hh, mm)
+            lesson_id = int(row[5]) if len(row) > 5 and row[5] is not None else None
+            exists_payment = await transactions.find_payment(
+                int(telegram_id), date_value, hh, mm, lesson_id=lesson_id,
+            )
             if exists_payment:
                 continue
 
@@ -3309,6 +3312,7 @@ async def admin_unclosed_lessons(
             items.append(
                 {
                     "telegram_id": int(telegram_id),
+                    "lesson_id": lesson_id,
                     "full_name": profile.full_name if profile else None,
                     "date": date_value.isoformat(),
                     "time": f"{hh:02d}:{mm:02d}",
@@ -3345,7 +3349,22 @@ async def admin_close_lesson(payload: LessonCloseIn, admin: dict[str, Any] = Dep
                 {"telegram_id": payload.telegram_id, "date": payload.date.isoformat(), "time": payload.time},
             )
             return {"status": "deleted_manual_lesson"}
-    exists = await transactions.find_payment(payload.telegram_id, payload.date, hh, mm)
+    lesson = await transactions.resolve_lesson_record(
+        payload.telegram_id,
+        payload.date,
+        hh,
+        mm,
+        lesson_id=payload.lesson_id,
+        materialize_regular=False,
+    )
+    resolved_lesson_id = int(lesson.id) if lesson is not None else payload.lesson_id
+    exists = await transactions.find_payment(
+        payload.telegram_id,
+        payload.date,
+        hh,
+        mm,
+        lesson_id=resolved_lesson_id,
+    )
     if exists:
         raise HTTPException(status_code=409, detail={"code": "ALREADY_PROCESSED", "message": "Решение уже принято"})
 
@@ -3374,6 +3393,7 @@ async def admin_close_lesson(payload: LessonCloseIn, admin: dict[str, Any] = Dep
         amount=max(0, int(amount)),
         status=payload.decision,
         source="balance" if payload.source == "balance" else "lesson_close",
+        lesson_id=resolved_lesson_id,
     )
 
     await _audit(
@@ -3382,6 +3402,7 @@ async def admin_close_lesson(payload: LessonCloseIn, admin: dict[str, Any] = Dep
         "lesson",
         {
             "telegram_id": payload.telegram_id,
+            "lesson_id": pay.lesson_id,
             "date": payload.date.isoformat(),
             "time": payload.time,
             "decision": payload.decision,
@@ -3405,7 +3426,22 @@ async def admin_close_lessons_bulk(payload: LessonCloseBulkIn, admin: dict[str, 
             if payload.decision == "canceled" and await transactions.delete_manual_completed_lesson(item.telegram_id, item.date, hh, mm):
                 processed += 1
                 continue
-            exists = await transactions.find_payment(item.telegram_id, item.date, hh, mm)
+            lesson = await transactions.resolve_lesson_record(
+                item.telegram_id,
+                item.date,
+                hh,
+                mm,
+                lesson_id=item.lesson_id,
+                materialize_regular=False,
+            )
+            resolved_lesson_id = int(lesson.id) if lesson is not None else item.lesson_id
+            exists = await transactions.find_payment(
+                item.telegram_id,
+                item.date,
+                hh,
+                mm,
+                lesson_id=resolved_lesson_id,
+            )
             if exists:
                 skipped += 1
                 continue
@@ -3425,6 +3461,7 @@ async def admin_close_lessons_bulk(payload: LessonCloseBulkIn, admin: dict[str, 
                 amount=max(0, int(amount)),
                 status=payload.decision,
                 source="lesson_close",
+                lesson_id=resolved_lesson_id,
             )
             processed += 1
         except Exception as exc:  # pylint: disable=broad-except
