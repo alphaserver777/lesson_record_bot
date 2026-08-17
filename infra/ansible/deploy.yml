@@ -76,6 +76,20 @@
         profiles: "{{ ['bot'] if app_enable_bot else omit }}"
       register: runtime_compose
 
+    # The marketing Nginx resolves Docker service names when its configuration
+    # is loaded. Compose may recreate API/frontend with new container IPs, so
+    # refresh the cached upstream addresses after every runtime deployment.
+    - name: Refresh marketing Nginx upstream addresses
+      ansible.builtin.command:
+        argv:
+          - docker
+          - exec
+          - professorit-site
+          - sh
+          - -c
+          - nginx -t && nginx -s reload
+      changed_when: true
+
     - name: Verify API health on the host
       ansible.builtin.uri:
         url: http://127.0.0.1:18000/health
@@ -93,6 +107,16 @@
       retries: 10
       delay: 3
       until: frontend_health.status == 200
+
+    - name: Verify cabinet authentication route through Nginx
+      ansible.builtin.uri:
+        url: http://127.0.0.1/cabinet/api/auth/telegram/login-widget
+        method: POST
+        headers:
+          Host: crm.professorit.ru
+        body_format: json
+        body: {}
+        status_code: 422
 
     - name: Find stale releases
       ansible.builtin.find:

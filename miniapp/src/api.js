@@ -11,9 +11,22 @@ export async function api(path, { token, method = 'GET', body } = {}) {
     },
     body: body ? JSON.stringify(body) : undefined
   })
-  const data = await res.json().catch(() => ({}))
+  const raw = await res.text()
+  let data = {}
+  try {
+    data = raw ? JSON.parse(raw) : {}
+  } catch {
+    data = {}
+  }
   if (!res.ok) {
-    throw new Error(typeof data.detail === 'string' ? data.detail : JSON.stringify(data.detail || data))
+    if ([502, 503, 504].includes(res.status)) {
+      throw new Error('Сервис авторизации перезапускается. Обновите страницу через несколько секунд.')
+    }
+    if (typeof data.detail === 'string') throw new Error(data.detail)
+    if (Array.isArray(data.detail)) {
+      throw new Error(data.detail.map(item => item?.msg).filter(Boolean).join('. ') || `Ошибка авторизации (${res.status})`)
+    }
+    throw new Error(raw && !raw.trim().startsWith('<') ? raw : `Ошибка авторизации (${res.status})`)
   }
   return data
 }
