@@ -7,7 +7,7 @@
 
 ## Status
 
-In Progress
+Done — deployed as release `5759a9a` on 17 August 2026.
 
 ## Контекст
 
@@ -100,3 +100,17 @@ In Progress
 
 Удаление legacy snapshot-полей возможно только отдельной задачей после периода
 совместимости.
+
+## Production verification
+
+- перед миграцией создан и проверен PostgreSQL backup;
+- после backfill: `694` финансовых строк, `645` текущих решений связаны с
+  каноническими уроками, `0` идентифицируемых уроков без связи;
+- контрольный финансовый отпечаток до и после рестарта одинаков:
+  `694 / 1 179 650 ₽ / paid=457 / canceled=236 / linked=645`;
+- API и bot одновременно перезапущены, оба вернулись в `healthy`, startup log
+  не содержит deadlock или DB error;
+- legacy miniapp/API на Germany2 остановлены, старый `/miniapp` перенаправляет
+  в `https://crm.professorit.ru/cabinet/`, `/miniapi/*` возвращает `410`;
+- Telegram callback получил версию runtime, поэтому кнопка из старой SQLite-БД
+  больше не может обработать одноимённый numeric ID в PostgreSQL.

@@ -15,7 +15,11 @@ Proxmox-кластера.
 
 Код приложения развёрнут релизами в `/srv/professorit-app`. PostgreSQL `proffessor_it`
 — единственный operational source of truth. SQLite и Germany2 считаются только
-legacy backup-материалами.
+legacy backup-материалами. С 17 августа 2026 года старые контейнеры
+`bot_service_appointment_miniapi_prod` и
+`bot_service_appointment_miniapp_front_prod` на Germany2 остановлены и имеют
+`restart=no`; `https://axtar-b2b.ru/miniapp` перенаправляет в канонический
+кабинет, а старый `/miniapi/*` возвращает `410 Gone`.
 
 ## Сеть и домен
 

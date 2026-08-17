@@ -29,8 +29,10 @@ Proxmox-контуре.
 Полная схема и путь запросов описаны в
 [`PLAN/14-production-infrastructure.md`](../../Marketing_proffessor_it/PLAN/14-production-infrastructure.md).
 
-Germany2 — legacy-контур. Его контейнеры и SQLite не используются как рабочие
-сервисы и не являются источником runtime-настроек.
+Germany2 — выключенный legacy-контур. Его miniapp/API-контейнеры остановлены,
+SQLite сохранена только для аудита и не является источником runtime-данных.
+Старые ссылки `/miniapp` перенаправляются на канонический кабинет, а legacy API
+не принимает записи.
 
 ## Модули
 
@@ -83,7 +85,8 @@ Contact → Opportunity → Student profile → RecordDate ← Payment → LTV
 - production timezone: `Europe/Moscow` для календаря, финансов и scheduler;
 - `CALENDAR_TIMEZONE=Europe/Moscow` должен быть задан у API и bot;
 - background jobs не используют shared ORM session на весь runtime;
-- активный bot health endpoint: `http://127.0.0.1:8081/ready` внутри контейнера;
+- активный bot — только `professorit-bot`, его health endpoint:
+  `http://127.0.0.1:8081/ready` внутри контейнера;
 - production разворачивается воспроизводимо через `infra/ansible` в
   `/srv/professorit-app`;
 - Twenty CRM архивирован и исключён из рабочего контура.
