@@ -8,7 +8,7 @@ from typing import Any
 from sqlalchemy import case, delete, func, select, text, update
 from sqlalchemy.exc import IntegrityError
 
-from database.connect import Base, engine, session
+from database.connect import Base, engine, remove_session, session
 from database.models import AdminAuditLog, AnalyticsEvent, DateAvailabilityOverride, Lead, Payment, RecordDate, RegularLesson, RegularLessonException, StudentProfile, WorkingInterval
 from utils.calendar_backend import (
     CalendarBackendError,
@@ -70,6 +70,9 @@ async def init_db() -> None:
         await _ensure_indexes()
         await _log_payment_lesson_integrity()
         await refresh_schedule_cache()
+        # Integrity/cache reads open a new transaction after the migration
+        # commits.  Release it before another runtime attempts metadata DDL.
+        await remove_session()
         return
     await _ensure_event_id_column()
     await _ensure_minute_column()
