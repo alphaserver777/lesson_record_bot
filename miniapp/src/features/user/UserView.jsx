@@ -308,7 +308,7 @@ function UserView({ token, appUser, tgUser }) {
         <div className="mini-cover-overlay" />
         <div className="mini-cover-head">
           <div className="mini-brand">
-            <div className="brand-logo">P</div>
+            <img className="brand-logo" src={`${import.meta.env.BASE_URL}professorit-mark.png`} alt="" width="48" height="48" />
             <div className="brand-meta">
               <strong>PROFFESSOR IT</strong>
               <span>личный кабинет</span>

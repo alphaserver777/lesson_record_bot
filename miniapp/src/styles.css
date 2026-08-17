@@ -38,15 +38,12 @@ body {
 }
 
 .web-entry-mark {
-  width: 52px;
-  height: 52px;
-  display: grid;
-  place-items: center;
+  width: 72px;
+  height: 72px;
+  display: block;
   margin: 0 auto 18px;
-  border: 1px solid rgba(255, 255, 255, 0.45);
-  border-radius: 15px;
-  font-weight: 900;
-  font-size: 22px;
+  object-fit: contain;
+  filter: drop-shadow(0 8px 14px rgba(0, 0, 0, 0.4));
 }
 
 .web-entry-kicker {
@@ -168,13 +165,9 @@ body {
 .brand-logo {
   width: 34px;
   height: 34px;
-  border-radius: 10px;
-  border: 1px solid rgba(255, 255, 255, 0.32);
-  background: rgba(0, 0, 0, 0.42);
-  display: grid;
-  place-items: center;
-  font-size: 11px;
-  font-weight: 800;
+  display: block;
+  object-fit: contain;
+  filter: drop-shadow(0 5px 8px rgba(0, 0, 0, 0.35));
 }
 
 .brand-meta {
@@ -2295,9 +2288,6 @@ body {
   .brand-logo {
     width: 48px;
     height: 48px;
-    border-radius: 14px;
-    font-size: 18px;
-    background: linear-gradient(145deg, #4b8df5, #28559e);
   }
 
   .brand-meta strong {

@@ -34,7 +34,7 @@ function WebEntry({ onAuthenticated }) {
 
   return (
     <section className="web-entry" aria-labelledby="cabinet-title">
-      <div className="web-entry-mark">P</div>
+      <img className="web-entry-mark" src={`${import.meta.env.BASE_URL}professorit-mark.png`} alt="" width="72" height="72" />
       <p className="web-entry-kicker">PROFFESSOR IT</p>
       <h1 id="cabinet-title">Личный кабинет ученика</h1>
       <p>Записывайтесь на занятия, смотрите расписание и управляйте обучением в одном месте.</p>
