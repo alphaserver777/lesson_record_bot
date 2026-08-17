@@ -4,7 +4,7 @@ import logging
 
 from aiogram import types
 
-from config_data.config import ADMINS_TELEGRAM_ID
+from config_data.config import ADMINS_TELEGRAM_ID, BOOKING_CALLBACK_VERSION
 from database import transactions
 from loader import bot
 
@@ -15,14 +15,27 @@ def _fmt_date(d: datetime.date, h: int, m: int) -> str:
     return f"{d.day:02d}.{d.month:02d}.{d.year} {h:02d}:{m:02d}"
 
 
+async def _record_id_from_callback(callback: types.CallbackQuery) -> int | None:
+    parts = (callback.data or "").split(":")
+    if len(parts) != 3 or parts[1] != BOOKING_CALLBACK_VERSION:
+        await callback.answer(
+            "Это кнопка из старого кабинета. Откройте актуальную заявку в CRM.",
+            show_alert=True,
+        )
+        return None
+    try:
+        return int(parts[2])
+    except ValueError:
+        await callback.answer("Ошибка данных", show_alert=True)
+        return None
+
+
 async def booking_approve(callback: types.CallbackQuery) -> None:
     if callback.from_user.id not in ADMINS_TELEGRAM_ID:
         await callback.answer("Недостаточно прав", show_alert=True)
         return
-    try:
-        record_id = int(callback.data.split(":")[1])
-    except Exception:  # pylint: disable=broad-except
-        await callback.answer("Ошибка данных", show_alert=True)
+    record_id = await _record_id_from_callback(callback)
+    if record_id is None:
         return
 
     status, rec = await transactions.approve_pending_booking(record_id, callback.from_user.id)
@@ -60,10 +73,8 @@ async def booking_reject(callback: types.CallbackQuery) -> None:
     if callback.from_user.id not in ADMINS_TELEGRAM_ID:
         await callback.answer("Недостаточно прав", show_alert=True)
         return
-    try:
-        record_id = int(callback.data.split(":")[1])
-    except Exception:  # pylint: disable=broad-except
-        await callback.answer("Ошибка данных", show_alert=True)
+    record_id = await _record_id_from_callback(callback)
+    if record_id is None:
         return
 
     status, rec = await transactions.reject_pending_booking(record_id, callback.from_user.id)

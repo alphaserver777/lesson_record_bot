@@ -20,7 +20,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import func, or_, select, text, update
 from sqlalchemy.exc import IntegrityError
 
-from config_data.config import ADMINS_TELEGRAM_ID
+from config_data.config import ADMINS_TELEGRAM_ID, BOOKING_CALLBACK_VERSION
 from database import transactions
 from database.connect import (
     bind_request_session_scope,
@@ -211,8 +211,14 @@ def _approval_keyboard(record_id: int) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [
-                InlineKeyboardButton(text="✅ Согласовать", callback_data=f"booking_approve:{record_id}"),
-                InlineKeyboardButton(text="❌ Отклонить", callback_data=f"booking_reject:{record_id}"),
+                InlineKeyboardButton(
+                    text="✅ Согласовать",
+                    callback_data=f"booking_approve:{BOOKING_CALLBACK_VERSION}:{record_id}",
+                ),
+                InlineKeyboardButton(
+                    text="❌ Отклонить",
+                    callback_data=f"booking_reject:{BOOKING_CALLBACK_VERSION}:{record_id}",
+                ),
             ]
         ]
     )

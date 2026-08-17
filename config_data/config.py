@@ -25,3 +25,7 @@ LOCAL_UTC = os.getenv("LOCAL_UTC")
 REMINDER_TIME = os.getenv("REMINDER_TIME")
 CALENDAR_TIMEZONE = os.getenv("CALENDAR_TIMEZONE", "UTC")
 MINI_APP_URL = os.getenv("MINI_APP_URL", "http://localhost:5173")
+# Version the Telegram callback payload so buttons emitted by a retired
+# runtime cannot accidentally target a row with the same numeric ID in the
+# canonical database.
+BOOKING_CALLBACK_VERSION = "canonical-v1"
