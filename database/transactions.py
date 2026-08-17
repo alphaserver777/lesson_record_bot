@@ -53,6 +53,14 @@ def _compose_full_name(first_name: str | None, last_name: str | None) -> str | N
 
 async def init_db() -> None:
     async with engine.begin() as conn:
+        if engine.dialect.name == "postgresql":
+            # API and bot are deployed together and may initialize at the same
+            # moment.  Serialize metadata DDL with the same lock used by the
+            # additive migration below; otherwise create_all() and the
+            # backfill can acquire relation locks in the opposite order.
+            await conn.execute(
+                text("SELECT pg_advisory_xact_lock(hashtext('canonical_lesson_payment_migration'))")
+            )
         await conn.run_sync(Base.metadata.create_all)
     # SQLite installations before PostgreSQL used additive runtime migrations.
     # PostgreSQL is created from the complete SQLAlchemy schema, so those
