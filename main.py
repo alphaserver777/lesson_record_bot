@@ -5,6 +5,7 @@ import os
 
 from aiogram import Bot, Dispatcher
 
+from database.connect import close_db
 from database.transactions import init_db
 from health_server import HealthState, start_health_server
 from handlers.routers import register_routers
@@ -31,13 +32,16 @@ async def main(bot: Bot, dp: Dispatcher) -> None:
 
     await init_db()
 
-    asyncio.ensure_future(restarting_services())
+    services_task = asyncio.create_task(restarting_services())
 
     await bot.delete_webhook(drop_pending_updates=True)
     health_state.ready = True
     try:
         await dp.start_polling(bot)
     finally:
+        services_task.cancel()
+        await asyncio.gather(services_task, return_exceptions=True)
+        await close_db()
         health_state.ready = False
         health_server.close()
         await health_server.wait_closed()

@@ -7,8 +7,6 @@ from aiogram.client.session.aiohttp import AiohttpSession
 from aiogram.enums import ParseMode
 
 from config_data.config import BOT_TOKEN, TELEGRAM_PROXY_URL
-from database.connect import close_db
-
 logger = logging.getLogger("logger_info")
 
 
@@ -19,7 +17,6 @@ async def start_up():
 
 async def on_shutdown():
     """Функция on_shutdown. При завершении выводит текст в консоль."""
-    await close_db()
     logger.info("Bot stopped")
 
 telegram_session = (
