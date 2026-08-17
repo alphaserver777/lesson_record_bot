@@ -5,6 +5,7 @@ import logging
 
 from config_data.config import REMINDER_TIME
 from database import transactions
+from database.connect import remove_session
 from utils.calendar_backend import get_calendar_tz
 from utils.misc.reminder import reminder, reminder_before_delta, send_daily_admin_summary, send_presence_prompts
 
@@ -12,6 +13,14 @@ logger = logging.getLogger(__name__)
 
 
 async def restarting_services() -> None:
+    """Run the scheduler and always release its task-local DB session."""
+    try:
+        await _restarting_services_loop()
+    finally:
+        await remove_session()
+
+
+async def _restarting_services_loop() -> None:
     """
     Notification-only scheduler:
     - daily cleanup,
