@@ -223,7 +223,7 @@ class ContactPatchIn(BaseModel):
     first_name: str | None = Field(default=None, max_length=100)
     last_name: str | None = Field(default=None, max_length=100)
     telephone: str | None = Field(default=None, max_length=20)
-    status: str | None = Field(default=None, max_length=24)
+    status: str | None = Field(default=None, pattern=r"^(lead|active|student|archived)$")
     preferred_channel: str | None = Field(default=None, max_length=20)
     direction: str | None = Field(default=None, max_length=100)
     telegram_username: str | None = Field(default=None, max_length=100)

@@ -9,7 +9,7 @@ from sqlalchemy import case, delete, func, select, text, update
 from sqlalchemy.exc import IntegrityError
 
 from database.connect import Base, engine, remove_session, session
-from database.models import AdminAuditLog, AnalyticsEvent, DateAvailabilityOverride, Lead, Payment, RecordDate, RegularLesson, RegularLessonException, StudentProfile, WorkingInterval
+from database.models import AdminAuditLog, AnalyticsEvent, Contact, DateAvailabilityOverride, Lead, Payment, RecordDate, RegularLesson, RegularLessonException, StudentProfile, TelegramIdentity, WorkingInterval
 from utils.calendar_backend import (
     CalendarBackendError,
     create_booking,
@@ -49,6 +49,61 @@ def _compose_full_name(first_name: str | None, last_name: str | None) -> str | N
     if not first and not last:
         return None
     return " ".join([last, first]).strip()
+
+
+async def ensure_canonical_contact_for_profile(profile: StudentProfile) -> Contact:
+    """Idempotently attach a completed Telegram profile to the CRM directory."""
+    identity = (
+        await session.execute(
+            select(TelegramIdentity).where(TelegramIdentity.telegram_id == profile.telegram_id)
+        )
+    ).scalar_one_or_none()
+    # Telegram identity is globally unique and therefore wins if an old
+    # profile link ever disagrees with it. This prevents accidental duplicates.
+    contact = await session.get(Contact, identity.contact_id) if identity is not None else None
+    if contact is None and profile.contact_id:
+        contact = await session.get(Contact, profile.contact_id)
+
+    now = datetime.datetime.now(datetime.timezone.utc).isoformat()
+    if contact is None:
+        contact = Contact(
+            first_name=profile.first_name,
+            last_name=profile.last_name,
+            telephone=profile.telephone,
+            preferred_channel="telegram",
+            status="archived" if profile.is_deleted else "lead",
+            is_archived=bool(profile.is_deleted),
+            acquisition_source="unknown",
+            acquired_at=datetime.date.today(),
+            created_at=now,
+            updated_at=now,
+        )
+        session.add(contact)
+        await session.flush()
+    else:
+        contact.first_name = profile.first_name or contact.first_name
+        contact.last_name = profile.last_name or contact.last_name
+        contact.telephone = profile.telephone or contact.telephone
+        contact.updated_at = now
+
+    profile.contact_id = contact.id
+    if identity is None:
+        identity = TelegramIdentity(
+            contact_id=contact.id,
+            telegram_id=profile.telegram_id,
+            username=profile.telegram_username,
+            last_login_at=profile.last_visit_date,
+            entry_chat_id=profile.miniapp_entry_chat_id,
+            entry_message_id=profile.miniapp_entry_message_id,
+            created_at=now,
+            updated_at=now,
+        )
+        session.add(identity)
+    else:
+        identity.contact_id = contact.id
+        identity.username = profile.telegram_username or identity.username
+        identity.updated_at = now
+    return contact
 
 
 async def init_db() -> None:
@@ -905,6 +960,12 @@ async def upsert_student_profile(
     if balance_lessons is not None:
         profile.balance_lessons = balance_lessons
 
+    # A completed profile is a lead and must be visible in the
+    # single CRM directory. Incomplete Telegram logins stay outside the CRM
+    # until a phone is provided or a booking is approved.
+    if profile.telephone or profile.contact_id:
+        await ensure_canonical_contact_for_profile(profile)
+
     await session.commit()
     return profile
 
@@ -948,6 +1009,7 @@ async def update_phone(telegram_id: int, phone_number: str) -> None:
     profile = await session.get(StudentProfile, telegram_id)
     if profile:
         profile.telephone = phone_number
+        await ensure_canonical_contact_for_profile(profile)
     await session.commit()
 
 
@@ -1336,7 +1398,10 @@ async def add_pending_single_slot(
     duration_minutes: int = SLOT_DURATION_MINUTES,
     kind: str = "single",
 ) -> int:
+    profile = await session.get(StudentProfile, telegram_id)
+    contact = await ensure_canonical_contact_for_profile(profile) if profile is not None else None
     record = RecordDate(
+        contact_id=contact.id if contact is not None else None,
         telegram_id=telegram_id,
         record_date=date,
         hour=hour,
@@ -1385,7 +1450,12 @@ async def approve_pending_booking(record_id: int, admin_id: int) -> tuple[str, R
     rec = await session.get(RecordDate, record_id)
     if not rec:
         return ("not_found", None)
+    profile = await session.get(StudentProfile, rec.telegram_id) if rec.telegram_id else None
+    if profile is not None:
+        contact = await ensure_canonical_contact_for_profile(profile)
+        rec.contact_id = contact.id
     if rec.booking_status == "approved":
+        await session.commit()
         return ("already_approved", rec)
     if rec.booking_status == "rejected":
         return ("already_rejected", rec)
@@ -1409,7 +1479,6 @@ async def approve_pending_booking(record_id: int, admin_id: int) -> tuple[str, R
     if is_busy_calendar or is_busy_local:
         return ("slot_busy", rec)
 
-    profile = await session.get(StudentProfile, rec.telegram_id) if rec.telegram_id else None
     summary_text = _build_event_summary(
         profile.full_name if profile else None,
         "regular" if rec.kind == "regular" else "single",

@@ -1602,6 +1602,13 @@ def _contact_out(
     current_source: str | None = None,
 ) -> dict[str, Any]:
     display_name = _contact_name(contact) or _profile_display_name(profile)
+    client_type = (
+        "archived"
+        if contact.is_archived or contact.status == "archived"
+        else "student"
+        if contact.status == "student" or current_stage == "won"
+        else "lead"
+    )
     return {
         "id": contact.id,
         "full_name": display_name or "Без имени",
@@ -1617,6 +1624,7 @@ def _contact_out(
         "telegram_id": identity.telegram_id if identity else None,
         "telegram_username": identity.username if identity else None,
         "is_student": profile is not None,
+        "client_type": client_type,
         "direction": profile.direction if profile else None,
         "balance_lessons": int(profile.balance_lessons or 0) if profile else 0,
         "price": int(profile.price or 0) if profile else 0,
@@ -1734,8 +1742,16 @@ async def admin_contact_detail(contact_id: int, _: dict[str, Any] = Depends(requ
         """), {"telegram_id": telegram_id})
         payments = [{"date": str(item[0]), "amount": int(item[1] or 0), "status": item[2], "source": item[3]} for item in payment_rows.all()]
     paid_total = sum(item["amount"] for item in payments if item["status"] == "paid")
+    latest_opportunity = opportunities[0] if opportunities else None
     return {
-        "contact": _contact_out(contact, identity, profile, len(opportunities)),
+        "contact": _contact_out(
+            contact,
+            identity,
+            profile,
+            len(opportunities),
+            latest_opportunity.stage if latest_opportunity else None,
+            latest_opportunity.source if latest_opportunity else None,
+        ),
         "opportunities": [_lead_out(item, contact, identity) for item in opportunities],
         "lessons": lessons,
         "payments": payments,
@@ -1778,6 +1794,8 @@ async def admin_patch_contact(
         updates["acquisition_campaign"] = (updates["acquisition_campaign"] or "").strip() or None
     for field, value in updates.items():
         setattr(contact, field, value)
+    if "status" in updates:
+        contact.is_archived = updates["status"] == "archived"
     profile = (
         await session.execute(select(StudentProfile).where(StudentProfile.contact_id == contact.id))
     ).scalar_one_or_none()
@@ -2169,6 +2187,13 @@ async def admin_patch_lead(lead_id: int, payload: LeadPatchIn, admin: dict[str, 
         stage_keys = {stage.key for stage in await _funnel_stages()}
         if updates["stage"] not in stage_keys:
             raise HTTPException(status_code=422, detail={"code": "INVALID_STAGE", "message": "Этап не существует"})
+    target_stage = updates.get("stage", lead.stage)
+    target_lost_reason = updates.get("lost_reason", lead.lost_reason)
+    if target_stage == "lost" and not target_lost_reason:
+        raise HTTPException(
+            status_code=422,
+            detail={"code": "LOST_REASON_REQUIRED", "message": "Выберите причину отказа"},
+        )
     if "full_name" in updates:
         contact.first_name, contact.last_name = _split_contact_name(updates.pop("full_name"))
     if "telephone" in updates:

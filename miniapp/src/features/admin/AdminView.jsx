@@ -63,6 +63,12 @@ const LOST_REASON_OPTIONS = [
   ['other_teacher', 'Выбрал другого преподавателя'], ['format', 'Не подходит формат'], ['motivation', 'Потерял мотивацию'],
   ['goal_reached', 'Достиг цели'], ['finance', 'Финансовые причины'], ['no_response', 'Не выходит на связь'], ['other', 'Другое'],
 ]
+
+const CLIENT_TYPE_LABELS = {
+  lead: 'Лид',
+  student: 'Ученик',
+  archived: 'Архив',
+}
 const WORK_CATEGORY_LABELS = { prep: 'Подготовка', sales: 'Продажи и переписка', content: 'Контент', admin: 'Администрирование' }
 
 function metricValue(value, kind = 'number') {
@@ -391,16 +397,25 @@ export function AdminView({ token }) {
   async function changeContactOpportunityStage(opportunity, stage) {
     const contactId = selectedContact?.contact?.id
     if (!contactId || !opportunity?.id) return
-    if (stage === 'lost' && !opportunity.lost_reason) {
+    const currentOpportunity = selectedContact?.opportunities?.find(item => item.id === opportunity.id) || opportunity
+    if (stage === 'lost' && !currentOpportunity.lost_reason) {
       throw new Error('Сначала выберите причину отказа')
     }
-    await api(`/api/admin/leads/${opportunity.id}`, { token, method: 'PATCH', body: { stage } })
+    await api(`/api/admin/leads/${opportunity.id}`, {
+      token,
+      method: 'PATCH',
+      body: { stage, ...(stage === 'lost' ? { lost_reason: currentOpportunity.lost_reason } : {}) },
+    })
     await Promise.all([selectContact(contactId), loadContacts(contactsPage, contactQuery), loadLeads()])
     setSuccess('Этап воронки обновлён')
   }
 
   async function patchOpportunityMarketing(opportunityId, payload) {
     const contactId = selectedContact?.contact?.id
+    setSelectedContact(current => current ? {
+      ...current,
+      opportunities: (current.opportunities || []).map(item => item.id === opportunityId ? { ...item, ...payload } : item),
+    } : current)
     await api(`/api/admin/opportunities/${opportunityId}/marketing`, { token, method: 'PATCH', body: payload })
     if (contactId) await selectContact(contactId)
     setSuccess('Маркетинговые данные сделки обновлены')
@@ -1815,12 +1830,13 @@ export function AdminView({ token }) {
                     <div className="contacts-table-scroll">
                       <table className="contacts-table">
                         <thead>
-                          <tr><th>Клиент</th><th>Телефон</th><th>Telegram</th><th>Этап</th><th>Направление</th><th>Сделки</th></tr>
+                          <tr><th>Клиент</th><th>Тип</th><th>Телефон</th><th>Telegram</th><th>Этап</th><th>Направление</th><th>Сделки</th></tr>
                         </thead>
                         <tbody>
                           {contacts.map(contact => (
                             <tr key={contact.id} className={selectedContact?.contact?.id === contact.id ? 'selected' : ''} onClick={() => selectContact(contact.id).catch(e => setError(normalizeErrorMessage(e.message || e)))}>
                               <td><strong>{contact.full_name}</strong></td>
+                              <td><span className={`contact-badge ${contact.client_type === 'student' ? 'student' : 'lead'}`}>{CLIENT_TYPE_LABELS[contact.client_type] || 'Лид'}</span></td>
                               <td>{contact.telephone || '—'}</td>
                               <td>{contact.telegram_username ? `@${contact.telegram_username}` : (contact.telegram_id || '—')}</td>
                               <td><span className={`contact-badge ${contact.current_stage === 'won' ? 'student' : 'lead'}`}>{funnelStageLabel(contact.current_stage, funnelStages)}</span></td>
@@ -1866,7 +1882,7 @@ export function AdminView({ token }) {
                 <aside className="contact-side-panel">
                     <div className="contact-panel-head">
                       <div><small>Карточка клиента</small><h2>{selectedContact.contact?.full_name || 'Без имени'}</h2></div>
-                      <div className="contact-panel-actions"><span className={`contact-badge ${selectedContact.contact?.is_student ? 'student' : 'lead'}`}>{selectedContact.contact?.is_student ? 'Ученик' : 'Лид'}</span><button className="contact-panel-close" onClick={() => setSelectedContact(null)} aria-label="Закрыть карточку клиента">×</button></div>
+                      <div className="contact-panel-actions"><span className={`contact-badge ${selectedContact.contact?.client_type === 'student' ? 'student' : 'lead'}`}>{CLIENT_TYPE_LABELS[selectedContact.contact?.client_type] || 'Лид'}</span><button className="contact-panel-close" onClick={() => setSelectedContact(null)} aria-label="Закрыть карточку клиента">×</button></div>
                     </div>
                     <div className="contact-edit-form">
                       <label>Имя<input className="input" value={contactEdit.first_name} onChange={e => setContactEdit(value => ({ ...value, first_name: e.target.value }))} /></label>

@@ -9,16 +9,18 @@ _db_file.close()
 os.environ["DB_PATH"] = _db_file.name
 os.environ.pop("DATABASE_URL", None)
 
-from sqlalchemy import delete  # noqa: E402
+from sqlalchemy import delete, func, select  # noqa: E402
 
 from database import transactions  # noqa: E402
 from database.connect import remove_session, session  # noqa: E402
 from database.models import (  # noqa: E402
     AnalyticsEvent,
+    Contact,
     Payment,
     RecordDate,
     RegularLesson,
     StudentProfile,
+    TelegramIdentity,
 )
 
 
@@ -27,7 +29,7 @@ class CanonicalLessonPaymentTest(unittest.IsolatedAsyncioTestCase):
 
     async def asyncSetUp(self) -> None:
         await transactions.init_db()
-        for model in (AnalyticsEvent, Payment, RecordDate, RegularLesson, StudentProfile):
+        for model in (AnalyticsEvent, Payment, RecordDate, RegularLesson, TelegramIdentity, StudentProfile, Contact):
             await session.execute(delete(model))
         await session.commit()
         session.add(
@@ -39,6 +41,38 @@ class CanonicalLessonPaymentTest(unittest.IsolatedAsyncioTestCase):
             )
         )
         await session.commit()
+
+    async def test_completed_profile_is_idempotently_linked_to_crm_contact(self) -> None:
+        profile = await session.get(StudentProfile, self.telegram_id)
+        profile.first_name = "Максим"
+        profile.last_name = "Филиппов"
+        profile.telephone = "89267557900"
+        profile.telegram_username = "Filippovms"
+
+        first = await transactions.ensure_canonical_contact_for_profile(profile)
+        second = await transactions.ensure_canonical_contact_for_profile(profile)
+        await session.commit()
+
+        self.assertEqual(first.id, second.id)
+        self.assertEqual(profile.contact_id, first.id)
+        self.assertEqual(first.status, "lead")
+        identity = (
+            await session.execute(
+                select(TelegramIdentity).where(TelegramIdentity.telegram_id == self.telegram_id)
+            )
+        ).scalar_one()
+        self.assertEqual(identity.contact_id, first.id)
+        contacts_count = (await session.execute(select(func.count(Contact.id)))).scalar_one()
+        self.assertEqual(contacts_count, 1)
+
+        record_id = await transactions.add_pending_single_slot(
+            self.telegram_id,
+            datetime.date.today() + datetime.timedelta(days=3),
+            21,
+            30,
+        )
+        record = await session.get(RecordDate, record_id)
+        self.assertEqual(record.contact_id, first.id)
 
     async def asyncTearDown(self) -> None:
         await remove_session()
