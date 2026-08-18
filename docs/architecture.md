@@ -70,6 +70,22 @@ Contact → Opportunity → Student profile → RecordDate ← Payment → LTV
                     ↘ source / campaign / marketing spend
 ```
 
+Точное размещение маркетинговой ссылки хранится отдельно от кампании:
+
+```text
+MarketingSource → MarketingCampaign → MarketingTrackingLink
+                                      ↓
+                              WebAnalyticsEvent
+                                      ↓ visitor_id
+                              Contact → Opportunity → Payment
+```
+
+`GET /r/{public_token}` фиксирует открытие до загрузки клиентского JavaScript
+и делает redirect только на разрешённый внутренний маршрут. `tracking_ref`
+передаётся между частями лид-магнита и в форму; backend разрешает токен в
+`tracking_link_id` и канонический `campaign_id`. Ссылка обозначает размещение,
+а не гарантированную личность посетителя.
+
 `contacts` — один человек; Telegram — опциональная identity; `opportunities` —
 коммерческая работа; уроки и платежи связаны с тем же `contact_id`. Имя,
 телефон и Telegram ID не должны копироваться в новые сущности.

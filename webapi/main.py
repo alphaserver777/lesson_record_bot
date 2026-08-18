@@ -9,13 +9,14 @@ import os
 import re
 import time
 from decimal import Decimal, InvalidOperation
+from urllib.parse import urlencode
 from uuid import uuid4
 from typing import Any
 
 from aiogram.exceptions import TelegramBadRequest
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request
-from fastapi.responses import PlainTextResponse
+from fastapi.responses import PlainTextResponse, RedirectResponse
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import func, or_, select, text, update
 from sqlalchemy.exc import IntegrityError
@@ -30,7 +31,7 @@ from database.connect import (
     rollback_session,
     session,
 )
-from database.models import Contact, FunnelStage, ManualWorkLog, MarketingCampaign, MarketingCampaignMetric, MarketingExpense, MarketingSource, Opportunity, OpportunityStageEvent, Payment, RecordDate, ReviewBookingRequest, StudentProfile, TelegramIdentity, TestDriveEnrollment, WebAnalyticsEvent
+from database.models import Contact, FunnelStage, ManualWorkLog, MarketingCampaign, MarketingCampaignMetric, MarketingExpense, MarketingSource, MarketingTrackingLink, Opportunity, OpportunityStageEvent, Payment, RecordDate, ReviewBookingRequest, StudentProfile, TelegramIdentity, TestDriveEnrollment, WebAnalyticsEvent
 from loader import bot
 from utils.calendar_backend import get_busy_intervals, get_calendar_tz
 from utils.schedule import WEEK_SCHEDULE, is_time_in_schedule, refresh_schedule_cache, slots_for_date
@@ -68,6 +69,8 @@ from webapi.schemas import (
     MarketingCampaignPatchIn,
     MarketingCampaignMetricsIn,
     MarketingExpenseIn,
+    MarketingTrackingLinkIn,
+    MarketingTrackingLinkPatchIn,
     ManualWorkLogIn,
     OpportunityMarketingPatchIn,
     PublicAnalyticsEventIn,
@@ -106,6 +109,11 @@ PRODAMUS_SECRET_KEY = os.getenv("PRODAMUS_SECRET_KEY", "").strip()
 PRODAMUS_DEMO_MODE = os.getenv("PRODAMUS_DEMO_MODE", "0").strip().lower() in {"1", "true", "yes", "on"}
 PRODAMUS_SUCCESS_URL = os.getenv("PRODAMUS_SUCCESS_URL", "https://professorit.ru/payment/success/").strip()
 PRODAMUS_FAIL_URL = os.getenv("PRODAMUS_FAIL_URL", "https://professorit.ru/payment/failed/").strip()
+PUBLIC_MARKETING_URL = os.getenv("PUBLIC_MARKETING_URL", "https://professorit.ru").strip().rstrip("/")
+TRACKING_DESTINATIONS = {
+    "it_map": "/guide/kak-voiti-v-it/",
+    "home": "/",
+}
 
 app.add_middleware(
     CORSMiddleware,
@@ -853,8 +861,22 @@ async def public_create_test_drive(
 
     phone = _normalize_phone(payload.telephone)
     now = _iso_utc_now()
-    campaign = await session.get(MarketingCampaign, payload.campaign_id) if payload.campaign_id else None
+    tracking_link = None
+    if payload.tracking_token:
+        tracking_link = (
+            await session.execute(
+                select(MarketingTrackingLink).where(MarketingTrackingLink.public_token == payload.tracking_token)
+            )
+        ).scalar_one_or_none()
+    campaign = (
+        await session.get(MarketingCampaign, tracking_link.campaign_id)
+        if tracking_link
+        else await session.get(MarketingCampaign, payload.campaign_id) if payload.campaign_id else None
+    )
     source_key = campaign.source_key if campaign else _source_key_from_utm(payload.utm_source)
+    utm_medium = "tracked_link" if tracking_link else payload.utm_medium
+    utm_campaign = campaign.name if campaign else payload.utm_campaign
+    utm_content = "tracked_link" if tracking_link else payload.utm_content
     if await session.get(MarketingSource, source_key) is None:
         source_key = "unknown"
     contact = (
@@ -900,9 +922,9 @@ async def public_create_test_drive(
     opportunity = Opportunity(
         contact_id=contact.id,
         source=source_key,
-        utm_medium=payload.utm_medium,
-        utm_campaign=campaign.name if campaign else payload.utm_campaign,
-        utm_content=payload.utm_content,
+        utm_medium=utm_medium,
+        utm_campaign=utm_campaign,
+        utm_content=utm_content,
         direction=payload.persona,
         goal=payload.goal,
         student_level=payload.student_level,
@@ -1148,6 +1170,17 @@ async def public_prodamus_webhook(request: Request) -> PlainTextResponse:
         opportunity.paid_amount = enrollment.price_amount
     opportunity.updated_at = now
     provider_order_id = str(payload.get("order_id") or payload.get("order_num") or enrollment.id)
+    tracking_link_id = (
+        await session.execute(
+            select(WebAnalyticsEvent.tracking_link_id)
+            .where(
+                WebAnalyticsEvent.opportunity_id == opportunity.id,
+                WebAnalyticsEvent.tracking_link_id.is_not(None),
+            )
+            .order_by(WebAnalyticsEvent.id)
+            .limit(1)
+        )
+    ).scalar_one_or_none()
     session.add(
         WebAnalyticsEvent(
             event_id=f"prodamus:{provider_order_id}"[:80],
@@ -1160,6 +1193,8 @@ async def public_prodamus_webhook(request: Request) -> PlainTextResponse:
             utm_medium=opportunity.utm_medium,
             utm_campaign=opportunity.utm_campaign,
             utm_content=opportunity.utm_content,
+            campaign_id=contact.acquisition_campaign_id,
+            tracking_link_id=tracking_link_id,
             metrica_client_id=opportunity.metrica_client_id,
             meta_json=json.dumps({"provider": "prodamus", "amount": enrollment.price_amount}, ensure_ascii=False),
             created_at=now,
@@ -1293,11 +1328,19 @@ async def public_track_event(payload: PublicAnalyticsEventIn, request: Request) 
         ).scalar_one_or_none()
         if enrollment:
             opportunity = await session.get(Opportunity, enrollment.opportunity_id)
-    resolved_campaign_id = None
-    if payload.campaign_id:
+    tracking_link = None
+    if payload.tracking_token:
+        tracking_link = (
+            await session.execute(
+                select(MarketingTrackingLink).where(MarketingTrackingLink.public_token == payload.tracking_token)
+            )
+        ).scalar_one_or_none()
+    resolved_campaign_id = tracking_link.campaign_id if tracking_link else None
+    if resolved_campaign_id is None and payload.campaign_id:
         resolved_campaign_id = (
             await session.execute(select(MarketingCampaign.id).where(MarketingCampaign.id == payload.campaign_id))
         ).scalar_one_or_none()
+    resolved_campaign = await session.get(MarketingCampaign, resolved_campaign_id) if resolved_campaign_id else None
     session.add(WebAnalyticsEvent(
         event_id=payload.event_id,
         event_type=payload.event_type,
@@ -1305,11 +1348,12 @@ async def public_track_event(payload: PublicAnalyticsEventIn, request: Request) 
         contact_id=enrollment.contact_id if enrollment else None,
         opportunity_id=opportunity.id if opportunity else None,
         path=payload.path,
-        utm_source=payload.utm_source,
-        utm_medium=payload.utm_medium,
-        utm_campaign=payload.utm_campaign,
-        utm_content=payload.utm_content,
+        utm_source=resolved_campaign.source_key if tracking_link and resolved_campaign else payload.utm_source,
+        utm_medium="tracked_link" if tracking_link else payload.utm_medium,
+        utm_campaign=resolved_campaign.name if tracking_link and resolved_campaign else payload.utm_campaign,
+        utm_content="tracked_link" if tracking_link else payload.utm_content,
         campaign_id=resolved_campaign_id,
+        tracking_link_id=tracking_link.id if tracking_link else None,
         metrica_client_id=payload.metrica_client_id,
         meta_json=json.dumps(payload.meta, ensure_ascii=False)[:2000],
         created_at=_iso_utc_now(),
@@ -2257,10 +2301,222 @@ async def admin_patch_opportunity_marketing(opportunity_id: int, payload: Opport
     return {"status": "ok"}
 
 
+def _tracking_link_expired(item: MarketingTrackingLink) -> bool:
+    if not item.expires_at:
+        return False
+    try:
+        expires = datetime.datetime.fromisoformat(item.expires_at.replace("Z", "+00:00"))
+        if expires.tzinfo is None:
+            expires = expires.replace(tzinfo=datetime.timezone.utc)
+        return expires <= datetime.datetime.now(datetime.timezone.utc)
+    except ValueError:
+        return True
+
+
+def _tracking_link_payload(
+    item: MarketingTrackingLink,
+    campaign: MarketingCampaign,
+    events: list[WebAnalyticsEvent] | None = None,
+) -> dict[str, Any]:
+    scoped = events or []
+    unique = lambda event_type: len({event.visitor_id for event in scoped if event.event_type == event_type})
+    part_four = len({
+        event.visitor_id
+        for event in scoped
+        if event.event_type == "longread_view" and (event.path or "").startswith("/guide/kak-voiti-v-it/4")
+    })
+    return {
+        "id": item.id,
+        "public_token": item.public_token,
+        "public_url": f"{PUBLIC_MARKETING_URL}/r/{item.public_token}",
+        "campaign_id": item.campaign_id,
+        "campaign_name": campaign.name,
+        "source_key": campaign.source_key,
+        "destination_key": item.destination_key,
+        "destination_path": item.destination_path,
+        "label": item.label,
+        "note": item.note,
+        "is_active": bool(item.is_active),
+        "is_expired": _tracking_link_expired(item),
+        "expires_at": item.expires_at,
+        "created_at": item.created_at,
+        "updated_at": item.updated_at,
+        "stats": {
+            "opens": sum(event.event_type == "tracking_link_opened" for event in scoped),
+            "visitors": len({event.visitor_id for event in scoped}),
+            "part_four": part_four,
+            "completed": unique("longread_completed"),
+            "cta": unique("longread_cta_clicked"),
+            "briefs": unique("brief_submitted"),
+            "payments": unique("payment_confirmed"),
+            "last_activity": max((event.created_at for event in scoped), default=None),
+        },
+    }
+
+
+@app.get("/r/{public_token}")
+async def public_tracking_redirect(public_token: str, request: Request) -> RedirectResponse:
+    _public_request_guard(request, limit=180, window_seconds=60)
+    item = (
+        await session.execute(
+            select(MarketingTrackingLink).where(MarketingTrackingLink.public_token == public_token)
+        )
+    ).scalar_one_or_none()
+    fallback = f"{PUBLIC_MARKETING_URL}{TRACKING_DESTINATIONS['it_map']}"
+    if item is None or not item.is_active or _tracking_link_expired(item):
+        return RedirectResponse(fallback, status_code=302, headers={"Cache-Control": "no-store"})
+    campaign = await session.get(MarketingCampaign, item.campaign_id)
+    if campaign is None:
+        return RedirectResponse(fallback, status_code=302, headers={"Cache-Control": "no-store"})
+    visitor_id = request.cookies.get("professorit_visitor_id", "")
+    if not re.fullmatch(r"[A-Za-z0-9._:-]{8,64}", visitor_id):
+        visitor_id = uuid4().hex
+    now = _iso_utc_now()
+    session.add(WebAnalyticsEvent(
+        event_id=f"link:{item.id}:{uuid4().hex}"[:80],
+        event_type="tracking_link_opened",
+        visitor_id=visitor_id,
+        path=item.destination_path,
+        utm_source=campaign.source_key,
+        utm_medium="tracked_link",
+        utm_campaign=campaign.name,
+        utm_content="tracked_link",
+        campaign_id=campaign.id,
+        tracking_link_id=item.id,
+        meta_json=json.dumps({"destination_key": item.destination_key}, ensure_ascii=False),
+        created_at=now,
+    ))
+    await session.commit()
+    query = urlencode({
+        "tracking_ref": item.public_token,
+        "utm_source": campaign.source_key,
+        "utm_medium": "tracked_link",
+        "utm_campaign": campaign.name,
+        "utm_content": "tracked_link",
+        "campaign_id": campaign.id,
+    })
+    response = RedirectResponse(f"{PUBLIC_MARKETING_URL}{item.destination_path}?{query}", status_code=302)
+    response.headers["Cache-Control"] = "no-store"
+    response.set_cookie(
+        "professorit_visitor_id",
+        visitor_id,
+        max_age=60 * 60 * 24 * 365,
+        secure=PUBLIC_MARKETING_URL.startswith("https://"),
+        httponly=False,
+        samesite="lax",
+    )
+    return response
+
+
 @app.get("/api/admin/marketing/sources")
 async def admin_marketing_sources(_: dict[str, Any] = Depends(require_admin)) -> dict[str, Any]:
     items = (await session.execute(select(MarketingSource).order_by(MarketingSource.name))).scalars().all()
     return {"items": [{"key": item.key, "name": item.name, "channel": item.channel, "is_active": bool(item.is_active)} for item in items]}
+
+
+@app.get("/api/admin/marketing/links")
+async def admin_marketing_links(
+    date_from: datetime.date | None = None,
+    date_to: datetime.date | None = None,
+    campaign_id: int | None = None,
+    _: dict[str, Any] = Depends(require_admin),
+) -> dict[str, Any]:
+    statement = select(MarketingTrackingLink, MarketingCampaign).join(
+        MarketingCampaign, MarketingCampaign.id == MarketingTrackingLink.campaign_id
+    ).order_by(MarketingTrackingLink.created_at.desc())
+    if campaign_id is not None:
+        statement = statement.where(MarketingTrackingLink.campaign_id == campaign_id)
+    rows = (await session.execute(statement)).all()
+    link_ids = [item.id for item, _campaign in rows]
+    event_statement = select(WebAnalyticsEvent).where(WebAnalyticsEvent.tracking_link_id.in_(link_ids)) if link_ids else None
+    if event_statement is not None and date_from is not None:
+        event_statement = event_statement.where(WebAnalyticsEvent.created_at >= date_from.isoformat())
+    if event_statement is not None and date_to is not None:
+        event_statement = event_statement.where(
+            WebAnalyticsEvent.created_at < (date_to + datetime.timedelta(days=1)).isoformat()
+        )
+    events = (await session.execute(event_statement)).scalars().all() if event_statement is not None else []
+    events_by_link: dict[int, list[WebAnalyticsEvent]] = {}
+    for event in events:
+        events_by_link.setdefault(int(event.tracking_link_id), []).append(event)
+    return {
+        "items": [
+            _tracking_link_payload(item, campaign, events_by_link.get(item.id, []))
+            for item, campaign in rows
+        ]
+    }
+
+
+@app.post("/api/admin/marketing/links")
+async def admin_create_marketing_link(
+    payload: MarketingTrackingLinkIn,
+    admin: dict[str, Any] = Depends(require_admin),
+) -> dict[str, Any]:
+    campaign = await session.get(MarketingCampaign, payload.campaign_id)
+    if campaign is None:
+        raise HTTPException(status_code=422, detail={"code": "INVALID_CAMPAIGN", "message": "Кампания не найдена"})
+    now = _iso_utc_now()
+    item = MarketingTrackingLink(
+        public_token=uuid4().hex[:16],
+        campaign_id=campaign.id,
+        destination_key=payload.destination_key,
+        destination_path=TRACKING_DESTINATIONS[payload.destination_key],
+        label=payload.label.strip(),
+        note=(payload.note or "").strip() or None,
+        is_active=True,
+        expires_at=payload.expires_at.isoformat() if payload.expires_at else None,
+        created_by=int(admin["sub"]),
+        created_at=now,
+        updated_at=now,
+    )
+    session.add(item)
+    await session.commit()
+    await session.refresh(item)
+    await _audit(int(admin["sub"]), "create", "marketing_tracking_link", {"id": item.id, "campaign_id": campaign.id})
+    return {"item": _tracking_link_payload(item, campaign)}
+
+
+@app.patch("/api/admin/marketing/links/{link_id}")
+async def admin_patch_marketing_link(
+    link_id: int,
+    payload: MarketingTrackingLinkPatchIn,
+    admin: dict[str, Any] = Depends(require_admin),
+) -> dict[str, Any]:
+    item = await session.get(MarketingTrackingLink, link_id)
+    if item is None:
+        raise HTTPException(status_code=404, detail={"code": "NOT_FOUND", "message": "Ссылка не найдена"})
+    updates = payload.model_dump(exclude_unset=True)
+    if "label" in updates:
+        item.label = updates["label"].strip()
+    if "note" in updates:
+        item.note = (updates["note"] or "").strip() or None
+    if "is_active" in updates:
+        item.is_active = updates["is_active"]
+    if "expires_at" in updates:
+        item.expires_at = updates["expires_at"].isoformat() if updates["expires_at"] else None
+    item.updated_at = _iso_utc_now()
+    await session.commit()
+    campaign = await session.get(MarketingCampaign, item.campaign_id)
+    await _audit(int(admin["sub"]), "update", "marketing_tracking_link", {"id": item.id, **payload.model_dump(mode="json", exclude_unset=True)})
+    return {"item": _tracking_link_payload(item, campaign)}
+
+
+@app.get("/api/admin/marketing/links/{link_id}/journeys")
+async def admin_marketing_link_journeys(
+    link_id: int,
+    date_from: datetime.date | None = None,
+    date_to: datetime.date | None = None,
+    _: dict[str, Any] = Depends(require_admin),
+) -> dict[str, Any]:
+    if await session.get(MarketingTrackingLink, link_id) is None:
+        raise HTTPException(status_code=404, detail={"code": "NOT_FOUND", "message": "Ссылка не найдена"})
+    statement = select(WebAnalyticsEvent).where(WebAnalyticsEvent.tracking_link_id == link_id)
+    if date_from is not None:
+        statement = statement.where(WebAnalyticsEvent.created_at >= date_from.isoformat())
+    if date_to is not None:
+        statement = statement.where(WebAnalyticsEvent.created_at < (date_to + datetime.timedelta(days=1)).isoformat())
+    events = (await session.execute(statement.order_by(WebAnalyticsEvent.created_at))).scalars().all()
+    return _longread_report(events)
 
 
 @app.get("/api/admin/marketing/campaigns")
@@ -3740,6 +3996,7 @@ async def analytics_longread(
     date_to: datetime.date,
     source_key: str | None = None,
     campaign_id: int | None = None,
+    tracking_link_id: int | None = None,
     _: dict[str, Any] = Depends(require_admin),
 ) -> dict[str, Any]:
     events = (
@@ -3755,6 +4012,8 @@ async def analytics_longread(
         events = [item for item in events if _source_key_from_utm(item.utm_source) == source_key]
     if campaign_id is not None:
         events = [item for item in events if item.campaign_id == campaign_id]
+    if tracking_link_id is not None:
+        events = [item for item in events if item.tracking_link_id == tracking_link_id]
     return _longread_report(events)
 
 

@@ -79,6 +79,21 @@ function metricValue(value, kind = 'number') {
   return Number(value).toLocaleString('ru-RU')
 }
 
+async function copyText(value) {
+  if (navigator.clipboard?.writeText) {
+    await navigator.clipboard.writeText(value)
+    return
+  }
+  const area = document.createElement('textarea')
+  area.value = value
+  area.style.position = 'fixed'
+  area.style.opacity = '0'
+  document.body.appendChild(area)
+  area.select()
+  document.execCommand('copy')
+  area.remove()
+}
+
 function CampaignFunnel({ stages, onSelect }) {
   const colors = ['#3099e8', '#22b573', '#f5a623', '#ffd238', '#f7c995', '#f3aaa7']
   const totalHeight = 510
@@ -153,6 +168,7 @@ function buildRevenueDonut(items) {
 
 export function AdminView({ token }) {
   const [activeTab, setActiveTab] = useState('records')
+  const [marketingSection, setMarketingSection] = useState('overview')
   const [manageSection, setManageSection] = useState('finance')
   const [error, setError] = useState('')
   const [success, setSuccess] = useState('')
@@ -173,6 +189,7 @@ export function AdminView({ token }) {
   const [websiteFilters, setWebsiteFilters] = useState(() => ({
     date_from: new Date(new Date().getFullYear(), new Date().getMonth(), 1).toISOString().slice(0, 10),
     date_to: new Date().toISOString().slice(0, 10),
+    campaign_id: '', tracking_link_id: '',
   }))
   const [marketingSources, setMarketingSources] = useState([])
   const [marketingCampaigns, setMarketingCampaigns] = useState([])
@@ -188,6 +205,11 @@ export function AdminView({ token }) {
   const [campaignPeriod, setCampaignPeriod] = useState({ active_from: '', active_to: '' })
   const [selectedMarketingCampaignId, setSelectedMarketingCampaignId] = useState('')
   const [selectedFunnelMetric, setSelectedFunnelMetric] = useState(null)
+  const [trackingLinks, setTrackingLinks] = useState([])
+  const [trackingLinksLoading, setTrackingLinksLoading] = useState(false)
+  const [selectedTrackingLink, setSelectedTrackingLink] = useState(null)
+  const [trackingLinkJourneys, setTrackingLinkJourneys] = useState(null)
+  const [trackingLinkForm, setTrackingLinkForm] = useState({ campaign_id: '', destination_key: 'it_map', label: '', note: '', expires_at: '' })
   const [query, setQuery] = useState('')
   const [usersPage, setUsersPage] = useState(1)
   const [users, setUsers] = useState([])
@@ -301,7 +323,6 @@ export function AdminView({ token }) {
     ['manage', 'Управление', '◫'],
     ['analytics', 'Аналитика', '◷'],
     ['marketing', 'Маркетинг', '◒'],
-    ['websites', 'Сайты', '◎'],
   ]
 
   async function loadUsers(page = usersPage, q = query) {
@@ -548,12 +569,61 @@ export function AdminView({ token }) {
   async function loadWebsiteAnalytics() {
     setWebsiteAnalyticsLoading(true)
     try {
-      const params = new URLSearchParams(websiteFilters)
+      const params = new URLSearchParams(Object.entries(websiteFilters).filter(([, value]) => value))
       const report = await api(`/api/admin/analytics/longread?${params}`, { token })
       setLongreadAnalytics(report || null)
     } finally {
       setWebsiteAnalyticsLoading(false)
     }
+  }
+
+  async function loadTrackingLinks() {
+    setTrackingLinksLoading(true)
+    try {
+      const params = new URLSearchParams()
+      params.set('date_from', marketingFilters.date_from)
+      params.set('date_to', marketingFilters.date_to)
+      if (marketingFilters.campaign_id) params.set('campaign_id', marketingFilters.campaign_id)
+      const data = await api(`/api/admin/marketing/links?${params}`, { token })
+      setTrackingLinks(data.items || [])
+    } finally {
+      setTrackingLinksLoading(false)
+    }
+  }
+
+  async function createTrackingLink() {
+    if (!trackingLinkForm.campaign_id || !trackingLinkForm.label.trim()) {
+      setError('Выберите кампанию и укажите название размещения')
+      return
+    }
+    const result = await api('/api/admin/marketing/links', {
+      token,
+      method: 'POST',
+      body: {
+        campaign_id: Number(trackingLinkForm.campaign_id),
+        destination_key: trackingLinkForm.destination_key,
+        label: trackingLinkForm.label.trim(),
+        note: trackingLinkForm.note.trim() || null,
+        expires_at: trackingLinkForm.expires_at ? new Date(trackingLinkForm.expires_at).toISOString() : null,
+      },
+    })
+    setTrackingLinkForm(value => ({ ...value, label: '', note: '', expires_at: '' }))
+    await loadTrackingLinks()
+    if (result.item?.public_url) await copyText(result.item.public_url)
+    setSuccess('Ссылка создана и скопирована')
+  }
+
+  async function patchTrackingLink(linkId, updates) {
+    await api(`/api/admin/marketing/links/${linkId}`, { token, method: 'PATCH', body: updates })
+    await loadTrackingLinks()
+    setSuccess('Ссылка обновлена')
+  }
+
+  async function loadTrackingLinkJourneys(item) {
+    setSelectedTrackingLink(item)
+    const params = new URLSearchParams({ date_from: marketingFilters.date_from, date_to: marketingFilters.date_to })
+    const data = await api(`/api/admin/marketing/links/${item.id}/journeys?${params}`, { token })
+    setTrackingLinkJourneys(data)
   }
 
   async function createMarketingExpense() {
@@ -1138,12 +1208,14 @@ export function AdminView({ token }) {
   useEffect(() => {
     if (activeTab !== 'marketing') return
     loadMarketingAnalytics().catch(e => setError(normalizeErrorMessage(e.message || e)))
-  }, [activeTab])
+    if (marketingSection === 'links' || marketingSection === 'websites') loadTrackingLinks().catch(e => setError(normalizeErrorMessage(e.message || e)))
+    if (marketingSection === 'websites') loadWebsiteAnalytics().catch(e => setError(normalizeErrorMessage(e.message || e)))
+  }, [activeTab, marketingSection])
 
   useEffect(() => {
-    if (activeTab !== 'websites') return
-    loadWebsiteAnalytics().catch(e => setError(normalizeErrorMessage(e.message || e)))
-  }, [activeTab])
+    if (trackingLinkForm.campaign_id || !marketingCampaigns.length) return
+    setTrackingLinkForm(value => ({ ...value, campaign_id: String(marketingCampaigns[0].id) }))
+  }, [marketingCampaigns])
 
   useEffect(() => {
     if (activeTab === 'leads') loadLeads().catch(e => setError(normalizeErrorMessage(e.message || e)))
@@ -2262,12 +2334,53 @@ export function AdminView({ token }) {
           </div>
         ) : null}
 
-        {activeTab === 'websites' ? (
+        {activeTab === 'marketing' ? (
+          <Card title="Маркетинг" subtitle="Одна система: кампании, ссылки, поведение на сайте и продажи">
+            <div className="segmented" role="tablist" aria-label="Раздел маркетинга">
+              <button className={marketingSection === 'overview' ? 'seg active' : 'seg'} onClick={() => setMarketingSection('overview')}>Обзор и кампании</button>
+              <button className={marketingSection === 'links' ? 'seg active' : 'seg'} onClick={() => setMarketingSection('links')}>Ссылки</button>
+              <button className={marketingSection === 'websites' ? 'seg active' : 'seg'} onClick={() => setMarketingSection('websites')}>Поведение на сайте</button>
+            </div>
+          </Card>
+        ) : null}
+
+        {activeTab === 'marketing' && marketingSection === 'links' ? (
+          <div className="stack analytics-stack">
+            <Card title="Создать отслеживаемую ссылку" subtitle="Кампания задаёт источник, ссылка — конкретное размещение">
+              <div className="custom-row">
+                <label>Кампания<select className="input" value={trackingLinkForm.campaign_id} onChange={e => setTrackingLinkForm(value => ({ ...value, campaign_id: e.target.value }))}><option value="">Выберите кампанию</option>{marketingCampaigns.map(item => <option key={item.id} value={String(item.id)}>#{item.id} · {item.name}</option>)}</select></label>
+                <label>Куда ведёт<select className="input" value={trackingLinkForm.destination_key} onChange={e => setTrackingLinkForm(value => ({ ...value, destination_key: e.target.value }))}><option value="it_map">Карта входа в IT</option><option value="home">Главный сайт</option></select></label>
+                <label>Название размещения<input className="input" value={trackingLinkForm.label} onChange={e => setTrackingLinkForm(value => ({ ...value, label: e.target.value }))} placeholder="YouTube · ролик про DevOps" /></label>
+                <label>Отключить после<input className="input" type="datetime-local" value={trackingLinkForm.expires_at} onChange={e => setTrackingLinkForm(value => ({ ...value, expires_at: e.target.value }))} /></label>
+              </div>
+              <textarea className="input" rows={2} value={trackingLinkForm.note} onChange={e => setTrackingLinkForm(value => ({ ...value, note: e.target.value }))} placeholder="Комментарий: где размещена ссылка или кому отправлена" />
+              <button className="btn" style={{ marginTop: 12 }} onClick={() => createTrackingLink().catch(e => setError(normalizeErrorMessage(e.message || e)))}>Создать и скопировать</button>
+            </Card>
+            <Card title="Отслеживаемые ссылки" subtitle="Открытия, чтение, CTA, заявки и оплаты по каждому размещению">
+              <div className="custom-row">
+                <label>Период с<input type="date" className="input" value={marketingFilters.date_from} onChange={e => setMarketingFilters(value => ({ ...value, date_from: e.target.value }))} /></label>
+                <label>по<input type="date" className="input" value={marketingFilters.date_to} onChange={e => setMarketingFilters(value => ({ ...value, date_to: e.target.value }))} /></label>
+                <label>Кампания<select className="input" value={marketingFilters.campaign_id} onChange={e => setMarketingFilters(value => ({ ...value, campaign_id: e.target.value }))}><option value="">Все кампании</option>{marketingCampaigns.map(item => <option key={item.id} value={String(item.id)}>#{item.id} · {item.name}</option>)}</select></label>
+                <button className="btn secondary" onClick={() => loadTrackingLinks().catch(e => setError(normalizeErrorMessage(e.message || e)))}>Обновить</button>
+              </div>
+              {trackingLinksLoading ? <div className="loading">Собираем статистику ссылок...</div> : null}
+              {trackingLinks.length ? <div className="contacts-table-wrap" style={{ marginTop: 14 }}><table className="contacts-table"><thead><tr><th>Размещение</th><th>Кампания</th><th>Ссылка</th><th>Открытия</th><th>Читатели</th><th>Часть 4</th><th>CTA</th><th>Заявки</th><th>Оплаты</th><th>Комментарий</th><th>Действия</th></tr></thead><tbody>{trackingLinks.map(item => <tr key={item.id} className={selectedTrackingLink?.id === item.id ? 'selected' : ''}><td><strong>{item.label}</strong><small>{item.is_expired ? 'Срок истёк' : item.is_active ? 'Активна' : 'Отключена'} · {item.destination_path}</small></td><td>#{item.campaign_id} · {item.campaign_name}</td><td><button className="btn secondary compact" onClick={() => copyText(item.public_url).then(() => setSuccess('Ссылка скопирована')).catch(e => setError(normalizeErrorMessage(e.message || e)))}>Копировать</button></td><td>{item.stats?.opens || 0}</td><td>{item.stats?.visitors || 0}</td><td>{item.stats?.part_four || 0}</td><td>{item.stats?.cta || 0}</td><td>{item.stats?.briefs || 0}</td><td>{item.stats?.payments || 0}</td><td><input className="input" defaultValue={item.note || ''} aria-label={`Комментарий ${item.label}`} onBlur={e => { if (e.target.value !== (item.note || '')) patchTrackingLink(item.id, { note: e.target.value || null }).catch(err => setError(normalizeErrorMessage(err.message || err))) }} /></td><td><div className="custom-row"><button className="btn secondary compact" onClick={() => loadTrackingLinkJourneys(item).catch(e => setError(normalizeErrorMessage(e.message || e)))}>Путь</button><button className="btn secondary compact" onClick={() => patchTrackingLink(item.id, { is_active: !item.is_active }).catch(e => setError(normalizeErrorMessage(e.message || e)))}>{item.is_active ? 'Отключить' : 'Включить'}</button></div></td></tr>)}</tbody></table></div> : <div className="placeholder-box">Ссылок пока нет. Создайте первую для конкретного размещения.</div>}
+            </Card>
+            {selectedTrackingLink ? <Card title={`Путь по ссылке: ${selectedTrackingLink.label}`} subtitle={selectedTrackingLink.public_url}>
+              <div className="analytics-kpi-grid"><div className="analytics-kpi-card"><span>Сессии</span><strong>{trackingLinkJourneys?.summary?.sessions ?? 0}</strong></div><div className="analytics-kpi-card"><span>Читатели</span><strong>{trackingLinkJourneys?.summary?.visitors ?? 0}</strong></div><div className="analytics-kpi-card"><span>Дошли до финала</span><strong>{trackingLinkJourneys?.summary?.completed_series ?? 0}</strong></div><div className="analytics-kpi-card"><span>Нажали CTA</span><strong>{trackingLinkJourneys?.summary?.cta_sessions ?? 0}</strong></div></div>
+              {(trackingLinkJourneys?.sessions || []).length ? <div className="contacts-table-wrap" style={{ marginTop: 14 }}><table className="contacts-table"><thead><tr><th>Начало</th><th>Путь</th><th>Результат</th><th>Активное время</th></tr></thead><tbody>{trackingLinkJourneys.sessions.map(item => <tr key={item.session_id}><td>{new Date(item.first_seen).toLocaleString('ru-RU')}</td><td>{item.visited_parts.join(' → ')}</td><td>{item.outcome}</td><td>{item.engaged_seconds ? `${item.engaged_seconds} сек.` : `≈ ${item.elapsed_seconds || 0} сек.`}</td></tr>)}</tbody></table></div> : <div className="placeholder-box">По этой ссылке ещё нет чтения длинного материала.</div>}
+            </Card> : null}
+          </div>
+        ) : null}
+
+        {activeTab === 'marketing' && marketingSection === 'websites' ? (
           <div className="stack analytics-stack">
             <Card title="Аналитика сайтов" subtitle="Что читатели открыли, до какой части дошли и где остановились">
               <div className="custom-row">
                 <label>Период с<input type="date" className="input" value={websiteFilters.date_from} onChange={e => setWebsiteFilters(value => ({ ...value, date_from: e.target.value }))} /></label>
                 <label>по<input type="date" className="input" value={websiteFilters.date_to} onChange={e => setWebsiteFilters(value => ({ ...value, date_to: e.target.value }))} /></label>
+                <label>Кампания<select className="input" value={websiteFilters.campaign_id} onChange={e => setWebsiteFilters(value => ({ ...value, campaign_id: e.target.value, tracking_link_id: '' }))}><option value="">Все кампании</option>{marketingCampaigns.map(item => <option key={item.id} value={String(item.id)}>#{item.id} · {item.name}</option>)}</select></label>
+                <label>Ссылка<select className="input" value={websiteFilters.tracking_link_id} onChange={e => setWebsiteFilters(value => ({ ...value, tracking_link_id: e.target.value }))}><option value="">Все ссылки</option>{trackingLinks.filter(item => !websiteFilters.campaign_id || String(item.campaign_id) === String(websiteFilters.campaign_id)).map(item => <option key={item.id} value={String(item.id)}>{item.label}</option>)}</select></label>
                 <button className="btn" onClick={() => loadWebsiteAnalytics().catch(e => setError(normalizeErrorMessage(e.message || e)))}>Обновить</button>
               </div>
               {websiteAnalyticsLoading ? <div className="loading">Собираем путь читателей...</div> : null}
@@ -2288,7 +2401,7 @@ export function AdminView({ token }) {
           </div>
         ) : null}
 
-        {(activeTab === 'analytics' || activeTab === 'marketing') ? (
+        {(activeTab === 'analytics' || (activeTab === 'marketing' && marketingSection === 'overview')) ? (
           <div className="stack analytics-stack">
             {activeTab === 'marketing' ? (
               <>

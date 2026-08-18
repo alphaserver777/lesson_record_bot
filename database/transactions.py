@@ -117,6 +117,26 @@ async def init_db() -> None:
                 text("SELECT pg_advisory_xact_lock(hashtext('canonical_lesson_payment_migration'))")
             )
         await conn.run_sync(Base.metadata.create_all)
+        if engine.dialect.name == "postgresql":
+            await conn.execute(text(
+                "ALTER TABLE web_analytics_events ADD COLUMN IF NOT EXISTS "
+                "tracking_link_id INTEGER REFERENCES marketing_tracking_links(id) ON DELETE SET NULL"
+            ))
+            await conn.execute(text(
+                "CREATE INDEX IF NOT EXISTS ix_web_analytics_events_tracking_link "
+                "ON web_analytics_events(tracking_link_id)"
+            ))
+        else:
+            columns = (await conn.execute(text("PRAGMA table_info(web_analytics_events)"))).all()
+            if "tracking_link_id" not in {str(row[1]) for row in columns}:
+                await conn.execute(text(
+                    "ALTER TABLE web_analytics_events ADD COLUMN tracking_link_id INTEGER "
+                    "REFERENCES marketing_tracking_links(id) ON DELETE SET NULL"
+                ))
+            await conn.execute(text(
+                "CREATE INDEX IF NOT EXISTS ix_web_analytics_events_tracking_link "
+                "ON web_analytics_events(tracking_link_id)"
+            ))
     # SQLite installations before PostgreSQL used additive runtime migrations.
     # PostgreSQL is created from the complete SQLAlchemy schema, so those
     # SQLite-only PRAGMA/ALTER statements must never run there.

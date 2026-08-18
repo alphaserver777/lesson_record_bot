@@ -318,6 +318,7 @@ class WebAnalyticsEvent(Base):
     utm_campaign = Column(String(120), nullable=True)
     utm_content = Column(String(120), nullable=True)
     campaign_id = Column(Integer, ForeignKey("marketing_campaigns.id", ondelete="SET NULL"), nullable=True, index=True)
+    tracking_link_id = Column(Integer, ForeignKey("marketing_tracking_links.id", ondelete="SET NULL"), nullable=True, index=True)
     metrica_client_id = Column(String(64), nullable=True)
     meta_json = Column(String(2000), nullable=True)
     created_at = Column(String(50), nullable=False, index=True)
@@ -344,6 +345,25 @@ class MarketingCampaign(Base):
     active_to = Column(Date, nullable=True, index=True)
     target_action_label = Column(String(100), nullable=False, default="Целевое действие")
     is_active = Column(Boolean, nullable=False, default=True)
+    created_at = Column(String(50), nullable=False)
+    updated_at = Column(String(50), nullable=False)
+
+
+class MarketingTrackingLink(Base):
+    """Opaque public link for one concrete traffic placement."""
+
+    __tablename__ = "marketing_tracking_links"
+
+    id = Column(Integer, primary_key=True)
+    public_token = Column(String(32), nullable=False, unique=True, index=True)
+    campaign_id = Column(Integer, ForeignKey("marketing_campaigns.id", ondelete="RESTRICT"), nullable=False, index=True)
+    destination_key = Column(String(32), nullable=False, default="it_map")
+    destination_path = Column(String(500), nullable=False)
+    label = Column(String(160), nullable=False)
+    note = Column(String(1000), nullable=True)
+    is_active = Column(Boolean, nullable=False, default=True, index=True)
+    expires_at = Column(String(50), nullable=True, index=True)
+    created_by = Column(BigInteger, nullable=True)
     created_at = Column(String(50), nullable=False)
     updated_at = Column(String(50), nullable=False)
 

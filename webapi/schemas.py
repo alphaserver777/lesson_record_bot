@@ -1,7 +1,7 @@
 """Pydantic schemas for web API."""
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, datetime
 from typing import Any
 from pydantic import BaseModel, Field
 
@@ -181,6 +181,21 @@ class MarketingCampaignMetricsIn(BaseModel):
     target_actions: int = Field(default=0, ge=0)
 
 
+class MarketingTrackingLinkIn(BaseModel):
+    campaign_id: int = Field(ge=1)
+    destination_key: str = Field(default="it_map", pattern=r"^(it_map|home)$")
+    label: str = Field(min_length=1, max_length=160)
+    note: str | None = Field(default=None, max_length=1000)
+    expires_at: datetime | None = None
+
+
+class MarketingTrackingLinkPatchIn(BaseModel):
+    label: str | None = Field(default=None, min_length=1, max_length=160)
+    note: str | None = Field(default=None, max_length=1000)
+    is_active: bool | None = None
+    expires_at: datetime | None = None
+
+
 class MarketingExpenseIn(BaseModel):
     spent_at: date
     amount: int = Field(gt=0)
@@ -323,6 +338,7 @@ class PublicBriefIn(BaseModel):
     utm_campaign: str | None = Field(default=None, max_length=120)
     utm_content: str | None = Field(default=None, max_length=120)
     campaign_id: int | None = Field(default=None, ge=1)
+    tracking_token: str | None = Field(default=None, min_length=8, max_length=32, pattern=r"^[A-Za-z0-9_-]+$")
 
 
 class PublicReviewBookingIn(BaseModel):
@@ -334,7 +350,7 @@ class PublicReviewBookingIn(BaseModel):
 
 class PublicAnalyticsEventIn(BaseModel):
     event_id: str = Field(min_length=8, max_length=80)
-    event_type: str = Field(pattern=r"^(landing_view|persona_selected|checkout_started|brief_started|brief_step_completed|brief_submitted|checkout_contact_channel_clicked|payment_confirmed|quest_opened|quest_submitted|slots_viewed|review_requested|review_confirmed|mentorship_offered|mentorship_won|longread_view|longread_25|longread_50|longread_75|longread_100|longread_engaged|longread_part_completed|longread_completed|longread_next_clicked|longread_cta_clicked|profession_interest_clicked)$")
+    event_type: str = Field(pattern=r"^(tracking_link_opened|landing_view|persona_selected|checkout_started|brief_started|brief_step_completed|brief_submitted|checkout_contact_channel_clicked|payment_confirmed|quest_opened|quest_submitted|slots_viewed|review_requested|review_confirmed|mentorship_offered|mentorship_won|longread_view|longread_25|longread_50|longread_75|longread_100|longread_engaged|longread_part_completed|longread_completed|longread_next_clicked|longread_cta_clicked|profession_interest_clicked)$")
     visitor_id: str = Field(min_length=8, max_length=64)
     brief_token: str | None = Field(default=None, max_length=64)
     path: str | None = Field(default=None, max_length=500)
@@ -343,6 +359,7 @@ class PublicAnalyticsEventIn(BaseModel):
     utm_campaign: str | None = Field(default=None, max_length=120)
     utm_content: str | None = Field(default=None, max_length=120)
     campaign_id: int | None = Field(default=None, ge=1)
+    tracking_token: str | None = Field(default=None, min_length=8, max_length=32, pattern=r"^[A-Za-z0-9_-]+$")
     metrica_client_id: str | None = Field(default=None, max_length=64)
     meta: dict[str, Any] = Field(default_factory=dict)
 
