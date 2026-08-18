@@ -1629,7 +1629,7 @@ def _contact_out(
         "balance_lessons": int(profile.balance_lessons or 0) if profile else 0,
         "price": int(profile.price or 0) if profile else 0,
         "opportunities_count": int(opportunities_count or 0),
-        "current_stage": current_stage or ("won" if profile is not None else "new"),
+        "current_stage": current_stage or ("won" if client_type == "student" else "new"),
         "current_source": current_source,
         "created_at": contact.created_at,
         "updated_at": contact.updated_at,
