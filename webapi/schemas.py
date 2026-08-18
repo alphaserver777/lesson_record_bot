@@ -170,9 +170,12 @@ class MarketingCampaignIn(BaseModel):
 
 
 class MarketingCampaignPatchIn(BaseModel):
+    source_key: str | None = Field(default=None, min_length=1, max_length=80)
+    name: str | None = Field(default=None, min_length=1, max_length=120)
     active_from: date | None = None
     active_to: date | None = None
     target_action_label: str | None = Field(default=None, min_length=1, max_length=100)
+    is_active: bool | None = None
 
 
 class MarketingCampaignMetricsIn(BaseModel):

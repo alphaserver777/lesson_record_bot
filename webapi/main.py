@@ -2521,7 +2521,7 @@ async def admin_marketing_link_journeys(
 
 @app.get("/api/admin/marketing/campaigns")
 async def admin_marketing_campaigns(source_key: str | None = None, _: dict[str, Any] = Depends(require_admin)) -> dict[str, Any]:
-    statement = select(MarketingCampaign).order_by(MarketingCampaign.source_key, MarketingCampaign.name)
+    statement = select(MarketingCampaign).order_by(MarketingCampaign.is_active.desc(), MarketingCampaign.source_key, MarketingCampaign.name)
     if source_key:
         statement = statement.where(MarketingCampaign.source_key == source_key)
     items = (await session.execute(statement)).scalars().all()
@@ -2532,6 +2532,8 @@ async def admin_marketing_campaigns(source_key: str | None = None, _: dict[str, 
 async def admin_create_marketing_campaign(payload: MarketingCampaignIn, admin: dict[str, Any] = Depends(require_admin)) -> dict[str, Any]:
     if await session.get(MarketingSource, payload.source_key) is None:
         raise HTTPException(status_code=422, detail={"code": "INVALID_SOURCE", "message": "Источник не найден"})
+    if payload.active_from and payload.active_to and payload.active_from > payload.active_to:
+        raise HTTPException(status_code=422, detail={"code": "INVALID_PERIOD", "message": "Дата окончания не может быть раньше даты запуска"})
     now = datetime.datetime.now(datetime.timezone.utc).isoformat()
     item = MarketingCampaign(source_key=payload.source_key, name=payload.name.strip(), active_from=payload.active_from, active_to=payload.active_to, target_action_label=payload.target_action_label.strip(), created_at=now, updated_at=now)
     session.add(item)
@@ -2546,15 +2548,29 @@ async def admin_patch_marketing_campaign(campaign_id: int, payload: MarketingCam
     item = await session.get(MarketingCampaign, campaign_id)
     if item is None:
         raise HTTPException(status_code=404, detail={"code": "NOT_FOUND", "message": "Кампания не найдена"})
-    if payload.active_from and payload.active_to and payload.active_from > payload.active_to:
+    changes = payload.model_dump(exclude_unset=True)
+    next_active_from = changes.get("active_from", item.active_from)
+    next_active_to = changes.get("active_to", item.active_to)
+    if next_active_from and next_active_to and next_active_from > next_active_to:
         raise HTTPException(status_code=422, detail={"code": "INVALID_PERIOD", "message": "Дата окончания не может быть раньше даты запуска"})
-    item.active_from, item.active_to = payload.active_from, payload.active_to
-    if payload.target_action_label is not None:
+    if "source_key" in changes:
+        if await session.get(MarketingSource, payload.source_key) is None:
+            raise HTTPException(status_code=422, detail={"code": "INVALID_SOURCE", "message": "Источник не найден"})
+        item.source_key = payload.source_key
+    if "name" in changes:
+        item.name = payload.name.strip()
+    if "active_from" in changes:
+        item.active_from = payload.active_from
+    if "active_to" in changes:
+        item.active_to = payload.active_to
+    if "target_action_label" in changes:
         item.target_action_label = payload.target_action_label.strip()
+    if "is_active" in changes:
+        item.is_active = payload.is_active
     item.updated_at = datetime.datetime.now(datetime.timezone.utc).isoformat()
     await session.commit()
-    await _audit(int(admin["sub"]), "update", "marketing_campaign", {"id": item.id, **payload.model_dump(mode="json")})
-    return {"item": {"id": item.id, "active_from": item.active_from.isoformat() if item.active_from else None, "active_to": item.active_to.isoformat() if item.active_to else None, "target_action_label": item.target_action_label}}
+    await _audit(int(admin["sub"]), "update", "marketing_campaign", {"id": item.id, **payload.model_dump(mode="json", exclude_unset=True)})
+    return {"item": {"id": item.id, "source_key": item.source_key, "name": item.name, "active_from": item.active_from.isoformat() if item.active_from else None, "active_to": item.active_to.isoformat() if item.active_to else None, "target_action_label": item.target_action_label, "is_active": bool(item.is_active)}}
 
 
 @app.put("/api/admin/marketing/campaigns/{campaign_id}/metrics")
@@ -4151,6 +4167,15 @@ async def analytics_marketing(
     rows = []
     row_keys = {(item.acquisition_source or "unknown", item.acquisition_campaign or None, item.acquisition_campaign_id) for item in scoped_contacts}
     row_keys |= {(item.source_key, campaign_names.get(item.campaign_id), item.campaign_id) for item in exp_scoped}
+    # The campaign registry must also contain newly created and archived
+    # campaigns with zero activity in the selected reporting period.
+    row_keys |= {
+        (item.source_key, item.name, item.id)
+        for item in campaigns
+        if (not source_key or item.source_key == source_key)
+        and (campaign_id is None or item.id == campaign_id)
+        and (not campaign or item.name == campaign)
+    }
     for key, campaign_name, campaign_id in sorted(row_keys, key=lambda item: (item[0], item[1] or "")):
         ids = {item.id for item in scoped_contacts if item.acquisition_source == key and item.acquisition_campaign_id == campaign_id}
         # Legacy contacts without an ID are still visible as a separate
@@ -4163,7 +4188,7 @@ async def analytics_marketing(
         ltv = sum(int(item.amount or 0) for item in payments if item.contact_id in ids)
         campaign_item = campaign_meta.get(campaign_id)
         campaign_web_events = [item for item in web_events if item.campaign_id == campaign_id] if campaign_id else []
-        rows.append({"source_key": key, "source_name": source_names.get(key, key), "campaign_id": campaign_id, "campaign_name": campaign_name, "active_from": campaign_item.active_from.isoformat() if campaign_item and campaign_item.active_from else None, "active_to": campaign_item.active_to.isoformat() if campaign_item and campaign_item.active_to else None, "target_action_label": campaign_item.target_action_label if campaign_item else "Целевое действие", "manual_metrics": manual_metrics.get(campaign_id, {}), "longread": web_funnel_for(campaign_web_events), "spend": spend, "leads": len(ids), "qualified": len(contacts_with("qualified", ids)), "diagnostics_scheduled": len(contacts_with("diagnostic_scheduled", ids)), "diagnostics_held": len(contacts_with("diagnostic_held", ids)), "new_clients": len(new_clients), "first_revenue": sum(int(item.amount or 0) for item in new_clients), "cash_revenue": cash, "ltv": ltv, "cpl": ratio(spend, len(ids)), "cac": ratio(spend, len(new_clients)), "roas": ratio(cash, spend), "ltv_cac": ratio(ltv, spend), "romi": romi(cash, spend), "avg_days_to_first_payment": average_sales_cycle(ids)})
+        rows.append({"source_key": key, "source_name": source_names.get(key, key), "campaign_id": campaign_id, "campaign_name": campaign_name, "active_from": campaign_item.active_from.isoformat() if campaign_item and campaign_item.active_from else None, "active_to": campaign_item.active_to.isoformat() if campaign_item and campaign_item.active_to else None, "target_action_label": campaign_item.target_action_label if campaign_item else "Целевое действие", "is_active": bool(campaign_item.is_active) if campaign_item else False, "manual_metrics": manual_metrics.get(campaign_id, {}), "longread": web_funnel_for(campaign_web_events), "spend": spend, "leads": len(ids), "qualified": len(contacts_with("qualified", ids)), "diagnostics_scheduled": len(contacts_with("diagnostic_scheduled", ids)), "diagnostics_held": len(contacts_with("diagnostic_held", ids)), "new_clients": len(new_clients), "first_revenue": sum(int(item.amount or 0) for item in new_clients), "cash_revenue": cash, "ltv": ltv, "cpl": ratio(spend, len(ids)), "cac": ratio(spend, len(new_clients)), "roas": ratio(cash, spend), "ltv_cac": ratio(ltv, spend), "romi": romi(cash, spend), "avg_days_to_first_payment": average_sales_cycle(ids)})
 
     funnel_counts = {
         "qualified": qualified, "diagnostic_scheduled": diagnostics_scheduled, "diagnostic_held": diagnostics_held,

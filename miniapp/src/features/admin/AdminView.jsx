@@ -112,8 +112,10 @@ function CampaignFunnel({ stages, onSelect }) {
   </svg></div>
 }
 
-function CampaignDetail({ campaign, onSavePeriod, onSaveMetrics }) {
+function CampaignDetail({ campaign, sources, onSaveSettings, onSavePeriod, onSaveMetrics, onOpenLinks }) {
   const [selected, setSelected] = useState(null)
+  const [name, setName] = useState(campaign.campaign_name || '')
+  const [sourceKey, setSourceKey] = useState(campaign.source_key || '')
   const [from, setFrom] = useState(campaign.active_from || '')
   const [to, setTo] = useState(campaign.active_to || '')
   const [targetLabel, setTargetLabel] = useState(campaign.target_action_label || 'Целевое действие')
@@ -130,9 +132,21 @@ function CampaignDetail({ campaign, onSavePeriod, onSaveMetrics }) {
     if (selected.metricKey === 'target_actions') await onSavePeriod(campaign.campaign_id, from, to, targetLabel)
   }
   return <Card title={`Кампания #${campaign.campaign_id}: ${campaign.campaign_name}`} subtitle="Реклама → лид → продажа">
+    <div className="campaign-settings-grid">
+      <label>Название<input className="input" value={name} onChange={e => setName(e.target.value)} /></label>
+      <label>Источник<select className="input" value={sourceKey} onChange={e => setSourceKey(e.target.value)}>{sources.map(item => <option key={item.key} value={item.key}>{item.name}</option>)}</select></label>
+      <label>Старт<input className="input" type="date" value={from} onChange={e => setFrom(e.target.value)} /></label>
+      <label>Завершение<input className="input" type="date" value={to} onChange={e => setTo(e.target.value)} /></label>
+      <label>Целевое действие<input className="input" value={targetLabel} onChange={e => setTargetLabel(e.target.value)} /></label>
+    </div>
+    <div className="campaign-actions">
+      <button className="btn" disabled={!name.trim()} onClick={() => onSaveSettings(campaign.campaign_id, { name: name.trim(), source_key: sourceKey, active_from: from || null, active_to: to || null, target_action_label: targetLabel.trim() })}>Сохранить кампанию</button>
+      <button className="btn secondary" onClick={() => onOpenLinks(campaign.campaign_id)}>Открыть ссылки</button>
+      <button className="btn secondary" onClick={() => onSaveSettings(campaign.campaign_id, { is_active: !campaign.is_active })}>{campaign.is_active ? 'В архив' : 'Вернуть в работу'}</button>
+    </div>
     <div className="analytics-kpi-grid">
-      <div className="analytics-kpi-card"><span>Источник</span><strong>{campaign.source_name}</strong><small>Кампания #{campaign.campaign_id}</small></div>
-      <div className="analytics-kpi-card"><span>Период · {status}</span><div className="custom-row"><input className="input" type="date" value={from} onChange={e => setFrom(e.target.value)} aria-label="Запуск" /><input className="input" type="date" value={to} onChange={e => setTo(e.target.value)} aria-label="Остановка" /></div><button className="btn secondary compact" onClick={() => onSavePeriod(campaign.campaign_id, from, to, targetLabel)}>Сохранить период</button></div>
+      <div className="analytics-kpi-card"><span>Статус</span><strong>{campaign.is_active ? status : 'В архиве'}</strong><small>{campaign.source_name} · кампания #{campaign.campaign_id}</small></div>
+      <div className="analytics-kpi-card"><span>Лиды → клиенты</span><strong>{campaign.leads} → {campaign.new_clients}</strong><small>диагностик проведено: {campaign.diagnostics_held}</small></div>
       <div className="analytics-kpi-card"><span>Потраченный бюджет</span><strong>{metricValue(campaign.spend, 'money')}</strong><small>учитывается из расходов</small></div>
       <div className="analytics-kpi-card"><span>Выручка и эффективность</span><strong>{metricValue(campaign.cash_revenue, 'money')}</strong><small>ROAS {metricValue(campaign.roas)} · ROMI {metricValue(campaign.romi, 'percent')} · LTV/CAC {metricValue(campaign.ltv_cac)}</small></div>
     </div>
@@ -203,6 +217,9 @@ export function AdminView({ token }) {
   }))
   const [campaignName, setCampaignName] = useState('')
   const [campaignPeriod, setCampaignPeriod] = useState({ active_from: '', active_to: '' })
+  const [campaignDraft, setCampaignDraft] = useState({ source_key: 'avito', name: '', active_from: '', active_to: '', target_action_label: 'Целевое действие' })
+  const [campaignQuery, setCampaignQuery] = useState('')
+  const [campaignStatus, setCampaignStatus] = useState('active')
   const [selectedMarketingCampaignId, setSelectedMarketingCampaignId] = useState('')
   const [selectedFunnelMetric, setSelectedFunnelMetric] = useState(null)
   const [trackingLinks, setTrackingLinks] = useState([])
@@ -633,13 +650,25 @@ export function AdminView({ token }) {
     setSuccess('Маркетинговый расход добавлен')
   }
 
-  async function createMarketingCampaign() {
-    if (!campaignName.trim()) return
-    await api('/api/admin/marketing/campaigns', { token, method: 'POST', body: { source_key: expenseForm.source_key, name: campaignName.trim(), ...campaignPeriod } })
+  async function createMarketingCampaign(draft = null) {
+    const value = draft || { source_key: expenseForm.source_key, name: campaignName, ...campaignPeriod }
+    if (!value.name?.trim()) {
+      setError('Укажите название кампании')
+      return
+    }
+    const result = await api('/api/admin/marketing/campaigns', { token, method: 'POST', body: { ...value, name: value.name.trim(), active_from: value.active_from || null, active_to: value.active_to || null } })
     setCampaignName('')
     setCampaignPeriod({ active_from: '', active_to: '' })
+    setCampaignDraft(current => ({ ...current, name: '', active_from: '', active_to: '' }))
     await loadMarketingAnalytics()
+    if (result.item?.id) setSelectedMarketingCampaignId(String(result.item.id))
     setSuccess('Кампания добавлена')
+  }
+
+  async function patchMarketingCampaign(campaignId, updates) {
+    await api(`/api/admin/marketing/campaigns/${campaignId}`, { token, method: 'PATCH', body: updates })
+    await loadMarketingAnalytics()
+    setSuccess(updates.is_active === false ? 'Кампания перенесена в архив' : updates.is_active === true ? 'Кампания возвращена в работу' : 'Кампания обновлена')
   }
 
   async function saveCampaignMetrics(campaignId, views, dialogs, targetActions) {
@@ -1216,6 +1245,11 @@ export function AdminView({ token }) {
     if (trackingLinkForm.campaign_id || !marketingCampaigns.length) return
     setTrackingLinkForm(value => ({ ...value, campaign_id: String(marketingCampaigns[0].id) }))
   }, [marketingCampaigns])
+
+  useEffect(() => {
+    if (!marketingSources.length || marketingSources.some(item => item.key === campaignDraft.source_key)) return
+    setCampaignDraft(value => ({ ...value, source_key: marketingSources[0].key }))
+  }, [marketingSources])
 
   useEffect(() => {
     if (activeTab === 'leads') loadLeads().catch(e => setError(normalizeErrorMessage(e.message || e)))
@@ -2337,11 +2371,43 @@ export function AdminView({ token }) {
         {activeTab === 'marketing' ? (
           <Card title="Маркетинг" subtitle="Одна система: кампании, ссылки, поведение на сайте и продажи">
             <div className="segmented" role="tablist" aria-label="Раздел маркетинга">
-              <button className={marketingSection === 'overview' ? 'seg active' : 'seg'} onClick={() => setMarketingSection('overview')}>Обзор и кампании</button>
+              <button className={marketingSection === 'overview' ? 'seg active' : 'seg'} onClick={() => setMarketingSection('overview')}>Обзор</button>
+              <button className={marketingSection === 'campaigns' ? 'seg active' : 'seg'} onClick={() => setMarketingSection('campaigns')}>Кампании</button>
               <button className={marketingSection === 'links' ? 'seg active' : 'seg'} onClick={() => setMarketingSection('links')}>Ссылки</button>
               <button className={marketingSection === 'websites' ? 'seg active' : 'seg'} onClick={() => setMarketingSection('websites')}>Поведение на сайте</button>
             </div>
           </Card>
+        ) : null}
+
+        {activeTab === 'marketing' && marketingSection === 'campaigns' ? (
+          <div className="stack analytics-stack">
+            <Card title="Новая кампания" subtitle="Кампания объединяет один канал, одну задачу и все конкретные размещения">
+              <div className="campaign-settings-grid">
+                <label>Источник<select className="input" value={campaignDraft.source_key} onChange={e => setCampaignDraft(value => ({ ...value, source_key: e.target.value }))}>{marketingSources.map(item => <option key={item.key} value={item.key}>{item.name}</option>)}</select></label>
+                <label>Название<input className="input" value={campaignDraft.name} onChange={e => setCampaignDraft(value => ({ ...value, name: e.target.value }))} placeholder="YouTube · Карта входа в IT" /></label>
+                <label>Старт<input className="input" type="date" value={campaignDraft.active_from} onChange={e => setCampaignDraft(value => ({ ...value, active_from: e.target.value }))} /></label>
+                <label>Завершение, если известно<input className="input" type="date" value={campaignDraft.active_to} onChange={e => setCampaignDraft(value => ({ ...value, active_to: e.target.value }))} /></label>
+                <label>Целевое действие<input className="input" value={campaignDraft.target_action_label} onChange={e => setCampaignDraft(value => ({ ...value, target_action_label: e.target.value }))} /></label>
+              </div>
+              <button className="btn" disabled={!campaignDraft.name.trim()} onClick={() => createMarketingCampaign(campaignDraft).catch(e => setError(normalizeErrorMessage(e.message || e)))}>Создать кампанию</button>
+            </Card>
+            <Card title="Реестр кампаний" subtitle="Активные и архивные кампании не смешиваются; результаты считаются за выбранный период">
+              <div className="campaign-registry-toolbar">
+                <input className="input" value={campaignQuery} onChange={e => setCampaignQuery(e.target.value)} placeholder="Найти кампанию или источник" />
+                <div className="segmented" role="group" aria-label="Статус кампаний">
+                  <button className={campaignStatus === 'active' ? 'seg active' : 'seg'} onClick={() => setCampaignStatus('active')}>В работе · {marketingCampaigns.filter(item => item.is_active).length}</button>
+                  <button className={campaignStatus === 'archived' ? 'seg active' : 'seg'} onClick={() => setCampaignStatus('archived')}>Архив · {marketingCampaigns.filter(item => !item.is_active).length}</button>
+                  <button className={campaignStatus === 'all' ? 'seg active' : 'seg'} onClick={() => setCampaignStatus('all')}>Все · {marketingCampaigns.length}</button>
+                </div>
+              </div>
+              {(() => {
+                const query = campaignQuery.trim().toLocaleLowerCase('ru-RU')
+                const rows = (marketingMetrics?.rows || []).filter(row => row.campaign_id && (campaignStatus === 'all' || (campaignStatus === 'active') === Boolean(row.is_active))).filter(row => !query || `${row.campaign_name} ${row.source_name} ${row.campaign_id}`.toLocaleLowerCase('ru-RU').includes(query))
+                return rows.length ? <div className="contacts-table-wrap campaign-table"><table className="contacts-table"><thead><tr><th>Статус</th><th>Кампания</th><th>Источник</th><th>Период</th><th>Расход</th><th>Лиды</th><th>Диагностики</th><th>Клиенты</th><th>Выручка</th><th>ROMI</th></tr></thead><tbody>{rows.map(row => <tr key={row.campaign_id} className={String(row.campaign_id) === String(selectedMarketingCampaignId) ? 'selected' : ''} onClick={() => setSelectedMarketingCampaignId(String(row.campaign_id))}><td><span className={`campaign-status ${row.is_active ? 'active' : 'archived'}`}>{row.is_active ? 'В работе' : 'Архив'}</span></td><td><strong>{row.campaign_name}</strong><small>#{row.campaign_id}</small></td><td>{row.source_name}</td><td>{row.active_from || 'не задан'} → {row.active_to || 'без даты'}</td><td>{metricValue(row.spend, 'money')}</td><td>{row.leads}</td><td>{row.diagnostics_held}</td><td>{row.new_clients}</td><td>{metricValue(row.cash_revenue, 'money')}</td><td>{metricValue(row.romi, 'percent')}</td></tr>)}</tbody></table></div> : <div className="placeholder-box">Кампаний с такими условиями нет.</div>
+              })()}
+            </Card>
+            {(() => { const campaign = (marketingMetrics?.rows || []).find(row => String(row.campaign_id) === String(selectedMarketingCampaignId)); return campaign ? <CampaignDetail key={`${campaign.campaign_id}-${campaign.updated_at || ''}-${campaign.is_active}`} campaign={campaign} sources={marketingSources} onSaveSettings={(id, updates) => patchMarketingCampaign(id, updates).catch(e => setError(normalizeErrorMessage(e.message || e)))} onSavePeriod={saveCampaignPeriod} onSaveMetrics={(id, metrics) => saveCampaignMetrics(id, metrics.views, metrics.dialogs, metrics.target_actions)} onOpenLinks={id => { setMarketingFilters(value => ({ ...value, campaign_id: String(id) })); setTrackingLinkForm(value => ({ ...value, campaign_id: String(id) })); setMarketingSection('links') }} /> : <div className="placeholder-box">Выберите кампанию в реестре, чтобы открыть её карточку.</div> })()}
+          </div>
         ) : null}
 
         {activeTab === 'marketing' && marketingSection === 'links' ? (
