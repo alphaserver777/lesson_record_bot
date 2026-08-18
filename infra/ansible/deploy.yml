@@ -129,3 +129,4 @@
         path: "{{ item.path }}"
         state: absent
       loop: "{{ (runtime_releases.files | sort(attribute='mtime', reverse=true))[releases_to_keep:] }}"
+      when: item.path != release_path
