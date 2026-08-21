@@ -7,6 +7,7 @@ import html
 import json
 import os
 import time
+import uuid
 
 import aiohttp
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
@@ -123,6 +124,24 @@ async def purge_old_events() -> None:
     await session.commit()
 
 
+async def _emit_health_event(event_type: str) -> None:
+    event_id = str(uuid.uuid4())
+    payload = {"event_id": event_id, "event_type": event_type, "occurred_at": datetime.datetime.now(datetime.timezone.utc).isoformat(), "url": "https://academy.professorit.ru"}
+    event = LmsNotificationEvent(event_id=event_id, event_type=event_type, payload_json=json.dumps(payload, ensure_ascii=False), source_ip="192.168.50.111", state="received", created_at=payload["occurred_at"])
+    session.add(event)
+    await session.commit()
+    try:
+        await deliver(payload)
+        event.state = "delivered"
+        event.delivered_at = datetime.datetime.now(datetime.timezone.utc).isoformat()
+    except Exception as exc:  # noqa: BLE001
+        event.state = "failed"
+        event.last_error = str(exc)[:1000]
+        await session.commit()
+        raise
+    await session.commit()
+
+
 _health_failures = 0
 _health_down = False
 
@@ -142,9 +161,9 @@ async def check_lms_health() -> None:
         _health_failures = 0
         if _health_down:
             _health_down = False
-            await deliver({"event_type": "lms.health_recovered", "url": "https://academy.professorit.ru"})
+            await _emit_health_event("lms.health_recovered")
         return
     _health_failures += 1
     if _health_failures >= 3 and not _health_down:
         _health_down = True
-        await deliver({"event_type": "lms.health_failed", "url": "https://academy.professorit.ru"})
+        await _emit_health_event("lms.health_failed")
