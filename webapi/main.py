@@ -42,6 +42,7 @@ from webapi.auth import (
     verify_session_token,
 )
 from webapi.probes import router as probes_router
+from webapi.lms_notifications import router as lms_notifications_router
 from webapi.prodamus import build_payment_url, verify_signature
 from webapi.schemas import (
     AdminBlockCreateIn,
@@ -127,6 +128,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 app.include_router(probes_router)
+app.include_router(lms_notifications_router)
 
 
 @app.middleware("http")

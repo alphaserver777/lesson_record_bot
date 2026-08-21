@@ -473,3 +473,17 @@ class AdminAuditLog(Base):
     entity = Column(String(100), nullable=False)
     payload_json = Column(String, nullable=True)
     created_at = Column(String(50), nullable=False)
+
+
+class LmsNotificationEvent(Base):
+    __tablename__ = "lms_notification_events"
+
+    id = Column(Integer, primary_key=True)
+    event_id = Column(String(100), nullable=False, unique=True, index=True)
+    event_type = Column(String(50), nullable=False)
+    payload_json = Column(String(10000), nullable=False)
+    source_ip = Column(String(64), nullable=False)
+    state = Column(String(20), nullable=False, default="received")
+    last_error = Column(String(1000), nullable=True)
+    created_at = Column(String(50), nullable=False)
+    delivered_at = Column(String(50), nullable=True)
