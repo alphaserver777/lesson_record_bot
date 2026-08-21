@@ -125,3 +125,18 @@ class AnalyticsEvent(Base):
     related_slot_minute = Column(Integer, nullable=True, default=0)
     meta_json = Column(String(2000), nullable=True)
     created_at = Column(String(50), nullable=True)
+
+
+class LmsNotificationEvent(Base):
+    __tablename__ = "lms_notification_events"
+    __table_args__ = {"extend_existing": True}
+
+    id = Column(Integer, primary_key=True)
+    event_id = Column(String(100), nullable=False, unique=True, index=True)
+    event_type = Column(String(50), nullable=False)
+    payload_json = Column(String(10000), nullable=False)
+    source_ip = Column(String(64), nullable=False)
+    state = Column(String(20), nullable=False, default="received")
+    last_error = Column(String(1000), nullable=True)
+    created_at = Column(String(50), nullable=False)
+    delivered_at = Column(String(50), nullable=True)

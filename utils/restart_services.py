@@ -7,6 +7,7 @@ from config_data.config import REMINDER_TIME
 from database import transactions
 from utils.calendar_backend import get_calendar_tz
 from utils.misc.reminder import reminder, reminder_before_delta, send_daily_admin_summary, send_presence_prompts
+from webapi.lms_notifications import check_lms_health, purge_old_events
 
 logger = logging.getLogger(__name__)
 
@@ -40,11 +41,24 @@ async def restarting_services() -> None:
     summary_total_minutes = 9 * 60
     last_daily_summary_date: datetime.date | None = None
     last_daily_presence_date: datetime.date | None = None
+    last_lms_cleanup_date: datetime.date | None = None
 
     while True:
         region_time = datetime.datetime.now(get_calendar_tz())
         current_date = region_time.date()
         current_total_minutes = region_time.hour * 60 + region_time.minute
+
+        try:
+            await check_lms_health()
+        except Exception as exc:  # pylint: disable=broad-except
+            logger.warning("LMS health check warning: %s", exc)
+
+        if last_lms_cleanup_date != current_date:
+            try:
+                await purge_old_events()
+            except Exception as exc:  # pylint: disable=broad-except
+                logger.warning("LMS event cleanup warning: %s", exc)
+            last_lms_cleanup_date = current_date
 
         if last_daily_summary_date != current_date and current_total_minutes >= summary_total_minutes:
             try:

@@ -30,6 +30,7 @@ from utils.calendar_backend import get_busy_intervals, get_calendar_tz
 from utils.schedule import WEEK_SCHEDULE, is_time_in_schedule, slots_for_date
 from webapi.auth import issue_session_token, verify_init_data, verify_session_token
 from webapi.probes import router as probes_router
+from webapi.lms_notifications import router as lms_notifications_router
 from webapi.schemas import (
     AdminBlockCreateIn,
     AdminBlockDeleteIn,
@@ -65,6 +66,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 app.include_router(probes_router)
+app.include_router(lms_notifications_router)
 
 
 @app.middleware("http")
