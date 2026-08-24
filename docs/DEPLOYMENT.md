@@ -1,6 +1,6 @@
 # Production deployment
 
-Актуально на 16 августа 2026 года. Рабочий production-контур находится в
+Актуально на 25 августа 2026 года. Рабочий production-контур находится в
 Ubuntu VM `professorit-web`, VM 201 (`192.168.50.111`) российского
 Proxmox-кластера.
 
@@ -12,6 +12,9 @@ Proxmox-кластера.
 | API кабинета | `professorit-api` | `/srv/professorit-app` |
 | Frontend кабинета | `professorit-frontend` | `/srv/professorit-app` |
 | Telegram-бот | `professorit-bot` | `/srv/professorit-app` |
+
+Текущий релиз: `a09717c`. Атомарная ссылка `/srv/professorit-app/current`
+указывает на `/srv/professorit-app/releases/a09717c`.
 
 Код приложения развёрнут релизами в `/srv/professorit-app`. PostgreSQL `proffessor_it`
 — единственный operational source of truth. SQLite и Germany2 считаются только
@@ -27,8 +30,8 @@ legacy backup-материалами. С 17 августа 2026 года ста�
 Nginx VM в контейнеры frontend/API. Кабинет доступен по `/cabinet/`.
 
 Полная инфраструктурная карта, включая публичный сайт, находится в
-[`PLAN/14-production-infrastructure.md`](../../Marketing_proffessor_it/PLAN/14-production-infrastructure.md)
-в соседнем рабочем репозитории.
+`PLAN/14-production-infrastructure.md` соседнего рабочего репозитория
+`marketing_professorit`.
 
 ## Перед deploy
 

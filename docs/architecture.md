@@ -1,4 +1,4 @@
-# Архитектура Proffessor IT platform
+# Архитектура платформы Professor IT
 
 ## Обзор
 
@@ -26,8 +26,8 @@ Proxmox-контуре.
 
 Публичный TLS и доменные маршруты обслуживает Traefik в CT 202
 `edge-proxy` (`192.168.50.112`).
-Полная схема и путь запросов описаны в
-[`PLAN/14-production-infrastructure.md`](../../Marketing_proffessor_it/PLAN/14-production-infrastructure.md).
+Полная схема и путь запросов описаны в `PLAN/14-production-infrastructure.md`
+соседнего репозитория `marketing_professorit`.
 
 Germany2 — выключенный legacy-контур. Его miniapp/API-контейнеры остановлены,
 SQLite сохранена только для аудита и не является источником runtime-данных.
@@ -45,7 +45,12 @@ SQLite сохранена только для аудита и не являет�
 - reminders и утренняя сводка: `utils/misc/reminder.py`.
 
 Бот не является самостоятельной базой: он работает с той же PostgreSQL, что API
-и админ-панель. В production одновременно разрешён только `cabinet-bot-1`.
+и админ-панель. В production одновременно разрешён только `professorit-bot`.
+
+Закрытый метод `/api/internal/lms/notifications` принимает подписанные события
+LMS о новых и повторных сдачах, утренней сводке и состоянии LMS. Повтор одного
+идентификатора события не создаёт второе сообщение. События и попытки доставки
+сохраняются для аудита.
 
 ### API и frontend
 
