@@ -180,6 +180,17 @@ async def init_db() -> None:
             )
         await conn.run_sync(Base.metadata.create_all)
         if engine.dialect.name == "postgresql":
+            await conn.execute(text("ALTER TABLE contacts ADD COLUMN IF NOT EXISTS email VARCHAR(255)"))
+            await conn.execute(text("CREATE INDEX IF NOT EXISTS ix_contacts_email ON contacts(email)"))
+            await conn.execute(text(
+                "ALTER TABLE student_profiles ADD COLUMN IF NOT EXISTS "
+                "name_locked BOOLEAN NOT NULL DEFAULT FALSE"
+            ))
+            await conn.execute(text(
+                "UPDATE student_profiles SET name_locked = TRUE "
+                "WHERE name_locked = FALSE AND first_name IS NOT NULL "
+                "AND last_name IS NOT NULL AND telephone IS NOT NULL"
+            ))
             await conn.execute(text(
                 "ALTER TABLE web_analytics_events ADD COLUMN IF NOT EXISTS "
                 "tracking_link_id INTEGER REFERENCES marketing_tracking_links(id) ON DELETE SET NULL"
@@ -189,6 +200,19 @@ async def init_db() -> None:
                 "ON web_analytics_events(tracking_link_id)"
             ))
         else:
+            contact_columns = (await conn.execute(text("PRAGMA table_info(contacts)"))).all()
+            if "email" not in {row[1] for row in contact_columns}:
+                await conn.execute(text("ALTER TABLE contacts ADD COLUMN email VARCHAR(255)"))
+            profile_columns = (await conn.execute(text("PRAGMA table_info(student_profiles)"))).all()
+            if "name_locked" not in {row[1] for row in profile_columns}:
+                await conn.execute(text(
+                    "ALTER TABLE student_profiles ADD COLUMN name_locked BOOLEAN NOT NULL DEFAULT 0"
+                ))
+            await conn.execute(text(
+                "UPDATE student_profiles SET name_locked = 1 "
+                "WHERE name_locked = 0 AND first_name IS NOT NULL "
+                "AND last_name IS NOT NULL AND telephone IS NOT NULL"
+            ))
             columns = (await conn.execute(text("PRAGMA table_info(web_analytics_events)"))).all()
             if "tracking_link_id" not in {str(row[1]) for row in columns}:
                 await conn.execute(text(
@@ -1001,6 +1025,7 @@ async def upsert_student_profile(
     notes: str | None = None,
     telephone: str | None = None,
     balance_lessons: int | None = None,
+    allow_locked_name_update: bool = False,
 ) -> StudentProfile:
     """
     Создает профиль студента, если его нет, или обновляет переданные поля.
@@ -1010,6 +1035,11 @@ async def upsert_student_profile(
     if profile is None:
         profile = StudentProfile(telegram_id=telegram_id)
         session.add(profile)
+
+    if profile.name_locked and not allow_locked_name_update:
+        full_name = None
+        first_name = None
+        last_name = None
 
     if full_name is not None:
         profile.full_name = full_name

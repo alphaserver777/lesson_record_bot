@@ -31,7 +31,7 @@ from database.connect import (
     rollback_session,
     session,
 )
-from database.models import Contact, FunnelStage, ManualWorkLog, MarketingCampaign, MarketingCampaignMetric, MarketingExpense, MarketingSource, MarketingTrackingLink, Opportunity, OpportunityStageEvent, Payment, RecordDate, ReviewBookingRequest, StudentProfile, TelegramIdentity, TestDriveEnrollment, WebAnalyticsEvent
+from database.models import Contact, ExternalIdentity, FunnelStage, ManualWorkLog, MarketingCampaign, MarketingCampaignMetric, MarketingExpense, MarketingSource, MarketingTrackingLink, Opportunity, OpportunityStageEvent, Payment, RecordDate, ReviewBookingRequest, StudentProfile, TelegramIdentity, TestDriveEnrollment, WebAnalyticsEvent
 from loader import bot
 from utils.calendar_backend import get_busy_intervals, get_calendar_tz
 from utils.schedule import WEEK_SCHEDULE, is_time_in_schedule, refresh_schedule_cache, slots_for_date
@@ -57,6 +57,7 @@ from webapi.schemas import (
     ContactPrepaymentIn,
     ContactPatchIn,
     ContactFunnelStageIn,
+    ExternalIdentityIn,
     LessonCloseIn,
     LessonCloseBulkIn,
     FunnelStageCreateIn,
@@ -603,10 +604,11 @@ async def auth_telegram_login_widget(payload: TelegramWidgetAuthIn) -> dict[str,
         data = verify_login_widget_data(payload.model_dump())
     except (KeyError, ValueError) as exc:
         raise HTTPException(status_code=401, detail=f"auth failed: {exc}") from exc
+    existing_profile = await transactions.get_student_profile(data["telegram_id"])
     await transactions.upsert_student_profile(
         telegram_id=data["telegram_id"],
-        first_name=data.get("first_name"),
-        last_name=data.get("last_name"),
+        first_name=data.get("first_name") if not existing_profile or not existing_profile.name_locked else None,
+        last_name=data.get("last_name") if not existing_profile or not existing_profile.name_locked else None,
         username=data.get("username") or None,
     )
     await transactions.update_visit_date(data["telegram_id"])
@@ -639,6 +641,7 @@ async def me(user: dict[str, Any] = Depends(get_current_user)) -> dict[str, Any]
             "price": profile.price if profile else None,
             "balance_lessons": profile.balance_lessons if profile else 0,
             "profile_completed": bool(profile and profile.first_name and profile.last_name and profile.telephone),
+            "name_locked": bool(profile and profile.name_locked),
         },
     }
 
@@ -646,12 +649,22 @@ async def me(user: dict[str, Any] = Depends(get_current_user)) -> dict[str, Any]
 @app.post("/api/user/profile")
 async def user_profile_upsert(payload: UserProfileIn, user: dict[str, Any] = Depends(get_current_user)) -> dict[str, Any]:
     telegram_id = int(user["sub"])
+    existing_profile = await transactions.get_student_profile(telegram_id)
+    if existing_profile and existing_profile.name_locked:
+        incoming_first = payload.first_name.strip()
+        incoming_last = payload.last_name.strip()
+        if incoming_first != (existing_profile.first_name or "").strip() or incoming_last != (existing_profile.last_name or "").strip():
+            raise HTTPException(
+                status_code=409,
+                detail={"code": "NAME_LOCKED", "message": "Имя и фамилию после регистрации может изменить только администратор"},
+            )
     profile = await transactions.upsert_student_profile(
         telegram_id=telegram_id,
         first_name=payload.first_name,
         last_name=payload.last_name,
         telephone=payload.telephone,
     )
+    profile.name_locked = True
     identity = (
         await session.execute(select(TelegramIdentity).where(TelegramIdentity.telegram_id == telegram_id))
     ).scalar_one_or_none()
@@ -672,6 +685,7 @@ async def user_profile_upsert(payload: UserProfileIn, user: dict[str, Any] = Dep
             "username": profile.telegram_username,
             "telephone": profile.telephone,
             "profile_completed": bool(profile.first_name and profile.last_name and profile.telephone),
+            "name_locked": True,
         },
     }
 
@@ -1516,7 +1530,11 @@ async def admin_patch_user(
     if payload.balance_lessons_set is not None:
         updates["balance_lessons"] = payload.balance_lessons_set
     if updates:
-        await transactions.upsert_student_profile(telegram_id=target_telegram_id, **updates)
+        await transactions.upsert_student_profile(
+            telegram_id=target_telegram_id,
+            allow_locked_name_update=True,
+            **updates,
+        )
 
     if payload.balance_lessons_add is not None:
         await transactions.change_balance(target_telegram_id, payload.balance_lessons_add)
@@ -1661,6 +1679,7 @@ def _contact_out(
         "first_name": contact.first_name,
         "last_name": contact.last_name,
         "telephone": contact.telephone,
+        "email": contact.email,
         "status": contact.status,
         "is_archived": bool(contact.is_archived),
         "preferred_channel": contact.preferred_channel,
@@ -1730,6 +1749,7 @@ async def admin_list_contacts(
             Contact.first_name.ilike(pattern),
             Contact.last_name.ilike(pattern),
             Contact.telephone.ilike(pattern),
+            Contact.email.ilike(pattern),
             TelegramIdentity.username.ilike(pattern),
         ))
     rows = (await session.execute(stmt)).all()
@@ -1789,6 +1809,13 @@ async def admin_contact_detail(contact_id: int, _: dict[str, Any] = Depends(requ
         payments = [{"date": str(item[0]), "amount": int(item[1] or 0), "status": item[2], "source": item[3]} for item in payment_rows.all()]
     paid_total = sum(item["amount"] for item in payments if item["status"] == "paid")
     latest_opportunity = opportunities[0] if opportunities else None
+    external_identities = (
+        await session.execute(
+            select(ExternalIdentity)
+            .where(ExternalIdentity.contact_id == contact.id)
+            .order_by(ExternalIdentity.provider)
+        )
+    ).scalars().all()
     return {
         "contact": _contact_out(
             contact,
@@ -1802,7 +1829,85 @@ async def admin_contact_detail(contact_id: int, _: dict[str, Any] = Depends(requ
         "lessons": lessons,
         "payments": payments,
         "paid_total_recent": paid_total,
+        "external_identities": [
+            {"id": item.id, "provider": item.provider, "subject": item.subject, "email": item.email}
+            for item in external_identities
+        ],
     }
+
+
+@app.post("/api/admin/contacts/{contact_id}/external-identities")
+async def admin_upsert_external_identity(
+    contact_id: int,
+    payload: ExternalIdentityIn,
+    admin: dict[str, Any] = Depends(require_admin),
+) -> dict[str, Any]:
+    contact = await session.get(Contact, contact_id)
+    if contact is None:
+        raise HTTPException(status_code=404, detail={"code": "NOT_FOUND", "message": "Контакт не найден"})
+    conflicting = (
+        await session.execute(
+            select(ExternalIdentity).where(
+                ExternalIdentity.provider == payload.provider,
+                ExternalIdentity.subject == payload.subject.strip(),
+                ExternalIdentity.contact_id != contact_id,
+            )
+        )
+    ).scalar_one_or_none()
+    if conflicting is not None:
+        raise HTTPException(status_code=409, detail={"code": "IDENTITY_IN_USE", "message": "Эта учётная запись уже связана с другим контактом"})
+    identity = (
+        await session.execute(
+            select(ExternalIdentity).where(
+                ExternalIdentity.contact_id == contact_id,
+                ExternalIdentity.provider == payload.provider,
+            )
+        )
+    ).scalar_one_or_none()
+    now = datetime.datetime.now(datetime.timezone.utc).isoformat()
+    email = (payload.email or "").strip().lower() or None
+    if identity is None:
+        identity = ExternalIdentity(
+            contact_id=contact_id,
+            provider=payload.provider,
+            subject=payload.subject.strip(),
+            email=email,
+            created_at=now,
+            updated_at=now,
+        )
+        session.add(identity)
+    else:
+        identity.subject = payload.subject.strip()
+        identity.email = email
+        identity.updated_at = now
+    if email:
+        contact.email = email
+    contact.updated_at = now
+    await session.commit()
+    await _audit(int(admin["sub"]), "upsert", "external_identity", {"contact_id": contact_id, "provider": payload.provider})
+    return {"item": {"id": identity.id, "provider": identity.provider, "subject": identity.subject, "email": identity.email}}
+
+
+@app.delete("/api/admin/contacts/{contact_id}/external-identities/{provider}")
+async def admin_delete_external_identity(
+    contact_id: int,
+    provider: str,
+    admin: dict[str, Any] = Depends(require_admin),
+) -> dict[str, Any]:
+    identity = (
+        await session.execute(
+            select(ExternalIdentity).where(
+                ExternalIdentity.contact_id == contact_id,
+                ExternalIdentity.provider == provider,
+            )
+        )
+    ).scalar_one_or_none()
+    if identity is None:
+        raise HTTPException(status_code=404, detail={"code": "NOT_FOUND", "message": "Связь не найдена"})
+    await session.delete(identity)
+    await session.commit()
+    await _audit(int(admin["sub"]), "delete", "external_identity", {"contact_id": contact_id, "provider": provider})
+    return {"status": "ok"}
 
 
 @app.patch("/api/admin/contacts/{contact_id}")
@@ -1815,6 +1920,8 @@ async def admin_patch_contact(
     if contact is None:
         raise HTTPException(status_code=404, detail={"code": "NOT_FOUND", "message": "Контакт не найден"})
     updates = payload.model_dump(exclude_unset=True)
+    if "email" in updates:
+        updates["email"] = (updates["email"] or "").strip().lower() or None
     direction = updates.pop("direction", None)
     telegram_username = updates.pop("telegram_username", None)
     price_is_set = "price" in updates

@@ -241,6 +241,7 @@ class ContactPatchIn(BaseModel):
     first_name: str | None = Field(default=None, max_length=100)
     last_name: str | None = Field(default=None, max_length=100)
     telephone: str | None = Field(default=None, max_length=20)
+    email: str | None = Field(default=None, max_length=255)
     status: str | None = Field(default=None, pattern=r"^(lead|active|student|archived)$")
     preferred_channel: str | None = Field(default=None, max_length=20)
     direction: str | None = Field(default=None, max_length=100)
@@ -249,6 +250,12 @@ class ContactPatchIn(BaseModel):
     acquisition_campaign_id: int | None = Field(default=None, ge=1)
     acquisition_campaign: str | None = Field(default=None, max_length=120)
     price: int | None = Field(default=None, ge=0, le=1_000_000)
+
+
+class ExternalIdentityIn(BaseModel):
+    provider: str = Field(pattern=r"^(academy|cards)$")
+    subject: str = Field(min_length=1, max_length=255)
+    email: str | None = Field(default=None, max_length=255)
 
 
 class ContactPrepaymentIn(BaseModel):

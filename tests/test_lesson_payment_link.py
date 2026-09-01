@@ -106,6 +106,31 @@ class CanonicalLessonPaymentTest(unittest.IsolatedAsyncioTestCase):
         contacts_count = (await session.execute(select(func.count(Contact.id)))).scalar_one()
         self.assertEqual(contacts_count, 1)
 
+    async def test_locked_name_changes_only_with_admin_override(self) -> None:
+        profile = await transactions.upsert_student_profile(
+            telegram_id=self.telegram_id,
+            first_name="Иван",
+            last_name="Петров",
+            telephone="79990000000",
+        )
+        profile.name_locked = True
+        await session.commit()
+
+        profile = await transactions.upsert_student_profile(
+            telegram_id=self.telegram_id,
+            first_name="Странный",
+            last_name="Ник",
+        )
+        self.assertEqual((profile.first_name, profile.last_name), ("Иван", "Петров"))
+
+        profile = await transactions.upsert_student_profile(
+            telegram_id=self.telegram_id,
+            first_name="Иван",
+            last_name="Сидоров",
+            allow_locked_name_update=True,
+        )
+        self.assertEqual((profile.first_name, profile.last_name), ("Иван", "Сидоров"))
+
     async def asyncTearDown(self) -> None:
         await remove_session()
 

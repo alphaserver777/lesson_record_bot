@@ -245,8 +245,9 @@ export function AdminView({ token }) {
   const [selectedContact, setSelectedContact] = useState(null)
   const [newLeadOpen, setNewLeadOpen] = useState(false)
   const [contactEdit, setContactEdit] = useState({
-    first_name: '', last_name: '', telephone: '', telegram_username: '', status: 'active', preferred_channel: 'telegram', direction: '', price: '', acquisition_source: 'unknown', acquisition_campaign_id: '',
+    first_name: '', last_name: '', telephone: '', email: '', telegram_username: '', status: 'active', preferred_channel: 'telegram', direction: '', price: '', acquisition_source: 'unknown', acquisition_campaign_id: '',
   })
+  const [externalIdentityForm, setExternalIdentityForm] = useState({ provider: 'academy', subject: '', email: '' })
   const [prepaymentAmount, setPrepaymentAmount] = useState('')
   const [clientOptions, setClientOptions] = useState([])
   const [clientSearch, setClientSearch] = useState('')
@@ -383,6 +384,7 @@ export function AdminView({ token }) {
       first_name: contact.first_name || '',
       last_name: contact.last_name || '',
       telephone: contact.telephone || '',
+      email: contact.email || '',
       telegram_username: contact.telegram_username || '',
       status: contact.status || 'active',
       preferred_channel: contact.preferred_channel || 'telegram',
@@ -410,6 +412,27 @@ export function AdminView({ token }) {
     })
     await Promise.all([selectContact(contactId), loadContacts(contactsPage, contactQuery)])
     setSuccess('Карточка клиента обновлена')
+  }
+
+  async function saveExternalIdentity() {
+    const contactId = selectedContact?.contact?.id
+    if (!contactId || !externalIdentityForm.subject.trim()) return
+    await api(`/api/admin/contacts/${contactId}/external-identities`, {
+      token,
+      method: 'POST',
+      body: { ...externalIdentityForm, subject: externalIdentityForm.subject.trim(), email: externalIdentityForm.email.trim() || null },
+    })
+    setExternalIdentityForm(value => ({ ...value, subject: '', email: '' }))
+    await selectContact(contactId)
+    setSuccess('Учётная запись связана с контактом')
+  }
+
+  async function deleteExternalIdentity(provider) {
+    const contactId = selectedContact?.contact?.id
+    if (!contactId) return
+    await api(`/api/admin/contacts/${contactId}/external-identities/${provider}`, { token, method: 'DELETE' })
+    await selectContact(contactId)
+    setSuccess('Связь удалена')
   }
 
   async function archiveContactProfile() {
@@ -1994,6 +2017,7 @@ export function AdminView({ token }) {
                       <label>Имя<input className="input" value={contactEdit.first_name} onChange={e => setContactEdit(value => ({ ...value, first_name: e.target.value }))} /></label>
                       <label>Фамилия<input className="input" value={contactEdit.last_name} onChange={e => setContactEdit(value => ({ ...value, last_name: e.target.value }))} /></label>
                       <label className="contact-field-wide">Телефон<input className="input" value={contactEdit.telephone} onChange={e => setContactEdit(value => ({ ...value, telephone: e.target.value }))} /></label>
+                      <label className="contact-field-wide">Почта<input className="input" type="email" value={contactEdit.email} onChange={e => setContactEdit(value => ({ ...value, email: e.target.value }))} /></label>
                       <label className="contact-field-wide">Telegram username<input className="input" value={contactEdit.telegram_username} onChange={e => setContactEdit(value => ({ ...value, telegram_username: e.target.value }))} placeholder="username без @" /></label>
                       <label>Статус<select className="input" value={contactEdit.status} onChange={e => setContactEdit(value => ({ ...value, status: e.target.value }))}><option value="lead">Лид</option><option value="active">Активный</option><option value="student">Ученик</option><option value="archived">Архив</option></select></label>
                       <label>Канал связи<select className="input" value={contactEdit.preferred_channel} onChange={e => setContactEdit(value => ({ ...value, preferred_channel: e.target.value }))}><option value="telegram">Telegram</option><option value="phone">Телефон</option></select></label>
@@ -2008,8 +2032,19 @@ export function AdminView({ token }) {
 
                 <div className="detail-grid">
                   <div><small>Telegram</small><strong>{selectedContact.contact?.telegram_username ? `@${selectedContact.contact.telegram_username}` : (selectedContact.contact?.telegram_id || 'не привязан')}</strong></div>
+                  <div><small>Почта</small><strong>{selectedContact.contact?.email || 'не указана'}</strong></div>
                   <div><small>Баланс занятий</small><strong>{selectedContact.contact?.balance_lessons ?? 0}</strong></div>
                   <div><small>Оплаты (последние 12)</small><strong>{formatMoneyShort(selectedContact.paid_total_recent)}</strong></div>
+                </div>
+                <h3>Связанные учётные записи</h3>
+                {(selectedContact.external_identities || []).length ? <ul className="list list-compact">{selectedContact.external_identities.map(item => (
+                  <li key={item.provider}><div><strong>{item.provider === 'academy' ? 'Учебная платформа' : 'Карточки'}</strong><small>{item.subject}{item.email ? ` · ${item.email}` : ''}</small></div><button className="btn secondary compact" onClick={() => deleteExternalIdentity(item.provider).catch(e => setError(normalizeErrorMessage(e.message || e)))}>Удалить связь</button></li>
+                ))}</ul> : <small>Учётные записи учебной платформы и карточек пока не связаны.</small>}
+                <div className="custom-row" style={{ marginTop: 12 }}>
+                  <select className="input" value={externalIdentityForm.provider} onChange={e => setExternalIdentityForm(value => ({ ...value, provider: e.target.value }))}><option value="academy">Учебная платформа</option><option value="cards">Карточки</option></select>
+                  <input className="input" value={externalIdentityForm.subject} onChange={e => setExternalIdentityForm(value => ({ ...value, subject: e.target.value }))} placeholder="Постоянный идентификатор" />
+                  <input className="input" type="email" value={externalIdentityForm.email} onChange={e => setExternalIdentityForm(value => ({ ...value, email: e.target.value }))} placeholder="Почта" />
+                  <button className="btn" disabled={!externalIdentityForm.subject.trim()} onClick={() => saveExternalIdentity().catch(e => setError(normalizeErrorMessage(e.message || e)))}>Связать</button>
                 </div>
                 {selectedContact.contact?.is_student ? <div className="custom-row" style={{ marginTop: 12 }}><input className="input" type="number" min="1" value={prepaymentAmount} onChange={e => setPrepaymentAmount(e.target.value)} placeholder="Предоплата, ₽" /><button className="btn" onClick={() => addPrepayment().catch(e => setError(normalizeErrorMessage(e.message || e)))}>Внести оплату и пополнить баланс</button></div> : null}
                 {selectedContact.contact?.telegram_id ? <div className="stack" style={{ marginTop: 12 }}>

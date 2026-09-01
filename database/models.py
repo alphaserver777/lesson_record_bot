@@ -78,6 +78,7 @@ class StudentProfile(Base):
     full_name = Column(String(100), nullable=True)
     first_name = Column(String(100), nullable=True)
     last_name = Column(String(100), nullable=True)
+    name_locked = Column(Boolean, nullable=False, default=False)
     telegram_username = Column(String(100), nullable=True)
     age = Column(Integer, nullable=True)
     price = Column(Integer, nullable=True)
@@ -149,6 +150,7 @@ class Contact(Base):
     first_name = Column(String(100), nullable=True)
     last_name = Column(String(100), nullable=True)
     telephone = Column(String(20), nullable=True, index=True)
+    email = Column(String(255), nullable=True, index=True)
     preferred_channel = Column(String(20), nullable=False, default="telegram")
     status = Column(String(24), nullable=False, default="active", index=True)
     is_archived = Column(Boolean, nullable=False, default=False, index=True)
@@ -174,6 +176,24 @@ class TelegramIdentity(Base):
     last_login_at = Column(String(50), nullable=True)
     entry_chat_id = Column(BigInteger, nullable=True)
     entry_message_id = Column(Integer, nullable=True)
+    created_at = Column(String(50), nullable=False)
+    updated_at = Column(String(50), nullable=False)
+
+
+class ExternalIdentity(Base):
+    """Связь единого контакта с учётной записью внешнего приложения."""
+
+    __tablename__ = "external_identities"
+    __table_args__ = (
+        UniqueConstraint("provider", "subject", name="uq_external_identity_provider_subject"),
+        UniqueConstraint("contact_id", "provider", name="uq_external_identity_contact_provider"),
+    )
+
+    id = Column(Integer, primary_key=True)
+    contact_id = Column(Integer, ForeignKey("contacts.id", ondelete="CASCADE"), nullable=False, index=True)
+    provider = Column(String(80), nullable=False, index=True)
+    subject = Column(String(255), nullable=False)
+    email = Column(String(255), nullable=True, index=True)
     created_at = Column(String(50), nullable=False)
     updated_at = Column(String(50), nullable=False)
 
