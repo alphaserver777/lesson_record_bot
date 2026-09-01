@@ -74,6 +74,38 @@ class CanonicalLessonPaymentTest(unittest.IsolatedAsyncioTestCase):
         record = await session.get(RecordDate, record_id)
         self.assertEqual(record.contact_id, first.id)
 
+    async def test_telegram_profile_reuses_website_contact_by_normalized_phone(self) -> None:
+        now = datetime.datetime.now(datetime.timezone.utc).isoformat()
+        website_contact = Contact(
+            first_name="Максим",
+            telephone="79267557900",
+            preferred_channel="phone",
+            status="lead",
+            is_archived=False,
+            acquisition_source="avito",
+            created_at=now,
+            updated_at=now,
+        )
+        session.add(website_contact)
+        await session.commit()
+
+        profile = await session.get(StudentProfile, self.telegram_id)
+        profile.telephone = "+7 (926) 755-79-00"
+        contact = await transactions.ensure_canonical_contact_for_profile(profile)
+        await session.commit()
+
+        self.assertEqual(contact.id, website_contact.id)
+        self.assertEqual(profile.contact_id, website_contact.id)
+        self.assertEqual(profile.telephone, "79267557900")
+        identity = (
+            await session.execute(
+                select(TelegramIdentity).where(TelegramIdentity.telegram_id == self.telegram_id)
+            )
+        ).scalar_one()
+        self.assertEqual(identity.contact_id, website_contact.id)
+        contacts_count = (await session.execute(select(func.count(Contact.id)))).scalar_one()
+        self.assertEqual(contacts_count, 1)
+
     async def asyncTearDown(self) -> None:
         await remove_session()
 

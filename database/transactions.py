@@ -3,6 +3,7 @@ from collections import defaultdict
 import datetime
 import json
 import logging
+import re
 from typing import Any
 
 from sqlalchemy import case, delete, func, select, text, update
@@ -23,6 +24,16 @@ from utils.sync_calendar import push_db_events_to_calendar
 from utils.schedule import SLOT_DURATION_MINUTES, SLOT_STEP_MINUTES, get_working_intervals_for_weekday, refresh_schedule_cache, slots_for_date
 
 logger = logging.getLogger(__name__)
+
+
+def normalize_telephone(value: str | None) -> str | None:
+    """Приводит российский телефон к единому виду для поиска контакта."""
+    digits = re.sub(r"\D", "", value or "")
+    if len(digits) == 11 and digits.startswith("8"):
+        digits = "7" + digits[1:]
+    if len(digits) == 10:
+        digits = "7" + digits
+    return digits if 11 <= len(digits) <= 15 else None
 
 
 def _build_event_summary(full_name: str | None, kind: str) -> str:
@@ -64,12 +75,24 @@ async def ensure_canonical_contact_for_profile(profile: StudentProfile) -> Conta
     if contact is None and profile.contact_id:
         contact = await session.get(Contact, profile.contact_id)
 
+    telephone = normalize_telephone(profile.telephone)
+    if contact is None and telephone:
+        matches = (
+            await session.execute(
+                select(Contact).where(Contact.telephone == telephone).order_by(Contact.id).limit(2)
+            )
+        ).scalars().all()
+        # Один точный номер безопасно связывает профиль. При неоднозначности
+        # ничего не объединяем автоматически.
+        if len(matches) == 1:
+            contact = matches[0]
+
     now = datetime.datetime.now(datetime.timezone.utc).isoformat()
     if contact is None:
         contact = Contact(
             first_name=profile.first_name,
             last_name=profile.last_name,
-            telephone=profile.telephone,
+            telephone=telephone or profile.telephone,
             preferred_channel="telegram",
             status="archived" if profile.is_deleted else "lead",
             is_archived=bool(profile.is_deleted),
@@ -83,10 +106,12 @@ async def ensure_canonical_contact_for_profile(profile: StudentProfile) -> Conta
     else:
         contact.first_name = profile.first_name or contact.first_name
         contact.last_name = profile.last_name or contact.last_name
-        contact.telephone = profile.telephone or contact.telephone
+        contact.telephone = telephone or profile.telephone or contact.telephone
         contact.updated_at = now
 
     profile.contact_id = contact.id
+    if telephone:
+        profile.telephone = telephone
     if identity is None:
         identity = TelegramIdentity(
             contact_id=contact.id,
