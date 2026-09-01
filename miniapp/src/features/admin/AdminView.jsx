@@ -401,14 +401,24 @@ export function AdminView({ token }) {
   async function saveContact() {
     const contactId = selectedContact?.contact?.id
     if (!contactId) return
+    const current = selectedContact.contact || {}
+    const body = {
+      ...contactEdit,
+      price: current.is_student ? Number(contactEdit.price || 0) : undefined,
+      acquisition_campaign_id: contactEdit.acquisition_campaign_id ? Number(contactEdit.acquisition_campaign_id) : null,
+    }
+    // Не отправляем неизменённую атрибуцию: она не относится к правке имени
+    // и не должна мешать сохранению карточек со старыми значениями источника.
+    if (contactEdit.acquisition_source === (current.acquisition_source || 'unknown')) {
+      delete body.acquisition_source
+      if (contactEdit.acquisition_campaign_id === String(current.acquisition_campaign_id || '')) {
+        delete body.acquisition_campaign_id
+      }
+    }
     await api(`/api/admin/contacts/${contactId}`, {
       token,
       method: 'PATCH',
-      body: {
-        ...contactEdit,
-        price: selectedContact.contact?.is_student ? Number(contactEdit.price || 0) : undefined,
-        acquisition_campaign_id: contactEdit.acquisition_campaign_id ? Number(contactEdit.acquisition_campaign_id) : null,
-      },
+      body,
     })
     await Promise.all([selectContact(contactId), loadContacts(contactsPage, contactQuery)])
     setSuccess('Карточка клиента обновлена')
