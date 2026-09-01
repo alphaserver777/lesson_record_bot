@@ -36,6 +36,28 @@ def normalize_telephone(value: str | None) -> str | None:
     return digits if 11 <= len(digits) <= 15 else None
 
 
+async def _lead_magnet_source_for(telegram_id: int) -> str | None:
+    """Возвращает первый известный источник из общей схемы лид-бота."""
+    if engine.dialect.name != "postgresql":
+        return None
+    table_exists = (
+        await session.execute(text("SELECT to_regclass('lead_magnet.campaign_user')"))
+    ).scalar_one_or_none()
+    if table_exists is None:
+        return None
+    return (
+        await session.execute(
+            text(
+                "SELECT campaign.source "
+                "FROM lead_magnet.campaign_user AS campaign "
+                "JOIN marketing_sources AS source ON source.key = campaign.source "
+                "WHERE campaign.user_id = :telegram_id"
+            ),
+            {"telegram_id": telegram_id},
+        )
+    ).scalar_one_or_none()
+
+
 def _build_event_summary(full_name: str | None, kind: str) -> str:
     """Формирует заголовок события с именем ученика и типом записи."""
     kind_label = "Регулярное" if kind == "regular" else "Разовое"
@@ -76,6 +98,7 @@ async def ensure_canonical_contact_for_profile(profile: StudentProfile) -> Conta
         contact = await session.get(Contact, profile.contact_id)
 
     telephone = normalize_telephone(profile.telephone)
+    lead_magnet_source = await _lead_magnet_source_for(profile.telegram_id)
     if contact is None and telephone:
         matches = (
             await session.execute(
@@ -108,6 +131,20 @@ async def ensure_canonical_contact_for_profile(profile: StudentProfile) -> Conta
         contact.last_name = profile.last_name or contact.last_name
         contact.telephone = telephone or profile.telephone or contact.telephone
         contact.updated_at = now
+
+    if lead_magnet_source and contact.acquisition_source in {"unknown", "direct", "telegram"}:
+        contact.acquisition_source = lead_magnet_source
+        campaign_source = None
+        if contact.acquisition_campaign_id:
+            campaign_source = (
+                await session.execute(
+                    text("SELECT source_key FROM marketing_campaigns WHERE id = :campaign_id"),
+                    {"campaign_id": contact.acquisition_campaign_id},
+                )
+            ).scalar_one_or_none()
+        if campaign_source != lead_magnet_source:
+            contact.acquisition_campaign_id = None
+            contact.acquisition_campaign = None
 
     profile.contact_id = contact.id
     if telephone:
