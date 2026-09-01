@@ -43,7 +43,7 @@ from webapi.auth import (
 )
 from webapi.probes import router as probes_router
 from webapi.lms_notifications import router as lms_notifications_router
-from webapi.prodamus import build_payment_url, verify_signature
+from webapi.prodamus import build_payment_url, normalize_customer_email, verify_signature
 from webapi.schemas import (
     AdminBlockCreateIn,
     AdminBlockDeleteIn,
@@ -1163,6 +1163,9 @@ async def public_prodamus_webhook(request: Request) -> PlainTextResponse:
     opportunity = await session.get(Opportunity, enrollment.opportunity_id)
     if contact is None or opportunity is None:
         raise HTTPException(status_code=409, detail={"code": "CANONICAL_DATA_MISSING"})
+    customer_email = normalize_customer_email(payload.get("customer_email"))
+    if customer_email and not contact.email:
+        contact.email = customer_email
     now = _iso_utc_now()
     now_local = datetime.datetime.now(get_calendar_tz())
     payment = Payment(

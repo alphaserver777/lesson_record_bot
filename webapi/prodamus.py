@@ -4,9 +4,21 @@ from __future__ import annotations
 import hashlib
 import hmac
 import json
+import re
 from collections.abc import Mapping, Sequence
 from typing import Any
 from urllib.parse import urlencode
+
+
+_EMAIL_RE = re.compile(r"^[^\s@]+@[^\s@]+\.[^\s@]+$")
+
+
+def normalize_customer_email(value: object) -> str | None:
+    """Возвращает безопасную почту из уведомления оплаты или ``None``."""
+    email = str(value or "").strip().lower()
+    if not email or len(email) > 254 or not _EMAIL_RE.fullmatch(email):
+        return None
+    return email
 
 
 def _normalized(value: Any) -> Any:
