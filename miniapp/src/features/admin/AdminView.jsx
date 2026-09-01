@@ -247,7 +247,6 @@ export function AdminView({ token }) {
   const [contactEdit, setContactEdit] = useState({
     first_name: '', last_name: '', telephone: '', email: '', telegram_username: '', status: 'active', preferred_channel: 'telegram', direction: '', price: '', acquisition_source: 'unknown', acquisition_campaign_id: '',
   })
-  const [externalIdentityForm, setExternalIdentityForm] = useState({ provider: 'academy', subject: '', email: '' })
   const [prepaymentAmount, setPrepaymentAmount] = useState('')
   const [clientOptions, setClientOptions] = useState([])
   const [clientSearch, setClientSearch] = useState('')
@@ -422,27 +421,6 @@ export function AdminView({ token }) {
     })
     await Promise.all([selectContact(contactId), loadContacts(contactsPage, contactQuery)])
     setSuccess('Карточка клиента обновлена')
-  }
-
-  async function saveExternalIdentity() {
-    const contactId = selectedContact?.contact?.id
-    if (!contactId || !externalIdentityForm.subject.trim()) return
-    await api(`/api/admin/contacts/${contactId}/external-identities`, {
-      token,
-      method: 'POST',
-      body: { ...externalIdentityForm, subject: externalIdentityForm.subject.trim(), email: externalIdentityForm.email.trim() || null },
-    })
-    setExternalIdentityForm(value => ({ ...value, subject: '', email: '' }))
-    await selectContact(contactId)
-    setSuccess('Учётная запись связана с контактом')
-  }
-
-  async function deleteExternalIdentity(provider) {
-    const contactId = selectedContact?.contact?.id
-    if (!contactId) return
-    await api(`/api/admin/contacts/${contactId}/external-identities/${provider}`, { token, method: 'DELETE' })
-    await selectContact(contactId)
-    setSuccess('Связь удалена')
   }
 
   async function archiveContactProfile() {
@@ -2045,16 +2023,6 @@ export function AdminView({ token }) {
                   <div><small>Почта</small><strong>{selectedContact.contact?.email || 'не указана'}</strong></div>
                   <div><small>Баланс занятий</small><strong>{selectedContact.contact?.balance_lessons ?? 0}</strong></div>
                   <div><small>Оплаты (последние 12)</small><strong>{formatMoneyShort(selectedContact.paid_total_recent)}</strong></div>
-                </div>
-                <h3>Связанные учётные записи</h3>
-                {(selectedContact.external_identities || []).length ? <ul className="list list-compact">{selectedContact.external_identities.map(item => (
-                  <li key={item.provider}><div><strong>{item.provider === 'academy' ? 'Учебная платформа' : 'Карточки'}</strong><small>{item.subject}{item.email ? ` · ${item.email}` : ''}</small></div><button className="btn secondary compact" onClick={() => deleteExternalIdentity(item.provider).catch(e => setError(normalizeErrorMessage(e.message || e)))}>Удалить связь</button></li>
-                ))}</ul> : <small>Учётные записи учебной платформы и карточек пока не связаны.</small>}
-                <div className="custom-row" style={{ marginTop: 12 }}>
-                  <select className="input" value={externalIdentityForm.provider} onChange={e => setExternalIdentityForm(value => ({ ...value, provider: e.target.value }))}><option value="academy">Учебная платформа</option><option value="cards">Карточки</option></select>
-                  <input className="input" value={externalIdentityForm.subject} onChange={e => setExternalIdentityForm(value => ({ ...value, subject: e.target.value }))} placeholder="Постоянный идентификатор" />
-                  <input className="input" type="email" value={externalIdentityForm.email} onChange={e => setExternalIdentityForm(value => ({ ...value, email: e.target.value }))} placeholder="Почта" />
-                  <button className="btn" disabled={!externalIdentityForm.subject.trim()} onClick={() => saveExternalIdentity().catch(e => setError(normalizeErrorMessage(e.message || e)))}>Связать</button>
                 </div>
                 {selectedContact.contact?.is_student ? <div className="custom-row" style={{ marginTop: 12 }}><input className="input" type="number" min="1" value={prepaymentAmount} onChange={e => setPrepaymentAmount(e.target.value)} placeholder="Предоплата, ₽" /><button className="btn" onClick={() => addPrepayment().catch(e => setError(normalizeErrorMessage(e.message || e)))}>Внести оплату и пополнить баланс</button></div> : null}
                 {selectedContact.contact?.telegram_id ? <div className="stack" style={{ marginTop: 12 }}>
