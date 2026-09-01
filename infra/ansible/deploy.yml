@@ -39,6 +39,7 @@
         dest: "{{ release_path }}/"
         archive: true
         delete: true
+        use_ssh_args: true
         rsync_opts:
           - "--chown=root:root"
           - "--exclude=.git"
