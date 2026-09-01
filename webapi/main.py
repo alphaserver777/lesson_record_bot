@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import calendar
 import datetime
+import html
 import json
 import logging
 import os
@@ -43,6 +44,7 @@ from webapi.auth import (
 )
 from webapi.probes import router as probes_router
 from webapi.lms_notifications import router as lms_notifications_router
+from webapi.lms_provisioning import generate_temporary_password, provision_test_drive
 from webapi.prodamus import build_payment_url, normalize_customer_email, verify_signature
 from webapi.schemas import (
     AdminBlockCreateIn,
@@ -1166,6 +1168,7 @@ async def public_prodamus_webhook(request: Request) -> PlainTextResponse:
     customer_email = normalize_customer_email(payload.get("customer_email"))
     if customer_email and not contact.email:
         contact.email = customer_email
+    lms_login = customer_email or contact.email
     now = _iso_utc_now()
     now_local = datetime.datetime.now(get_calendar_tz())
     payment = Payment(
@@ -1219,11 +1222,44 @@ async def public_prodamus_webhook(request: Request) -> PlainTextResponse:
             created_at=now,
         )
     )
+    lms_delivery_error = None
+    if lms_login:
+        temporary_password = generate_temporary_password()
+        try:
+            await provision_test_drive(
+                event_id=f"test-drive-payment:{enrollment.id}",
+                email=lms_login,
+                first_name=contact.first_name,
+                last_name=contact.last_name,
+                password=temporary_password,
+            )
+            identity = (
+                await session.execute(
+                    select(TelegramIdentity).where(TelegramIdentity.contact_id == contact.id)
+                )
+            ).scalar_one_or_none()
+            if identity is None:
+                lms_delivery_error = "у контакта не привязан Telegram"
+            else:
+                await bot.send_message(
+                    identity.telegram_id,
+                    "✅ <b>Оплата прошла. Доступ к тест-драйву открыт.</b>\n\n"
+                    f"Логин: <code>{html.escape(lms_login)}</code>\n"
+                    f"Пароль: <code>{html.escape(temporary_password)}</code>\n"
+                    "Ссылка: https://academy.professorit.ru/lms/\n\n"
+                    "После первого входа сохраните пароль в надёжном месте.",
+                )
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("LMS provisioning failed for enrollment=%s", enrollment.id)
+            raise HTTPException(status_code=503, detail={"code": "LMS_PROVISIONING_FAILED"}) from exc
+    else:
+        lms_delivery_error = "в уведомлении Prodamus и карточке контакта нет почты"
     await session.commit()
     await _notify_admins(
         "💳 Оплата тест-драйва подтверждена Prodamus\n"
         f"Контакт: {_contact_name(contact)}\n"
         f"Сумма: {enrollment.price_amount:,} ₽".replace(",", " ")
+        + (f"\n⚠️ Доступ LMS не отправлен: {lms_delivery_error}" if lms_delivery_error else "\n✅ Доступ LMS отправлен в бот")
     )
     return PlainTextResponse("ok")
 
