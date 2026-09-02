@@ -10,7 +10,7 @@ import os
 import re
 import time
 from decimal import Decimal, InvalidOperation
-from urllib.parse import urlencode
+from urllib.parse import parse_qs, urlencode, urlparse
 from uuid import uuid4
 from typing import Any
 
@@ -45,6 +45,7 @@ from webapi.auth import (
 from webapi.probes import router as probes_router
 from webapi.lms_notifications import router as lms_notifications_router
 from webapi.lms_provisioning import generate_temporary_password, provision_test_drive
+from webapi.telegram_delivery import send_lead_magnet_message
 from webapi.prodamus import build_payment_url, normalize_customer_email, verify_signature
 from webapi.schemas import (
     AdminBlockCreateIn,
@@ -858,6 +859,76 @@ async def _notify_admins(message: str) -> None:
             logger.warning("failed to send website notification to admin=%s: %s", admin_id, exc)
 
 
+def _lead_magnet_tracking_token(*values: str | None) -> str | None:
+    """Извлекает непрозрачный маркер перехода из адреса посадочной страницы."""
+    for value in values:
+        if not value:
+            continue
+        try:
+            token = parse_qs(urlparse(value).query).get("lead_magnet_token", [""])[0]
+        except ValueError:
+            continue
+        if re.fullmatch(r"[A-Za-z0-9_-]{12,64}", token):
+            return token
+    return None
+
+
+async def _bind_devops_start_identity(contact_id: int, token: str | None, now: str) -> bool:
+    """Связывает контакт с @devops_start_bot по маркеру, не раскрывая Telegram ID сайту."""
+    if not token or session.bind.dialect.name != "postgresql":
+        return False
+    telegram_id = (
+        await session.execute(
+            text(
+                "SELECT user_id FROM lead_magnet.tracking_link "
+                "WHERE token = :token AND action_key = 'open_tripwire'"
+            ),
+            {"token": token},
+        )
+    ).scalar_one_or_none()
+    if telegram_id is None:
+        return False
+    provider = "telegram_bot:devops_start_bot"
+    contact_identity = (
+        await session.execute(
+            select(ExternalIdentity).where(
+                ExternalIdentity.contact_id == contact_id,
+                ExternalIdentity.provider == provider,
+            )
+        )
+    ).scalar_one_or_none()
+    if contact_identity is not None:
+        if contact_identity.subject == str(telegram_id):
+            contact_identity.updated_at = now
+            return True
+        logger.warning("Contact already has another @devops_start_bot identity")
+        return False
+    identity = (
+        await session.execute(
+            select(ExternalIdentity).where(
+                ExternalIdentity.provider == provider,
+                ExternalIdentity.subject == str(telegram_id),
+            )
+        )
+    ).scalar_one_or_none()
+    if identity is None:
+        session.add(
+            ExternalIdentity(
+                contact_id=contact_id,
+                provider=provider,
+                subject=str(telegram_id),
+                created_at=now,
+                updated_at=now,
+            )
+        )
+        return True
+    if identity.contact_id == contact_id:
+        identity.updated_at = now
+        return True
+    logger.warning("Lead-magnet Telegram ID is already linked to another contact")
+    return False
+
+
 @app.post("/api/public/briefs")
 async def public_create_test_drive(
     payload: PublicBriefIn,
@@ -925,6 +996,11 @@ async def public_create_test_drive(
         contact.is_archived = False
         if contact.status == "archived":
             contact.status = "lead"
+    await _bind_devops_start_identity(
+        contact.id,
+        _lead_magnet_tracking_token(payload.landing_page, payload.referrer, request.headers.get("referer")),
+        now,
+    )
 
     stages = await _funnel_stages()
     stage = stages[0].key
@@ -1238,17 +1314,27 @@ async def public_prodamus_webhook(request: Request) -> PlainTextResponse:
                     select(TelegramIdentity).where(TelegramIdentity.contact_id == contact.id)
                 )
             ).scalar_one_or_none()
-            if identity is None:
+            lead_magnet_identity = (
+                await session.execute(
+                    select(ExternalIdentity).where(
+                        ExternalIdentity.contact_id == contact.id,
+                        ExternalIdentity.provider == "telegram_bot:devops_start_bot",
+                    )
+                )
+            ).scalar_one_or_none()
+            message = (
+                "✅ <b>Оплата прошла. Доступ к тест-драйву открыт.</b>\n\n"
+                f"Логин: <code>{html.escape(lms_login)}</code>\n"
+                f"Пароль: <code>{html.escape(temporary_password)}</code>\n"
+                "Ссылка: https://academy.professorit.ru/lms/\n\n"
+                "После первого входа сохраните пароль в надёжном месте."
+            )
+            if lead_magnet_identity is not None:
+                await send_lead_magnet_message(int(lead_magnet_identity.subject), message)
+            elif identity is None:
                 lms_delivery_error = "у контакта не привязан Telegram"
             else:
-                await bot.send_message(
-                    identity.telegram_id,
-                    "✅ <b>Оплата прошла. Доступ к тест-драйву открыт.</b>\n\n"
-                    f"Логин: <code>{html.escape(lms_login)}</code>\n"
-                    f"Пароль: <code>{html.escape(temporary_password)}</code>\n"
-                    "Ссылка: https://academy.professorit.ru/lms/\n\n"
-                    "После первого входа сохраните пароль в надёжном месте.",
-                )
+                await bot.send_message(identity.telegram_id, message)
         except Exception as exc:  # noqa: BLE001
             logger.exception("LMS provisioning failed for enrollment=%s", enrollment.id)
             raise HTTPException(status_code=503, detail={"code": "LMS_PROVISIONING_FAILED"}) from exc
