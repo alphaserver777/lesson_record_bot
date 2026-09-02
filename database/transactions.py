@@ -2855,7 +2855,11 @@ async def viewing_recordings_day_db(date: datetime, show_blocks: bool = False) -
             RecordDate.duration_minutes,
         )
         .join(StudentProfile, StudentProfile.telegram_id == RecordDate.telegram_id)
-        .where(RecordDate.record_date == target_date)
+        .where(
+            RecordDate.record_date == target_date,
+            # Отклонённая заявка хранится для журнала, но не является занятием.
+            (RecordDate.booking_status.is_(None)) | (RecordDate.booking_status != "rejected"),
+        )
     )
 
     result = []

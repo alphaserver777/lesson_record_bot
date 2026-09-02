@@ -317,6 +317,21 @@ class CanonicalLessonPaymentTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(restored.record_date, lesson_date)
         self.assertEqual(restored.duration_minutes, 120)
 
+    async def test_rejected_booking_is_not_shown_in_calendar(self) -> None:
+        lesson_date = datetime.date.today() + datetime.timedelta(days=7)
+        record_id = await transactions.add_pending_single_slot(
+            self.telegram_id,
+            lesson_date,
+            21,
+            30,
+        )
+
+        status, _ = await transactions.reject_pending_booking(record_id, admin_id=1)
+        self.assertEqual(status, "rejected")
+
+        calendar_items = await transactions.viewing_recordings_day_db(lesson_date, show_blocks=True)
+        self.assertEqual(calendar_items, [])
+
 
 if __name__ == "__main__":
     unittest.main()
