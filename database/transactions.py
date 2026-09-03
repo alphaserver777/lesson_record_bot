@@ -180,6 +180,8 @@ async def init_db() -> None:
             )
         await conn.run_sync(Base.metadata.create_all)
         await conn.execute(text("ALTER TABLE contacts ADD COLUMN IF NOT EXISTS email VARCHAR(255)"))
+        await conn.execute(text("ALTER TABLE contacts ADD COLUMN IF NOT EXISTS telegram_username VARCHAR(100)"))
+        await conn.execute(text("ALTER TABLE contacts ADD COLUMN IF NOT EXISTS price INTEGER"))
         await conn.execute(text("CREATE INDEX IF NOT EXISTS ix_contacts_email ON contacts(email)"))
         await conn.execute(text(
             "ALTER TABLE student_profiles ADD COLUMN IF NOT EXISTS "

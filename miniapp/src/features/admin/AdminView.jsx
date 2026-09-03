@@ -314,7 +314,7 @@ export function AdminView({ token }) {
   const [systemHealth, setSystemHealth] = useState(null)
   const [leads, setLeads] = useState([])
   const [leadSummary, setLeadSummary] = useState(null)
-  const [leadForm, setLeadForm] = useState({ full_name: '', telephone: '', source: 'direct', acquisition_campaign_id: '', direction: '', student_level: '', goal: '', qualification_status: 'new', desired_format: '', next_contact_at: '', stage: 'new', lost_reason: '', notes: '' })
+  const [leadForm, setLeadForm] = useState({ full_name: '', telephone: '', telegram_username: '', price: '', source: 'direct', acquisition_campaign_id: '', direction: '', student_level: '', goal: '', qualification_status: 'new', desired_format: '', next_contact_at: '', stage: 'new', lost_reason: '', notes: '' })
   const [backupStatus, setBackupStatus] = useState(null)
   const [workScheduleDays, setWorkScheduleDays] = useState([])
   const [workImpact, setWorkImpact] = useState(null)
@@ -403,7 +403,7 @@ export function AdminView({ token }) {
     const current = selectedContact.contact || {}
     const body = {
       ...contactEdit,
-      price: current.is_student ? Number(contactEdit.price || 0) : undefined,
+      price: Number(contactEdit.price || 0),
       acquisition_campaign_id: contactEdit.acquisition_campaign_id ? Number(contactEdit.acquisition_campaign_id) : null,
     }
     // Не отправляем неизменённую атрибуцию: она не относится к правке имени
@@ -503,9 +503,10 @@ export function AdminView({ token }) {
       throw new Error('Для этапа «Неактуально / отказ» выберите причину')
     }
     const payload = Object.fromEntries(Object.entries(leadForm).filter(([, value]) => String(value || '').trim() !== ''))
+    if (payload.price !== undefined) payload.price = Number(payload.price)
     payload.acquisition_campaign_id = leadForm.acquisition_campaign_id ? Number(leadForm.acquisition_campaign_id) : null
     const result = await api('/api/admin/leads', { token, method: 'POST', body: payload })
-    setLeadForm({ full_name: '', telephone: '', source: 'direct', acquisition_campaign_id: '', direction: '', student_level: '', goal: '', qualification_status: 'new', desired_format: '', next_contact_at: '', stage: 'new', lost_reason: '', notes: '' })
+    setLeadForm({ full_name: '', telephone: '', telegram_username: '', price: '', source: 'direct', acquisition_campaign_id: '', direction: '', student_level: '', goal: '', qualification_status: 'new', desired_format: '', next_contact_at: '', stage: 'new', lost_reason: '', notes: '' })
     setNewLeadOpen(false)
     await Promise.all([loadLeads(), loadContacts(1, '')])
     if (result.item?.contact_id) await selectContact(result.item.contact_id)
@@ -1979,6 +1980,8 @@ export function AdminView({ token }) {
                   <div className="contact-edit-form" style={{ marginTop: 12 }}>
                     <label className="contact-field-wide">Имя и фамилия<input className="input" autoFocus value={leadForm.full_name} onChange={e => setLeadForm(value => ({ ...value, full_name: e.target.value }))} placeholder="Например, Иван Петров" /></label>
                     <label className="contact-field-wide">Телефон<input className="input" value={leadForm.telephone} onChange={e => setLeadForm(value => ({ ...value, telephone: e.target.value }))} placeholder="89881414232" /></label>
+                    <label>Telegram<input className="input" value={leadForm.telegram_username || ''} onChange={e => setLeadForm(value => ({ ...value, telegram_username: e.target.value }))} placeholder="@username" /></label>
+                    <label>Цена занятия, ₽<input className="input" type="number" min="0" value={leadForm.price || ''} onChange={e => setLeadForm(value => ({ ...value, price: e.target.value }))} /></label>
                     <label>Источник<select className="input" value={leadForm.source} onChange={e => setLeadForm(value => ({ ...value, source: e.target.value, acquisition_campaign_id: '' }))}>{marketingSources.map(item => <option key={item.key} value={item.key}>{item.name}</option>)}</select></label>
                     <label>Кампания<select className="input" value={leadForm.acquisition_campaign_id} onChange={e => setLeadForm(value => ({ ...value, acquisition_campaign_id: e.target.value }))}><option value="">Без кампании</option>{marketingCampaigns.filter(item => item.source_key === leadForm.source).map(item => <option key={item.id} value={String(item.id)}>#{item.id} · {item.name}</option>)}</select></label>
                     <label>Направление<input className="input" value={leadForm.direction} onChange={e => setLeadForm(value => ({ ...value, direction: e.target.value }))} placeholder="DevOps, ИБ, Хакер" /></label>

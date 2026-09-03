@@ -1812,12 +1812,12 @@ def _contact_out(
         "acquisition_campaign_id": contact.acquisition_campaign_id,
         "acquisition_campaign": contact.acquisition_campaign,
         "telegram_id": identity.telegram_id if identity else None,
-        "telegram_username": identity.username if identity else None,
+        "telegram_username": identity.username if identity else contact.telegram_username,
         "is_student": profile is not None,
         "client_type": client_type,
         "direction": profile.direction if profile else None,
         "balance_lessons": int(profile.balance_lessons or 0) if profile else 0,
-        "price": int(profile.price or 0) if profile else 0,
+        "price": int(profile.price if profile and profile.price is not None else (contact.price or 0)),
         "opportunities_count": int(opportunities_count or 0),
         "current_stage": current_stage or ("won" if client_type == "student" else "new"),
         "current_source": current_source,
@@ -2077,6 +2077,10 @@ async def admin_patch_contact(
     profile = (
         await session.execute(select(StudentProfile).where(StudentProfile.contact_id == contact.id))
     ).scalar_one_or_none()
+    if telegram_username is not None:
+        contact.telegram_username = telegram_username.strip().lstrip("@") or None
+    if price_is_set:
+        contact.price = int(price or 0)
     if profile is not None:
         if "first_name" in updates or "last_name" in updates:
             profile.first_name = contact.first_name
@@ -2088,11 +2092,6 @@ async def admin_patch_contact(
             profile.telegram_username = telegram_username.strip().lstrip("@") or None
         if price_is_set:
             profile.price = int(price or 0)
-    elif price_is_set:
-        raise HTTPException(
-            status_code=409,
-            detail={"code": "PROFILE_REQUIRED", "message": "Цена занятия доступна только для профиля ученика"},
-        )
     if telegram_username is not None:
         identity = (
             await session.execute(select(TelegramIdentity).where(TelegramIdentity.contact_id == contact.id))
@@ -2423,6 +2422,8 @@ async def admin_create_lead(payload: LeadCreateIn, admin: dict[str, Any] = Depen
             first_name=first_name,
             last_name=last_name,
             telephone=payload.telephone,
+            telegram_username=(payload.telegram_username or "").strip().lstrip("@") or None,
+            price=payload.price,
             preferred_channel="telegram" if identity else "phone",
             status="lead",
             is_archived=False,
@@ -2435,7 +2436,9 @@ async def admin_create_lead(payload: LeadCreateIn, admin: dict[str, Any] = Depen
         )
         session.add(contact)
         await session.flush()
-    lead_data = payload.model_dump(exclude={"telegram_id", "full_name", "telephone", "acquisition_campaign_id"})
+    if payload.telegram_username and identity is not None:
+        identity.username = payload.telegram_username.strip().lstrip("@") or None
+    lead_data = payload.model_dump(exclude={"telegram_id", "full_name", "telephone", "telegram_username", "price", "acquisition_campaign_id"})
     if campaign is not None:
         lead_data["utm_campaign"] = campaign.name
     stages = await _funnel_stages()
@@ -2476,6 +2479,11 @@ async def admin_patch_lead(lead_id: int, payload: LeadPatchIn, admin: dict[str, 
         contact.first_name, contact.last_name = _split_contact_name(updates.pop("full_name"))
     if "telephone" in updates:
         contact.telephone = updates.pop("telephone")
+    if "telegram_username" in updates:
+        username = updates.pop("telegram_username")
+        contact.telegram_username = (username or "").strip().lstrip("@") or None
+    if "price" in updates:
+        contact.price = updates.pop("price")
     if "telegram_id" in updates:
         telegram_id = updates.pop("telegram_id")
         if telegram_id is not None:

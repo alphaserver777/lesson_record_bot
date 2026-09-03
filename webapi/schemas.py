@@ -125,6 +125,8 @@ class LeadCreateIn(BaseModel):
     telegram_id: int | None = None
     full_name: str | None = Field(default=None, max_length=100)
     telephone: str | None = Field(default=None, max_length=20)
+    telegram_username: str | None = Field(default=None, max_length=100)
+    price: int | None = Field(default=None, ge=0, le=1_000_000)
     source: str = Field(default="direct", min_length=1, max_length=80)
     acquisition_campaign_id: int | None = Field(default=None, ge=1)
     utm_medium: str | None = Field(default=None, max_length=80)

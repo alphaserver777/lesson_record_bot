@@ -151,6 +151,8 @@ class Contact(Base):
     last_name = Column(String(100), nullable=True)
     telephone = Column(String(20), nullable=True, index=True)
     email = Column(String(255), nullable=True, index=True)
+    telegram_username = Column(String(100), nullable=True)
+    price = Column(Integer, nullable=True)
     preferred_channel = Column(String(20), nullable=False, default="telegram")
     status = Column(String(24), nullable=False, default="active", index=True)
     is_archived = Column(Boolean, nullable=False, default=False, index=True)
