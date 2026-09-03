@@ -2436,6 +2436,11 @@ async def admin_create_lead(payload: LeadCreateIn, admin: dict[str, Any] = Depen
         )
         session.add(contact)
         await session.flush()
+    else:
+        if payload.telegram_username:
+            contact.telegram_username = payload.telegram_username.strip().lstrip("@") or None
+        if payload.price is not None:
+            contact.price = payload.price
     if payload.telegram_username and identity is not None:
         identity.username = payload.telegram_username.strip().lstrip("@") or None
     lead_data = payload.model_dump(exclude={"telegram_id", "full_name", "telephone", "telegram_username", "price", "acquisition_campaign_id"})
