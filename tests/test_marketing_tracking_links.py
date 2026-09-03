@@ -1,12 +1,8 @@
 import os
-import tempfile
 import unittest
 
-
-_db_file = tempfile.NamedTemporaryFile(prefix="tracking-links-", suffix=".db", delete=False)
-_db_file.close()
-os.environ["DB_PATH"] = _db_file.name
-os.environ.pop("DATABASE_URL", None)
+TEST_DATABASE_URL = os.getenv("TEST_DATABASE_URL", "")
+os.environ["DATABASE_URL"] = TEST_DATABASE_URL or "postgresql+asyncpg://postgres:postgres@127.0.0.1:5432/professorit_test"
 
 from sqlalchemy import delete, select, text  # noqa: E402
 
@@ -16,6 +12,7 @@ from database.models import MarketingCampaign, MarketingSource, MarketingTrackin
 from webapi.schemas import PublicAnalyticsEventIn, PublicBriefIn  # noqa: E402
 
 
+@unittest.skipUnless(TEST_DATABASE_URL, "нужна TEST_DATABASE_URL для PostgreSQL")
 class MarketingTrackingLinkTest(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self) -> None:
         await transactions.init_db()
@@ -62,8 +59,13 @@ class MarketingTrackingLinkTest(unittest.IsolatedAsyncioTestCase):
         ).scalar_one()
         self.assertEqual(stored.campaign_id, 101)
         self.assertEqual(stored.visitor_id, "visitor-test-101")
-        columns = (await session.execute(text("PRAGMA table_info(web_analytics_events)"))).all()
-        self.assertIn("tracking_link_id", {str(row[1]) for row in columns})
+        columns = await session.execute(
+            text(
+                "SELECT column_name FROM information_schema.columns "
+                "WHERE table_name = 'web_analytics_events'"
+            )
+        )
+        self.assertIn("tracking_link_id", {str(row[0]) for row in columns})
 
     def test_public_payloads_accept_opaque_tracking_token(self) -> None:
         event = PublicAnalyticsEventIn(

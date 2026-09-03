@@ -179,79 +179,31 @@ async def init_db() -> None:
                 text("SELECT pg_advisory_xact_lock(hashtext('canonical_lesson_payment_migration'))")
             )
         await conn.run_sync(Base.metadata.create_all)
-        if engine.dialect.name == "postgresql":
-            await conn.execute(text("ALTER TABLE contacts ADD COLUMN IF NOT EXISTS email VARCHAR(255)"))
-            await conn.execute(text("CREATE INDEX IF NOT EXISTS ix_contacts_email ON contacts(email)"))
-            await conn.execute(text(
-                "ALTER TABLE student_profiles ADD COLUMN IF NOT EXISTS "
-                "name_locked BOOLEAN NOT NULL DEFAULT FALSE"
-            ))
-            await conn.execute(text(
-                "UPDATE student_profiles SET name_locked = TRUE "
-                "WHERE name_locked = FALSE AND first_name IS NOT NULL "
-                "AND last_name IS NOT NULL AND telephone IS NOT NULL"
-            ))
-            await conn.execute(text(
-                "ALTER TABLE web_analytics_events ADD COLUMN IF NOT EXISTS "
-                "tracking_link_id INTEGER REFERENCES marketing_tracking_links(id) ON DELETE SET NULL"
-            ))
-            await conn.execute(text(
-                "CREATE INDEX IF NOT EXISTS ix_web_analytics_events_tracking_link "
-                "ON web_analytics_events(tracking_link_id)"
-            ))
-        else:
-            contact_columns = (await conn.execute(text("PRAGMA table_info(contacts)"))).all()
-            if "email" not in {row[1] for row in contact_columns}:
-                await conn.execute(text("ALTER TABLE contacts ADD COLUMN email VARCHAR(255)"))
-            profile_columns = (await conn.execute(text("PRAGMA table_info(student_profiles)"))).all()
-            if "name_locked" not in {row[1] for row in profile_columns}:
-                await conn.execute(text(
-                    "ALTER TABLE student_profiles ADD COLUMN name_locked BOOLEAN NOT NULL DEFAULT 0"
-                ))
-            await conn.execute(text(
-                "UPDATE student_profiles SET name_locked = 1 "
-                "WHERE name_locked = 0 AND first_name IS NOT NULL "
-                "AND last_name IS NOT NULL AND telephone IS NOT NULL"
-            ))
-            columns = (await conn.execute(text("PRAGMA table_info(web_analytics_events)"))).all()
-            if "tracking_link_id" not in {str(row[1]) for row in columns}:
-                await conn.execute(text(
-                    "ALTER TABLE web_analytics_events ADD COLUMN tracking_link_id INTEGER "
-                    "REFERENCES marketing_tracking_links(id) ON DELETE SET NULL"
-                ))
-            await conn.execute(text(
-                "CREATE INDEX IF NOT EXISTS ix_web_analytics_events_tracking_link "
-                "ON web_analytics_events(tracking_link_id)"
-            ))
-    # SQLite installations before PostgreSQL used additive runtime migrations.
-    # PostgreSQL is created from the complete SQLAlchemy schema, so those
-    # SQLite-only PRAGMA/ALTER statements must never run there.
-    if engine.dialect.name != "sqlite":
-        await _ensure_payment_lesson_link()
-        await _ensure_indexes()
-        await _log_payment_lesson_integrity()
-        await refresh_schedule_cache()
-        # Integrity/cache reads open a new transaction after the migration
-        # commits.  Release it before another runtime attempts metadata DDL.
-        await remove_session()
-        return
-    await _ensure_event_id_column()
-    await _ensure_minute_column()
-    await _ensure_record_kind_column()
-    await _ensure_record_note_column()
-    await _ensure_presence_columns()
-    await _ensure_regular_lessons_columns()
-    await _ensure_regular_lesson_exceptions_table()
-    await _ensure_date_availability_overrides_table()
-    await _ensure_student_profiles_columns()
-    await _ensure_payments_columns()
-    await _ensure_analytics_events_table()
-    await _ensure_booking_status_columns()
-    await _normalize_record_kinds()
+        await conn.execute(text("ALTER TABLE contacts ADD COLUMN IF NOT EXISTS email VARCHAR(255)"))
+        await conn.execute(text("CREATE INDEX IF NOT EXISTS ix_contacts_email ON contacts(email)"))
+        await conn.execute(text(
+            "ALTER TABLE student_profiles ADD COLUMN IF NOT EXISTS "
+            "name_locked BOOLEAN NOT NULL DEFAULT FALSE"
+        ))
+        await conn.execute(text(
+            "UPDATE student_profiles SET name_locked = TRUE "
+            "WHERE name_locked = FALSE AND first_name IS NOT NULL "
+            "AND last_name IS NOT NULL AND telephone IS NOT NULL"
+        ))
+        await conn.execute(text(
+            "ALTER TABLE web_analytics_events ADD COLUMN IF NOT EXISTS "
+            "tracking_link_id INTEGER REFERENCES marketing_tracking_links(id) ON DELETE SET NULL"
+        ))
+        await conn.execute(text(
+            "CREATE INDEX IF NOT EXISTS ix_web_analytics_events_tracking_link "
+            "ON web_analytics_events(tracking_link_id)"
+        ))
     await _ensure_payment_lesson_link()
     await _ensure_indexes()
     await _log_payment_lesson_integrity()
     await refresh_schedule_cache()
+    # Integrity/cache reads open a new transaction after the migration commits.
+    await remove_session()
 
 
 async def _ensure_indexes() -> None:
@@ -274,141 +226,36 @@ async def _ensure_indexes() -> None:
 
 
 async def _ensure_payment_lesson_link() -> None:
-    """Add and backfill the canonical Payment -> RecordDate relationship.
+    """Создаёт схему связи Payment → RecordDate без изменения данных."""
+    if engine.dialect.name != "postgresql":
+        raise RuntimeError("runtime поддерживает только PostgreSQL")
 
-    Existing databases used the mutable tuple (telegram_id, date, hour,
-    minute).  Missing historical lesson occurrences are restored from the
-    latest decision for every tuple, then that decision is linked.  Older
-    duplicate decisions remain intact as audit history.  Prepayments and
-    rows whose deleted owner can no longer be identified stay unlinked.
-    """
-    if engine.dialect.name == "postgresql":
-        # API and Telegram bot can start together against the same database.
-        # Serialize this additive migration across processes.
-        await session.execute(
-            text("SELECT pg_advisory_xact_lock(hashtext('canonical_lesson_payment_migration'))")
-        )
-        await session.execute(text("ALTER TABLE payments ADD COLUMN IF NOT EXISTS lesson_id INTEGER"))
-        await session.execute(
-            text(
-                """
-                DO $$
-                BEGIN
-                    IF NOT EXISTS (
-                        SELECT 1
-                        FROM pg_constraint c
-                        JOIN pg_attribute a
-                          ON a.attrelid = c.conrelid
-                         AND a.attnum = ANY(c.conkey)
-                        WHERE c.contype = 'f'
-                          AND c.conrelid = 'payments'::regclass
-                          AND a.attname = 'lesson_id'
-                    ) THEN
-                        ALTER TABLE payments
-                        ADD CONSTRAINT fk_payments_lesson_id
-                        FOREIGN KEY (lesson_id) REFERENCES record_dates(id)
-                        ON DELETE SET NULL;
-                    END IF;
-                END $$
-                """
-            )
-        )
-    else:
-        columns = await session.execute(text("PRAGMA table_info('payments')"))
-        column_names = {row[1] for row in columns}
-        if "lesson_id" not in column_names:
-            await session.execute(text("ALTER TABLE payments ADD COLUMN lesson_id INTEGER"))
-
-    # Old cleanup jobs removed lesson occurrences after seven days while
-    # retaining their financial decisions. Recreate those occurrences once
-    # so every identifiable decision gets a stable lesson identity.
+    # API и bot запускаются одновременно: сериализуем аддитивное DDL.
     await session.execute(
-        text(
-            """
-            INSERT INTO record_dates (
-                contact_id,
-                telegram_id,
-                record_date,
-                hour,
-                minute,
-                duration_minutes,
-                kind,
-                presence_status,
-                note,
-                event_id,
-                booking_status
-            )
-            SELECT
-                (SELECT sp.contact_id
-                 FROM student_profiles sp
-                 WHERE sp.telegram_id = payments.telegram_id),
-                payments.telegram_id,
-                payments.lesson_date,
-                payments.hour,
-                payments.minute,
-                payments.duration_minutes,
-                CASE WHEN payments.source = 'manual' THEN 'manual' ELSE 'historical' END,
-                CASE WHEN payments.status = 'canceled' THEN 'no' ELSE 'yes' END,
-                'Восстановлено из истории оплат',
-                NULL,
-                'approved'
-            FROM payments
-            WHERE payments.lesson_id IS NULL
-              AND payments.telegram_id IS NOT NULL
-              AND payments.duration_minutes > 0
-              AND payments.id = (
-                  SELECT MAX(p2.id)
-                  FROM payments p2
-                  WHERE p2.telegram_id = payments.telegram_id
-                    AND p2.lesson_date = payments.lesson_date
-                    AND p2.hour = payments.hour
-                    AND p2.minute = payments.minute
-              )
-              AND NOT EXISTS (
-                  SELECT 1
-                  FROM record_dates rd
-                  WHERE rd.telegram_id = payments.telegram_id
-                    AND rd.record_date = payments.lesson_date
-                    AND rd.hour = payments.hour
-                    AND rd.minute = payments.minute
-                    AND rd.kind NOT IN ('block', 'allow')
-              )
-            """
-        )
+        text("SELECT pg_advisory_xact_lock(hashtext('canonical_lesson_payment_migration'))")
     )
+    await session.execute(text("ALTER TABLE payments ADD COLUMN IF NOT EXISTS lesson_id INTEGER"))
     await session.execute(
         text(
             """
-            UPDATE payments
-            SET lesson_id = (
-                SELECT MIN(rd.id)
-                FROM record_dates rd
-                WHERE rd.telegram_id = payments.telegram_id
-                  AND rd.record_date = payments.lesson_date
-                  AND rd.hour = payments.hour
-                  AND rd.minute = payments.minute
-                  AND rd.kind NOT IN ('block', 'allow')
-            )
-            WHERE lesson_id IS NULL
-              AND telegram_id IS NOT NULL
-              AND duration_minutes > 0
-              AND id = (
-                  SELECT MAX(p2.id)
-                  FROM payments p2
-                  WHERE p2.telegram_id = payments.telegram_id
-                    AND p2.lesson_date = payments.lesson_date
-                    AND p2.hour = payments.hour
-                    AND p2.minute = payments.minute
-              )
-              AND EXISTS (
-                  SELECT 1
-                  FROM record_dates rd
-                  WHERE rd.telegram_id = payments.telegram_id
-                    AND rd.record_date = payments.lesson_date
-                    AND rd.hour = payments.hour
-                    AND rd.minute = payments.minute
-                    AND rd.kind NOT IN ('block', 'allow')
-              )
+            DO $$
+            BEGIN
+                IF NOT EXISTS (
+                    SELECT 1
+                    FROM pg_constraint c
+                    JOIN pg_attribute a
+                      ON a.attrelid = c.conrelid
+                     AND a.attnum = ANY(c.conkey)
+                    WHERE c.contype = 'f'
+                      AND c.conrelid = 'payments'::regclass
+                      AND a.attname = 'lesson_id'
+                ) THEN
+                    ALTER TABLE payments
+                    ADD CONSTRAINT fk_payments_lesson_id
+                    FOREIGN KEY (lesson_id) REFERENCES record_dates(id)
+                    ON DELETE SET NULL;
+                END IF;
+            END $$
             """
         )
     )
@@ -456,99 +303,6 @@ async def _log_payment_lesson_integrity() -> None:
         report["linked_lessons"],
         report["unlinked_identifiable_lessons"],
     )
-
-
-async def _ensure_event_id_column() -> None:
-    columns = await session.execute(text("PRAGMA table_info('record_dates')"))
-    column_names = {row[1] for row in columns}
-    if "event_id" not in column_names:
-        await session.execute(text("ALTER TABLE record_dates ADD COLUMN event_id VARCHAR(255)"))
-        await session.commit()
-
-
-async def _ensure_minute_column() -> None:
-    columns = await session.execute(text("PRAGMA table_info('record_dates')"))
-    column_names = {row[1] for row in columns}
-    if "minute" not in column_names:
-        await session.execute(text("ALTER TABLE record_dates ADD COLUMN minute INTEGER DEFAULT 0 NOT NULL"))
-        await session.commit()
-    if "duration_minutes" not in column_names:
-        await session.execute(text("ALTER TABLE record_dates ADD COLUMN duration_minutes INTEGER DEFAULT 60 NOT NULL"))
-        await session.commit()
-
-
-async def _ensure_record_kind_column() -> None:
-    columns = await session.execute(text("PRAGMA table_info('record_dates')"))
-    column_names = {row[1] for row in columns}
-    if "kind" not in column_names:
-        await session.execute(text("ALTER TABLE record_dates ADD COLUMN kind VARCHAR(20) DEFAULT 'single'"))
-        await session.commit()
-
-
-async def _ensure_presence_columns() -> None:
-    columns = await session.execute(text("PRAGMA table_info('record_dates')"))
-    column_names = {row[1] for row in columns}
-    if "presence_status" not in column_names:
-        await session.execute(text("ALTER TABLE record_dates ADD COLUMN presence_status VARCHAR(20)"))
-        await session.commit()
-    if "presence_last_reminder" not in column_names:
-        await session.execute(text("ALTER TABLE record_dates ADD COLUMN presence_last_reminder VARCHAR(50)"))
-        await session.commit()
-    if "presence_message_id" not in column_names:
-        await session.execute(text("ALTER TABLE record_dates ADD COLUMN presence_message_id INTEGER"))
-        await session.commit()
-
-
-async def _ensure_record_note_column() -> None:
-    columns = await session.execute(text("PRAGMA table_info('record_dates')"))
-    column_names = {row[1] for row in columns}
-    if "note" not in column_names:
-        await session.execute(text("ALTER TABLE record_dates ADD COLUMN note VARCHAR(255)"))
-        await session.commit()
-
-
-async def _ensure_booking_status_columns() -> None:
-    columns = await session.execute(text("PRAGMA table_info('record_dates')"))
-    column_names = {row[1] for row in columns}
-    if "booking_status" not in column_names:
-        await session.execute(text("ALTER TABLE record_dates ADD COLUMN booking_status VARCHAR(20) DEFAULT 'approved' NOT NULL"))
-        await session.commit()
-    if "approval_admin_id" not in column_names:
-        await session.execute(text("ALTER TABLE record_dates ADD COLUMN approval_admin_id INTEGER"))
-        await session.commit()
-    if "approval_updated_at" not in column_names:
-        await session.execute(text("ALTER TABLE record_dates ADD COLUMN approval_updated_at VARCHAR(50)"))
-        await session.commit()
-
-
-async def _normalize_record_kinds() -> None:
-    # Блокеры без владельца помечаем как block (кроме allow)
-    await session.execute(
-        text(
-            "UPDATE record_dates SET kind='block' "
-            "WHERE telegram_id IS NULL "
-            "AND (kind IS NULL OR (kind NOT IN ('block','allow')))"
-        )
-    )
-    # Записи, совпадающие с регулярками по дню недели/времени, помечаем как regular
-    await session.execute(
-        text(
-            """
-            UPDATE record_dates
-            SET kind='regular'
-            WHERE telegram_id IS NOT NULL
-              AND (kind IS NULL OR kind != 'regular')
-              AND EXISTS (
-                SELECT 1 FROM regular_lessons rl
-                WHERE rl.telegram_id = record_dates.telegram_id
-                  AND rl.day_of_week = ((CAST(strftime('%w', record_dates.record_date) AS INTEGER) + 6) % 7)
-                  AND rl.hour = record_dates.hour
-                  AND rl.minute = record_dates.minute
-              )
-            """
-        )
-    )
-    await session.commit()
 
 
 # --- Presence confirmation ---
@@ -689,140 +443,6 @@ async def mark_presence_status(
             commit=False,
         )
         await session.commit()
-
-
-async def _ensure_regular_lessons_columns() -> None:
-    columns = await session.execute(text("PRAGMA table_info('regular_lessons')"))
-    column_names = {row[1] for row in columns}
-    if "day_of_week" not in column_names:
-        await session.execute(text("ALTER TABLE regular_lessons ADD COLUMN day_of_week INTEGER"))
-        await session.commit()
-    if "lesson_date" not in column_names:
-        await session.execute(text("ALTER TABLE regular_lessons ADD COLUMN lesson_date DATE"))
-        await session.commit()
-    if "duration_minutes" not in column_names:
-        await session.execute(text("ALTER TABLE regular_lessons ADD COLUMN duration_minutes INTEGER DEFAULT 60"))
-        await session.commit()
-
-
-async def _ensure_regular_lesson_exceptions_table() -> None:
-    async with engine.begin() as conn:
-        await conn.run_sync(RegularLessonException.__table__.create, checkfirst=True)
-
-
-async def _ensure_date_availability_overrides_table() -> None:
-    async with engine.begin() as conn:
-        await conn.run_sync(DateAvailabilityOverride.__table__.create, checkfirst=True)
-    await session.execute(
-        text(
-            "CREATE INDEX IF NOT EXISTS idx_date_availability_overrides_target_date "
-            "ON date_availability_overrides(target_date, mode, start_minute, end_minute)"
-        )
-    )
-    await session.commit()
-
-
-async def _ensure_student_profiles_columns() -> None:
-    columns = await session.execute(text("PRAGMA table_info('student_profiles')"))
-    column_names = {row[1] for row in columns}
-    if "telephone" not in column_names:
-        await session.execute(text("ALTER TABLE student_profiles ADD COLUMN telephone VARCHAR(20)"))
-        await session.commit()
-    if "miniapp_entry_chat_id" not in column_names:
-        await session.execute(text("ALTER TABLE student_profiles ADD COLUMN miniapp_entry_chat_id INTEGER"))
-        await session.commit()
-    if "miniapp_entry_message_id" not in column_names:
-        await session.execute(text("ALTER TABLE student_profiles ADD COLUMN miniapp_entry_message_id INTEGER"))
-        await session.commit()
-    if "blocked" not in column_names:
-        await session.execute(text("ALTER TABLE student_profiles ADD COLUMN blocked BOOLEAN DEFAULT 0"))
-        await session.commit()
-    if "last_visit_date" not in column_names:
-        await session.execute(text("ALTER TABLE student_profiles ADD COLUMN last_visit_date VARCHAR(50)"))
-        await session.commit()
-    if "balance_lessons" not in column_names:
-        await session.execute(text("ALTER TABLE student_profiles ADD COLUMN balance_lessons INTEGER DEFAULT 0"))
-        await session.commit()
-    if "telegram_username" not in column_names:
-        await session.execute(text("ALTER TABLE student_profiles ADD COLUMN telegram_username VARCHAR(100)"))
-        await session.commit()
-    if "is_deleted" not in column_names:
-        await session.execute(text("ALTER TABLE student_profiles ADD COLUMN is_deleted BOOLEAN DEFAULT 0"))
-        await session.commit()
-    if "first_name" not in column_names:
-        await session.execute(text("ALTER TABLE student_profiles ADD COLUMN first_name VARCHAR(100)"))
-        await session.commit()
-    if "last_name" not in column_names:
-        await session.execute(text("ALTER TABLE student_profiles ADD COLUMN last_name VARCHAR(100)"))
-        await session.commit()
-
-    # Мягкий backfill для старых профилей: заполняем first/last из full_name, если поля пустые.
-    rows = await session.execute(
-        select(StudentProfile).where(
-            StudentProfile.full_name.is_not(None),
-            (StudentProfile.first_name.is_(None)) | (StudentProfile.first_name == ""),
-            (StudentProfile.last_name.is_(None)) | (StudentProfile.last_name == ""),
-        )
-    )
-    changed = False
-    for (profile,) in rows.all():
-        first_name, last_name = _split_full_name(profile.full_name)
-        if first_name and not profile.first_name:
-            profile.first_name = first_name
-            changed = True
-        if last_name and not profile.last_name:
-            profile.last_name = last_name
-            changed = True
-    if changed:
-        await session.commit()
-
-    await _normalize_student_profile_full_names()
-
-
-async def _normalize_student_profile_full_names() -> None:
-    """Делает full_name производным полем от first_name/last_name для legacy-профилей."""
-    rows = await session.execute(
-        select(StudentProfile).where(
-            ((StudentProfile.first_name.is_not(None)) & (StudentProfile.first_name != ""))
-            | ((StudentProfile.last_name.is_not(None)) & (StudentProfile.last_name != ""))
-        )
-    )
-    changed = False
-    for (profile,) in rows.all():
-        canonical = _compose_full_name(profile.first_name, profile.last_name)
-        if canonical and (profile.full_name or "").strip() != canonical:
-            profile.full_name = canonical
-            changed = True
-    if changed:
-        await session.commit()
-
-
-async def _ensure_payments_columns() -> None:
-    async with engine.begin() as conn:
-        await conn.run_sync(Payment.__table__.create, checkfirst=True)
-    columns = await session.execute(text("PRAGMA table_info('payments')"))
-    column_names = {row[1] for row in columns}
-    if "source" not in column_names:
-        await session.execute(text("ALTER TABLE payments ADD COLUMN source VARCHAR(50)"))
-        await session.commit()
-
-
-async def _ensure_analytics_events_table() -> None:
-    async with engine.begin() as conn:
-        await conn.run_sync(AnalyticsEvent.__table__.create, checkfirst=True)
-    await session.execute(
-        text(
-            "CREATE INDEX IF NOT EXISTS idx_analytics_events_record_date "
-            "ON analytics_events(record_date, event_type, telegram_id)"
-        )
-    )
-    await session.execute(
-        text(
-            "CREATE INDEX IF NOT EXISTS idx_analytics_events_created_at "
-            "ON analytics_events(created_at)"
-        )
-    )
-    await session.commit()
 
 
 def _analytics_meta_dump(meta: dict[str, Any] | None) -> str | None:

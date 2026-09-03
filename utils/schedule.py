@@ -1,15 +1,11 @@
-"""Генерация слотов по недельному расписанию (динамически из БД + fallback)."""
+"""Генерация слотов по расписанию из PostgreSQL."""
 import datetime
-import logging
-import os
-import sqlite3
 import threading
-import time
 from typing import List, Tuple
 
 from sqlalchemy import text
 
-from database.connect import DATABASE_URL, session
+from database.connect import session
 
 # День недели: 0 - Пн ... 6 - Вс
 WEEK_SCHEDULE = {
@@ -26,12 +22,9 @@ WEEK_SCHEDULE = {
 SLOT_DURATION_MINUTES = 60
 SLOT_STEP_MINUTES = 5
 
-_CACHE_TTL_SEC = 45
 _CACHE_LOCK = threading.Lock()
-_CACHE_TS = 0.0
 _CACHE_MAP: dict[int, list[tuple[str, str]]] | None = None
 _EXTRA_INTERVALS_CACHE: dict[datetime.date, list[tuple[str, str]]] = {}
-logger = logging.getLogger(__name__)
 
 
 def _parse_time(value: str) -> datetime.time:
@@ -43,26 +36,13 @@ def _minutes_to_hhmm(total_minutes: int) -> str:
     return f"{total_minutes // 60:02d}:{total_minutes % 60:02d}"
 
 
-def _resolve_db_path() -> str:
-    db_path = os.getenv("DB_PATH", "database/database.db")
-    if os.path.isabs(db_path):
-        return db_path
-    return os.path.abspath(db_path)
-
-
-def _uses_postgresql() -> bool:
-    return DATABASE_URL.startswith("postgresql+")
-
-
 async def refresh_schedule_cache() -> None:
     """Refreshes synchronous slot-generator caches from the application DB.
 
-    Slot generation is used by legacy synchronous bot helpers. Keeping a small
-    in-process cache lets those helpers work equally with PostgreSQL and the
-    existing SQLite deployment. It is refreshed at startup and after every
-    admin change to availability.
+    Slot generation is used by synchronous bot helpers. The in-process cache
+    is refreshed at startup and after every admin change to availability.
     """
-    global _CACHE_TS, _CACHE_MAP, _EXTRA_INTERVALS_CACHE
+    global _CACHE_MAP, _EXTRA_INTERVALS_CACHE
     rows = await session.execute(
         text(
             "SELECT weekday, start_minute, end_minute FROM working_intervals "
@@ -95,87 +75,16 @@ async def refresh_schedule_cache() -> None:
     with _CACHE_LOCK:
         _CACHE_MAP = schedule_map
         _EXTRA_INTERVALS_CACHE = extras
-        _CACHE_TS = time.time()
-
-
-def _load_schedule_from_db() -> dict[int, list[tuple[str, str]]]:
-    path = _resolve_db_path()
-    if not os.path.exists(path):
-        return {}
-    conn = sqlite3.connect(path)
-    try:
-        cur = conn.cursor()
-        cur.execute(
-            "SELECT name FROM sqlite_master WHERE type='table' AND name='working_intervals'"
-        )
-        if not cur.fetchone():
-            return {}
-
-        cur.execute(
-            "SELECT weekday, start_minute, end_minute "
-            "FROM working_intervals "
-            "WHERE is_active = 1 "
-            "ORDER BY weekday, start_minute, end_minute"
-        )
-        rows = cur.fetchall()
-    finally:
-        conn.close()
-
-    schedule_map: dict[int, list[tuple[str, str]]] = {}
-    for weekday, start_minute, end_minute in rows:
-        day = int(weekday)
-        start = _minutes_to_hhmm(int(start_minute))
-        end = _minutes_to_hhmm(int(end_minute))
-        schedule_map.setdefault(day, []).append((start, end))
-    return schedule_map
 
 
 def _load_extra_open_intervals_for_date(target_date: datetime.date) -> list[tuple[str, str]]:
-    if _uses_postgresql():
-        return list(_EXTRA_INTERVALS_CACHE.get(target_date, []))
-    path = _resolve_db_path()
-    if not os.path.exists(path):
-        return []
-    conn = sqlite3.connect(path)
-    try:
-        cur = conn.cursor()
-        cur.execute(
-            "SELECT name FROM sqlite_master WHERE type='table' AND name='date_availability_overrides'"
-        )
-        if not cur.fetchone():
-            return []
-
-        cur.execute(
-            "SELECT start_minute, end_minute "
-            "FROM date_availability_overrides "
-            "WHERE target_date = ? AND mode = 'extra_open' "
-            "ORDER BY start_minute, end_minute",
-            (target_date.isoformat(),),
-        )
-        rows = cur.fetchall()
-    finally:
-        conn.close()
-
-    return [(_minutes_to_hhmm(int(start_minute)), _minutes_to_hhmm(int(end_minute))) for start_minute, end_minute in rows]
+    return list(_EXTRA_INTERVALS_CACHE.get(target_date, []))
 
 
 def _working_schedule_map() -> dict[int, list[tuple[str, str]]]:
-    global _CACHE_TS, _CACHE_MAP
-    now = time.time()
+    global _CACHE_MAP
     with _CACHE_LOCK:
-        if _uses_postgresql():
-            return _CACHE_MAP or {}
-        if _CACHE_MAP is not None and (now - _CACHE_TS) < _CACHE_TTL_SEC:
-            return _CACHE_MAP
-        try:
-            loaded = _load_schedule_from_db()
-            _CACHE_MAP = loaded if loaded else {}
-            _CACHE_TS = now
-        except Exception as exc:  # pylint: disable=broad-except
-            logger.warning("failed to load working schedule from db, fallback to static: %s", exc)
-            _CACHE_MAP = {}
-            _CACHE_TS = now
-        return _CACHE_MAP
+        return _CACHE_MAP or {}
 
 
 def get_working_intervals_for_weekday(weekday: int) -> list[tuple[str, str]]:

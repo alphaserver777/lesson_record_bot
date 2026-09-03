@@ -8,25 +8,15 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_scoped_session, create_as
 from sqlalchemy.orm import declarative_base, sessionmaker
 
 def _database_url() -> str:
-    """Returns an async SQLAlchemy URL for SQLite (legacy) or PostgreSQL.
-
-    DATABASE_URL takes precedence over DB_PATH. This lets the old production
-    service keep running on SQLite until the final, reversible switch-over.
-    """
+    """Возвращает обязательный URL рабочего PostgreSQL-подключения."""
     configured_url = os.getenv("DATABASE_URL", "").strip()
-    if configured_url:
-        if configured_url.startswith("postgres://"):
-            return "postgresql+asyncpg://" + configured_url.removeprefix("postgres://")
-        if configured_url.startswith("postgresql://"):
-            return "postgresql+asyncpg://" + configured_url.removeprefix("postgresql://")
-        return configured_url
-
-    db_path = os.getenv("DB_PATH", "database/database.db")
-    db_dir = os.path.dirname(os.path.abspath(db_path))
-    os.makedirs(db_dir, exist_ok=True)
-    if os.path.isabs(db_path):
-        return f"sqlite+aiosqlite:///{db_path}"
-    return f"sqlite+aiosqlite:///./{db_path}"
+    if configured_url.startswith("postgres://"):
+        configured_url = "postgresql+asyncpg://" + configured_url.removeprefix("postgres://")
+    elif configured_url.startswith("postgresql://"):
+        configured_url = "postgresql+asyncpg://" + configured_url.removeprefix("postgresql://")
+    if not configured_url.startswith("postgresql+asyncpg://"):
+        raise RuntimeError("DATABASE_URL должен содержать URL PostgreSQL с драйвером asyncpg")
+    return configured_url
 
 
 DATABASE_URL = _database_url()

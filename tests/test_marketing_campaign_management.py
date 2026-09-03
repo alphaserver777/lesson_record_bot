@@ -1,13 +1,9 @@
 import datetime
 import os
-import tempfile
 import unittest
 
-
-_db_file = tempfile.NamedTemporaryFile(prefix="marketing-campaigns-", suffix=".db", delete=False)
-_db_file.close()
-os.environ["DB_PATH"] = _db_file.name
-os.environ.pop("DATABASE_URL", None)
+TEST_DATABASE_URL = os.getenv("TEST_DATABASE_URL", "")
+os.environ["DATABASE_URL"] = TEST_DATABASE_URL or "postgresql+asyncpg://postgres:postgres@127.0.0.1:5432/professorit_test"
 
 from sqlalchemy import delete  # noqa: E402
 
@@ -18,6 +14,7 @@ from webapi.main import admin_create_marketing_campaign, admin_patch_marketing_c
 from webapi.schemas import MarketingCampaignIn, MarketingCampaignPatchIn  # noqa: E402
 
 
+@unittest.skipUnless(TEST_DATABASE_URL, "нужна TEST_DATABASE_URL для PostgreSQL")
 class MarketingCampaignManagementTest(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self) -> None:
         await transactions.init_db()

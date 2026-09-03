@@ -1,13 +1,9 @@
 import datetime
 import os
-import tempfile
 import unittest
 
-
-_db_file = tempfile.NamedTemporaryFile(prefix="lesson-payment-", suffix=".db", delete=False)
-_db_file.close()
-os.environ["DB_PATH"] = _db_file.name
-os.environ.pop("DATABASE_URL", None)
+TEST_DATABASE_URL = os.getenv("TEST_DATABASE_URL", "")
+os.environ["DATABASE_URL"] = TEST_DATABASE_URL or "postgresql+asyncpg://postgres:postgres@127.0.0.1:5432/professorit_test"
 
 from sqlalchemy import delete, func, select  # noqa: E402
 
@@ -24,6 +20,7 @@ from database.models import (  # noqa: E402
 )
 
 
+@unittest.skipUnless(TEST_DATABASE_URL, "нужна TEST_DATABASE_URL для PostgreSQL")
 class CanonicalLessonPaymentTest(unittest.IsolatedAsyncioTestCase):
     telegram_id = 900000001
 
@@ -246,7 +243,7 @@ class CanonicalLessonPaymentTest(unittest.IsolatedAsyncioTestCase):
 
         self.assertIsNotNone(await session.get(RecordDate, lesson_id))
 
-    async def test_migration_links_latest_legacy_decision(self) -> None:
+    async def test_startup_schema_check_does_not_link_legacy_payments(self) -> None:
         lesson_date = datetime.date.today() - datetime.timedelta(days=2)
         record = RecordDate(
             telegram_id=self.telegram_id,
@@ -289,9 +286,9 @@ class CanonicalLessonPaymentTest(unittest.IsolatedAsyncioTestCase):
         await session.refresh(latest)
 
         self.assertIsNone(older.lesson_id)
-        self.assertEqual(latest.lesson_id, record.id)
+        self.assertIsNone(latest.lesson_id)
 
-    async def test_migration_restores_deleted_historical_lesson(self) -> None:
+    async def test_startup_schema_check_does_not_restore_historical_lesson(self) -> None:
         lesson_date = datetime.date.today() - datetime.timedelta(days=90)
         payment = Payment(
             telegram_id=self.telegram_id,
@@ -310,12 +307,18 @@ class CanonicalLessonPaymentTest(unittest.IsolatedAsyncioTestCase):
         await transactions._ensure_payment_lesson_link()  # pylint: disable=protected-access
         await session.refresh(payment)
 
-        self.assertIsNotNone(payment.lesson_id)
-        restored = await session.get(RecordDate, int(payment.lesson_id))
-        self.assertIsNotNone(restored)
-        self.assertEqual(restored.kind, "historical")
-        self.assertEqual(restored.record_date, lesson_date)
-        self.assertEqual(restored.duration_minutes, 120)
+        self.assertIsNone(payment.lesson_id)
+        restored = (
+            await session.execute(
+                select(RecordDate).where(
+                    RecordDate.telegram_id == self.telegram_id,
+                    RecordDate.record_date == lesson_date,
+                    RecordDate.hour == 19,
+                    RecordDate.minute == 0,
+                )
+            )
+        ).scalar_one_or_none()
+        self.assertIsNone(restored)
 
     async def test_rejected_booking_is_not_shown_in_calendar(self) -> None:
         lesson_date = datetime.date.today() + datetime.timedelta(days=7)

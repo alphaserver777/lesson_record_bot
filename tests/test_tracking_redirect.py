@@ -1,12 +1,8 @@
 import os
-import tempfile
 import unittest
 
-
-_db_file = tempfile.NamedTemporaryFile(prefix="tracking-redirect-", suffix=".db", delete=False)
-_db_file.close()
-os.environ["DB_PATH"] = _db_file.name
-os.environ.pop("DATABASE_URL", None)
+TEST_DATABASE_URL = os.getenv("TEST_DATABASE_URL", "")
+os.environ["DATABASE_URL"] = TEST_DATABASE_URL or "postgresql+asyncpg://postgres:postgres@127.0.0.1:5432/professorit_test"
 os.environ.setdefault("BOT_TOKEN", "123456789:ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghi")
 os.environ.setdefault("BEGINNING_WORKING_DAY", "9")
 os.environ.setdefault("END_WORKING_DAY", "22")
@@ -23,6 +19,7 @@ from webapi.main import public_track_event, public_tracking_redirect  # noqa: E4
 from webapi.schemas import PublicAnalyticsEventIn  # noqa: E402
 
 
+@unittest.skipUnless(TEST_DATABASE_URL, "нужна TEST_DATABASE_URL для PostgreSQL")
 class PublicTrackingRedirectTest(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self) -> None:
         await transactions.init_db()

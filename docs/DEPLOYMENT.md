@@ -71,3 +71,20 @@ ssh deploy@192.168.50.111 'docker logs --tail 80 professorit-frontend'
 
 Не использовать Germany2 как rollback-цель без отдельного решения: это старый
 контур с отличающимся состоянием данных.
+
+## Очистка ошибочных прошлых занятий
+
+После создания backup сначала выполнить отчёт:
+
+```bash
+docker exec professorit-api python scripts/repair_erroneous_historical_lessons.py
+```
+
+Проверить список, затем удалить только подтверждённые строки:
+
+```bash
+docker exec professorit-api python scripts/repair_erroneous_historical_lessons.py --apply
+```
+
+Скрипт затрагивает только прошлые `record_dates` с точной служебной пометкой
+`Восстановлено из истории оплат`; оплаты сохраняются.
