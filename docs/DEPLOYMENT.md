@@ -1,6 +1,6 @@
 # Production deployment
 
-Актуально на 16 августа 2026 года. Рабочий production-контур находится в
+Актуально на 3 сентября 2026 года. Рабочий production-контур находится в
 Ubuntu VM `professorit-web`, VM 201 (`192.168.50.111`) российского
 Proxmox-кластера.
 
@@ -77,14 +77,22 @@ ssh deploy@192.168.50.111 'docker logs --tail 80 professorit-frontend'
 После создания backup сначала выполнить отчёт:
 
 ```bash
-docker exec professorit-api python scripts/repair_erroneous_historical_lessons.py
+docker exec professorit-api sh -lc 'cd /app && PYTHONPATH=/app python scripts/repair_erroneous_historical_lessons.py'
 ```
 
 Проверить список, затем удалить только подтверждённые строки:
 
 ```bash
-docker exec professorit-api python scripts/repair_erroneous_historical_lessons.py --apply
+docker exec professorit-api sh -lc 'cd /app && PYTHONPATH=/app python scripts/repair_erroneous_historical_lessons.py --apply'
 ```
 
 Скрипт затрагивает только прошлые `record_dates` с точной служебной пометкой
 `Восстановлено из истории оплат`; оплаты сохраняются.
+
+## Поля лида
+
+Цена занятия и имя пользователя Telegram являются полями контакта и доступны
+до появления профиля ученика. При создании лида они сохраняются в `contacts`;
+при наличии связанного Telegram ID имя пользователя синхронизируется с
+`telegram_identities.username`. После изменений схемы проверить наличие
+`contacts.price` и `contacts.telegram_username` в PostgreSQL.

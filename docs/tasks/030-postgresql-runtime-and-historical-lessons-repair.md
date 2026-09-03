@@ -24,6 +24,8 @@ Done
 - startup проверяет только схему и связи, без data backfill;
 - отдельный скрипт отчёта и очистки строк, восстановленных ошибочной миграцией;
 - PostgreSQL smoke-проверки и инструкция deploy.
+- поля цены занятия и имени пользователя Telegram у контакта-лида;
+- форма создания лида с вводом цены и Telegram.
 
 ## Safety
 
@@ -35,3 +37,8 @@ Done
 - runtime-код не содержит SQLite URL, `PRAGMA` или `aiosqlite`;
 - `compileall` успешно проверяет Python-исходники;
 - интеграционные тесты требуют отдельный `TEST_DATABASE_URL` PostgreSQL.
+- production после выкладки: удалено 628 ошибочно восстановленных прошлых
+  строк, повторный отчёт вернул `0`;
+- в PostgreSQL добавлены `contacts.price` и `contacts.telegram_username`;
+- релизы `5fdf7c9` и `c7dd67f` опубликованы в ветке
+  `release/contact-unification`.
