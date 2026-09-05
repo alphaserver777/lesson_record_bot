@@ -5,6 +5,7 @@ import logging
 
 from config_data.config import REMINDER_TIME
 from database import transactions
+from database.connect import remove_session
 from utils.calendar_backend import get_calendar_tz
 from utils.misc.reminder import reminder, reminder_before_delta, send_daily_admin_summary, send_presence_prompts
 from webapi.lms_notifications import check_lms_health, purge_old_events
@@ -13,6 +14,14 @@ logger = logging.getLogger(__name__)
 
 
 async def restarting_services() -> None:
+    """Выполняет планировщик и освобождает соединение при остановке."""
+    try:
+        await _restarting_services_loop()
+    finally:
+        await remove_session()
+
+
+async def _restarting_services_loop() -> None:
     """
     Notification-only scheduler:
     - daily cleanup,
@@ -25,6 +34,7 @@ async def restarting_services() -> None:
     """
     await transactions.deleting_records_older_7_days()
     await transactions.deletes_old_users()
+    await remove_session()
 
     reminder_hour = 10
     reminder_minute = 0
@@ -84,4 +94,8 @@ async def restarting_services() -> None:
         except Exception as exc:  # pylint: disable=broad-except
             logger.warning("Reminder loop warning: %s", exc)
 
+        # Запросы планировщика могут оставить транзакцию чтения открытой.
+        # Нельзя удерживать её во время ожидания следующего прохода: она
+        # блокирует безопасную миграцию схемы при перезапуске API.
+        await remove_session()
         await asyncio.sleep(60)
