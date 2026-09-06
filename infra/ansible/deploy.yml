@@ -14,6 +14,13 @@
           - release_id is defined
           - release_id | length > 0
 
+    - name: Verify that source contains the complete CRM contour
+      ansible.builtin.command:
+        argv:
+          - python3
+          - "{{ playbook_dir }}/../../scripts/verify_crm_release.py"
+      changed_when: false
+
     - name: Require all runtime secrets
       ansible.builtin.stat:
         path: "{{ runtime_root }}/secrets/{{ item }}"
@@ -118,6 +125,20 @@
         body_format: json
         body: {}
         status_code: 422
+
+    - name: Verify CRM contacts route through Nginx
+      ansible.builtin.uri:
+        url: http://127.0.0.1/cabinet/api/admin/contacts?page=1&page_size=1
+        headers:
+          Host: crm.professorit.ru
+        status_code: 401
+
+    - name: Verify CRM funnel route through Nginx
+      ansible.builtin.uri:
+        url: http://127.0.0.1/cabinet/api/admin/funnel/stages
+        headers:
+          Host: crm.professorit.ru
+        status_code: 401
 
     - name: Find stale releases
       ansible.builtin.find:
