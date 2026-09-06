@@ -1262,7 +1262,9 @@ async def public_prodamus_webhook(request: Request) -> PlainTextResponse:
     session.add(payment)
     await session.flush()
     enrollment.payment_id = payment.id
-    enrollment.status = "quest_ready"
+    # Оплата фиксируется до внешнего вызова LMS: временная ошибка выдачи
+    # доступа не имеет права отменять подтверждённую выручку.
+    enrollment.status = "payment_received"
     enrollment.updated_at = now
     if not int(opportunity.paid_amount or 0):
         opportunity.paid_amount = enrollment.price_amount
@@ -1298,6 +1300,7 @@ async def public_prodamus_webhook(request: Request) -> PlainTextResponse:
             created_at=now,
         )
     )
+    await session.commit()
     lms_delivery_error = None
     if lms_login:
         temporary_password = generate_temporary_password()
@@ -1309,6 +1312,8 @@ async def public_prodamus_webhook(request: Request) -> PlainTextResponse:
                 last_name=contact.last_name,
                 password=temporary_password,
             )
+            enrollment.status = "quest_ready"
+            enrollment.updated_at = _iso_utc_now()
             identity = (
                 await session.execute(
                     select(TelegramIdentity).where(TelegramIdentity.contact_id == contact.id)
@@ -1337,6 +1342,9 @@ async def public_prodamus_webhook(request: Request) -> PlainTextResponse:
                 await bot.send_message(identity.telegram_id, message)
         except Exception as exc:  # noqa: BLE001
             logger.exception("LMS provisioning failed for enrollment=%s", enrollment.id)
+            enrollment.status = "payment_received"
+            enrollment.updated_at = _iso_utc_now()
+            await session.commit()
             raise HTTPException(status_code=503, detail={"code": "LMS_PROVISIONING_FAILED"}) from exc
     else:
         lms_delivery_error = "в уведомлении Prodamus и карточке контакта нет почты"

@@ -62,6 +62,14 @@ ssh deploy@192.168.50.111 'docker logs --tail 80 professorit-frontend'
 Бот считается готовым, если `professorit-bot` имеет `running/healthy`, `/ready`
 возвращает `{"status": "ready"}`, а логи содержат `Start polling`.
 
+## Оплата тест-драйва
+
+Prodamus вызывает `https://professorit.ru/api/public/payments/prodamus/webhook`.
+CRM сначала сохраняет оплату в PostgreSQL со статусом `payment_received`, затем
+создаёт доступ в LMS и переводит заявку в `quest_ready`. Ошибка LMS не отменяет
+оплату. При ошибке проверить `professorit-api`, наличие `LMS_INTERNAL_SECRET` в
+контейнере `lms-backend-1` и повторить уведомление в кабинете Prodamus.
+
 ## Rollback
 
 1. Переключить `/srv/professorit-app/current` на предыдущий immutable release.
