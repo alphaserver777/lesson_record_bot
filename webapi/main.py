@@ -929,6 +929,48 @@ async def _bind_devops_start_identity(contact_id: int, token: str | None, now: s
     return False
 
 
+@app.post("/api/public/mentorship-leads")
+async def public_create_mentorship_lead(payload: dict[str, Any], request: Request) -> dict[str, Any]:
+    """Принимает анкету продажника наставничества в единый реестр CRM."""
+    _public_request_guard(request, limit=8, window_seconds=300)
+    contact_value = str(payload.get("contact") or "").strip().lstrip("@")
+    plan = str(payload.get("plan") or "").strip()
+    if not contact_value or not plan:
+        raise HTTPException(status_code=422, detail={"code": "INVALID_MENTORSHIP_LEAD"})
+    now = _iso_utc_now()
+    contact = Contact(
+        first_name=contact_value,
+        telephone=None,
+        telegram_username=contact_value,
+        preferred_channel="telegram",
+        status="lead",
+        is_archived=False,
+        acquisition_source="website",
+        acquired_at=datetime.date.today(),
+        created_at=now,
+        updated_at=now,
+    )
+    session.add(contact)
+    await session.flush()
+    stages = await _funnel_stages()
+    opportunity = Opportunity(
+        contact_id=contact.id, source="website", direction="mentorship",
+        qualification_status="new", desired_format=plan, stage=stages[0].key,
+        notes=str(payload.get("comment") or ""), brief_json=json.dumps(payload, ensure_ascii=False),
+        landing_page=str(payload.get("source") or "/mentorship/"), public_token=uuid4().hex,
+        idempotency_key=f"mentorship:{uuid4().hex}", created_at=now, updated_at=now,
+    )
+    session.add(opportunity)
+    await session.commit()
+    await _notify_admins(
+        "🧭 Новая анкета наставничества\n"
+        f"Telegram: @{contact_value}\nТариф: {plan}\n"
+        f"Опыт: {payload.get('experience', '—')}/10\nВозраст: {payload.get('age', '—')}\n"
+        f"Военный билет: {payload.get('military', '—')}\nВремя: {payload.get('hours', '—')}"
+    )
+    return {"status": "accepted", "lead_id": opportunity.id}
+
+
 @app.post("/api/public/briefs")
 async def public_create_test_drive(
     payload: PublicBriefIn,
