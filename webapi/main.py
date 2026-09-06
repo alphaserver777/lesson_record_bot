@@ -28,7 +28,12 @@ from database.models import RecordDate, StudentProfile
 from loader import bot
 from utils.calendar_backend import get_busy_intervals, get_calendar_tz
 from utils.schedule import WEEK_SCHEDULE, is_time_in_schedule, slots_for_date
-from webapi.auth import issue_session_token, verify_init_data, verify_session_token
+from webapi.auth import (
+    issue_session_token,
+    verify_init_data,
+    verify_login_widget_data,
+    verify_session_token,
+)
 from webapi.probes import router as probes_router
 from webapi.lms_notifications import router as lms_notifications_router
 from webapi.schemas import (
@@ -38,6 +43,7 @@ from webapi.schemas import (
     AdminBlockPreviewIn,
     AdminUserPatchIn,
     AuthIn,
+    TelegramWidgetAuthIn,
     BookIn,
     BroadcastIn,
     LessonCloseIn,
@@ -499,6 +505,33 @@ async def auth_telegram(payload: AuthIn) -> dict[str, Any]:
             "role": role,
             "full_name": None,
             "username": data.get("username"),
+        },
+    }
+
+
+@app.post("/api/auth/telegram/login-widget")
+async def auth_telegram_login_widget(payload: TelegramWidgetAuthIn) -> dict[str, Any]:
+    try:
+        data = verify_login_widget_data(payload.model_dump())
+    except (KeyError, ValueError) as exc:
+        raise HTTPException(status_code=401, detail=f"auth failed: {exc}") from exc
+
+    await transactions.upsert_student_profile(
+        telegram_id=data["telegram_id"],
+        first_name=data.get("first_name"),
+        last_name=data.get("last_name"),
+        username=data.get("username") or None,
+    )
+    await transactions.update_visit_date(data["telegram_id"])
+    role = _role_for_user(data["telegram_id"])
+    return {
+        "access_token": issue_session_token(data["telegram_id"], role),
+        "user": {
+            "telegram_id": data["telegram_id"],
+            "role": role,
+            "full_name": data.get("full_name") or None,
+            "username": data.get("username"),
+            "auth_method": "telegram_widget",
         },
     }
 
