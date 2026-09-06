@@ -26,6 +26,13 @@ class TestNotificationRendering(unittest.TestCase):
         self.assertIn('&lt;script&gt;', message)
         self.assertNotIn('<script>', message)
 
+    def test_lab_events_include_student_and_state(self):
+        message, _ = render({'event_type': 'lab.reserved', 'student': 'Иван'})
+        self.assertIn('стенд занят', message)
+        self.assertIn('Иван', message)
+        message, _ = render({'event_type': 'lab.released', 'student': 'Иван'})
+        self.assertIn('стенд свободен', message)
+
 
 if __name__ == '__main__':
     unittest.main()
