@@ -19,6 +19,8 @@
         argv:
           - python3
           - "{{ playbook_dir }}/../../scripts/verify_crm_release.py"
+      delegate_to: localhost
+      run_once: true
       changed_when: false
 
     - name: Require all runtime secrets

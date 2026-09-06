@@ -5,6 +5,7 @@ import logging
 from loader import bot
 
 from database import transactions
+from database.connect import remove_session
 from config_data.config import ADMINS_TELEGRAM_ID
 from keyboards.inline.presence_confirm import presence_confirm_kb
 from utils.schedule import SLOT_DURATION_MINUTES
@@ -70,6 +71,7 @@ def _daily_admin_summary_text(date: datetime.date, lessons: list[dict]) -> str:
 async def send_daily_admin_summary(date: datetime.date) -> None:
     """Отправляет администраторам утреннюю сводку занятий на день."""
     lessons = await transactions.lessons_for_date_details(date)
+    await remove_session()
     summary_text = _daily_admin_summary_text(date, lessons)
     for admin_id in ADMINS_TELEGRAM_ID:
         try:
@@ -93,6 +95,7 @@ async def reminder_before_start(target_datetime: datetime.datetime) -> None:
     res = await transactions.records_starting_at_details(
         target_datetime.date(), target_datetime.hour, target_datetime.minute
     )
+    await remove_session()
     if not res:
         return
 
@@ -120,6 +123,7 @@ async def reminder_before_delta(target_datetime: datetime.datetime, delta_minute
     res = await transactions.records_starting_at_details(
         target_datetime.date(), target_datetime.hour, target_datetime.minute
     )
+    await remove_session()
     if not res:
         return
 
@@ -152,6 +156,7 @@ async def send_presence_prompts(date: datetime.date, force_pending: bool = False
     Иначе шлём только тем, у кого статус не yes/no, или status is NULL (не отправлялось).
     """
     lessons = await transactions.pending_presence_for_date(date)
+    await remove_session()
     seen = set()
     now_dt = datetime.datetime.now(get_calendar_tz())
     for rec in lessons:
@@ -198,3 +203,4 @@ async def send_presence_prompts(date: datetime.date, force_pending: bool = False
         await transactions.mark_presence_status(
             user_id, date, hour, minute, "pending", presence_message_id=sent_message.message_id
         )
+        await remove_session()

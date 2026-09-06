@@ -5,6 +5,8 @@ import datetime
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 
+from database import transactions
+
 from utils.calendar_backend import CalendarBackendError, get_busy_intervals, get_calendar_tz
 from utils.misc.weekend_reservations import ListWeekends
 from utils.schedule import SLOT_DURATION_MINUTES, slots_for_date
@@ -49,6 +51,9 @@ async def _day_marker(date_obj: datetime.date) -> tuple[str, str]:
     """Возвращает (текст_кнопки, callback_data) с пометкой занятости."""
     slots = slots_for_date(date_obj)
     if not slots:
+        return _strike(str(date_obj.day)), "ignore"
+
+    if await transactions.is_day_reserved(date_obj):
         return _strike(str(date_obj.day)), "ignore"
 
     try:

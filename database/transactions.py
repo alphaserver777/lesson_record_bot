@@ -6,7 +6,7 @@ import logging
 import re
 from typing import Any
 
-from sqlalchemy import case, delete, func, select, text, update
+from sqlalchemy import case, delete, func, or_, select, text, update
 from sqlalchemy.exc import IntegrityError
 
 from database.connect import Base, engine, remove_session, session
@@ -145,7 +145,6 @@ async def ensure_canonical_contact_for_profile(profile: StudentProfile) -> Conta
         if campaign_source != lead_magnet_source:
             contact.acquisition_campaign_id = None
             contact.acquisition_campaign = None
-
     profile.contact_id = contact.id
     if telephone:
         profile.telephone = telephone
@@ -166,6 +165,14 @@ async def ensure_canonical_contact_for_profile(profile: StudentProfile) -> Conta
         identity.username = profile.telegram_username or identity.username
         identity.updated_at = now
     return contact
+
+
+def _regular_lesson_started_by(target_date: datetime.date):
+    """Условие активности регулярной серии на указанную дату."""
+    return or_(
+        RegularLesson.lesson_date.is_(None),
+        RegularLesson.lesson_date <= target_date,
+    )
 
 
 async def init_db() -> None:
@@ -356,6 +363,7 @@ async def pending_presence_for_date(date: datetime.date) -> list[Any]:
         ).where(
             RegularLesson.day_of_week == weekday,
             RegularLesson.telegram_id.is_not(None),
+            _regular_lesson_started_by(target_date),
         )
     )
     new_records: list[tuple] = []
@@ -570,6 +578,7 @@ async def find_regular_lesson_for_occurrence(
             RegularLesson.day_of_week == weekday,
             RegularLesson.hour == hour,
             RegularLesson.minute == minute,
+            _regular_lesson_started_by(date),
         )
     )
     return res.scalars().first()
@@ -868,6 +877,7 @@ async def is_slot_overlapping_local(
         select(RegularLesson.id, RegularLesson.hour, RegularLesson.minute, RegularLesson.duration_minutes).where(
             RegularLesson.day_of_week == weekday,
             RegularLesson.telegram_id.is_not(None),
+            _regular_lesson_started_by(date),
         )
     )
     for reg in regs:
@@ -1370,7 +1380,7 @@ async def ensure_regular_lesson_template(
         username=None,
         cost=profile.price if profile else None,
         day_of_week=weekday,
-        lesson_date=None,
+        lesson_date=date,
         hour=hour,
         minute=minute,
         duration_minutes=duration_minutes,
@@ -2143,6 +2153,7 @@ async def find_conflicting_lessons(
         .where(
             RegularLesson.day_of_week == weekday,
             RegularLesson.telegram_id.is_not(None),
+            _regular_lesson_started_by(date),
         )
     )
     for row in regular_rows:
@@ -2370,6 +2381,46 @@ async def reserve_day(
     return 1 if created >= 0 else 0
 
 
+async def is_day_reserved(date: datetime.date) -> bool:
+    """Проверяет, перекрыта ли блокировками вся рабочая часть дня."""
+    target_date = date.date() if isinstance(date, datetime.datetime) else date
+    working_segments = block_segments_for_date(target_date, all_day=True)
+    if not working_segments:
+        return False
+
+    await migrate_legacy_full_day_block(target_date)
+    rows = await session.execute(
+        select(RecordDate.hour, RecordDate.minute, RecordDate.duration_minutes).where(
+            RecordDate.record_date == target_date,
+            RecordDate.kind == "block",
+            RecordDate.telegram_id.is_(None),
+        )
+    )
+    blocked_segments = sorted(
+        (
+            int(row.hour or 0) * 60 + int(row.minute or 0),
+            int(row.hour or 0) * 60 + int(row.minute or 0) + max(1, int(row.duration_minutes or SLOT_STEP_MINUTES)),
+        )
+        for row in rows
+    )
+    if not blocked_segments:
+        return False
+
+    for work_start, work_end in working_segments:
+        covered_until = work_start
+        for block_start, block_end in blocked_segments:
+            if block_end <= covered_until:
+                continue
+            if block_start > covered_until:
+                break
+            covered_until = max(covered_until, block_end)
+            if covered_until >= work_end:
+                break
+        if covered_until < work_end:
+            return False
+    return True
+
+
 async def list_date_availability_overrides(target_date: datetime.date) -> list[dict[str, Any]]:
     rows = await session.execute(
         select(DateAvailabilityOverride).where(
@@ -2521,7 +2572,10 @@ async def viewing_recordings_day_db(date: datetime, show_blocks: bool = False) -
             RegularLesson.duration_minutes,
         )
         .join(StudentProfile, StudentProfile.telegram_id == RegularLesson.telegram_id, isouter=True)
-        .where(RegularLesson.day_of_week == weekday)
+        .where(
+            RegularLesson.day_of_week == weekday,
+            _regular_lesson_started_by(target_date),
+        )
     )
 
     seen_reg_slots: set[tuple[int | None, int, int]] = set()
@@ -2952,6 +3006,7 @@ async def records_starting_at_details(date: datetime.date, hour: int, minute: in
             RecordDate.minute,
             RecordDate.duration_minutes,
             RecordDate.kind,
+            RecordDate.presence_status,
         )
         .join(StudentProfile, StudentProfile.telegram_id == RecordDate.telegram_id)
         .where(
@@ -2967,6 +3022,10 @@ async def records_starting_at_details(date: datetime.date, hour: int, minute: in
         tg_id = int(row.telegram_id)
         key = (tg_id, int(row.hour), int(row.minute))
         seen.add(key)
+        # Отказ ученика должен подавлять краткие напоминания. Запись остаётся
+        # в seen, чтобы не подставить вместо неё регулярный шаблон.
+        if row.presence_status == "no":
+            continue
         last_lesson = await last_lesson_before_slot(tg_id, date, hour, minute)
         duration_val = int(row.duration_minutes or SLOT_DURATION_MINUTES)
         price_60 = int(row.price or 0)
@@ -3005,6 +3064,7 @@ async def records_starting_at_details(date: datetime.date, hour: int, minute: in
             RegularLesson.telegram_id.is_not(None),
             RegularLesson.hour == hour,
             RegularLesson.minute == minute,
+            _regular_lesson_started_by(date),
         )
     )
     for row in regs:
@@ -3122,6 +3182,7 @@ async def lessons_for_date_details(date: datetime.date) -> list[dict[str, Any]]:
         .where(
             RegularLesson.day_of_week == weekday,
             RegularLesson.telegram_id.is_not(None),
+            _regular_lesson_started_by(date),
         )
     )
     for row in regs:
@@ -3204,7 +3265,10 @@ async def lessons_for_date(date: datetime.date) -> list[Any]:
             RegularLesson.hour,
             RegularLesson.minute,
             RegularLesson.duration_minutes,
-        ).where(RegularLesson.day_of_week == weekday)
+        ).where(
+            RegularLesson.day_of_week == weekday,
+            _regular_lesson_started_by(date),
+        )
     )
     for row in regular:
         if int(row.id) in skipped_ids:

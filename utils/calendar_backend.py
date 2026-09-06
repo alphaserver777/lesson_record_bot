@@ -5,7 +5,7 @@ import uuid
 from typing import Iterable, List, Tuple
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from sqlalchemy import select
+from sqlalchemy import or_, select
 
 from database.connect import session
 from database.models import RecordDate, RegularLesson, RegularLessonException
@@ -91,6 +91,10 @@ async def get_busy_intervals(
         select(RegularLesson.id, RegularLesson.hour, RegularLesson.minute, RegularLesson.duration_minutes).where(
             RegularLesson.day_of_week == weekday,
             RegularLesson.telegram_id.is_not(None),
+            or_(
+                RegularLesson.lesson_date.is_(None),
+                RegularLesson.lesson_date <= target_date,
+            ),
         )
     )
     for row in regulars:

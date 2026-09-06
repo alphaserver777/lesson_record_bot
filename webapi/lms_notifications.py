@@ -21,7 +21,16 @@ from loader import bot
 
 
 router = APIRouter()
-ALLOWED_TYPES = {"assignment.submitted", "assignment.resubmitted", "assignment.review_digest", "lms.health_failed", "lms.health_recovered"}
+ALLOWED_TYPES = {
+    "assignment.submitted",
+    "assignment.resubmitted",
+    "assignment.review_digest",
+    "lms.health_failed",
+    "lms.health_recovered",
+    "lab.reserved",
+    "lab.ready",
+    "lab.released",
+}
 
 
 def _verify(timestamp: str, event_id: str, signature: str, body: bytes) -> None:
@@ -53,14 +62,35 @@ def _message(payload: dict) -> tuple[str, str]:
         return "🔴 <b>LMS Professor IT недоступна</b>\nТри последовательные проверки завершились ошибкой.", payload.get("url", "https://academy.professorit.ru")
     if event_type == "lms.health_recovered":
         return "🟢 <b>LMS Professor IT восстановлена</b>", payload.get("url", "https://academy.professorit.ru")
+    if event_type == "lab.reserved":
+        return (
+            "🔒 <b>Учебный стенд занят</b>\n"
+            f"Ученик: {html.escape(payload.get('student') or '')}\n"
+            "Стенд готовится к работе.",
+            payload.get("url", "https://academy.professorit.ru/app/professor-it"),
+        )
+    if event_type == "lab.ready":
+        return (
+            "🟡 <b>Учебный стенд готов</b>\n"
+            f"Ученик: {html.escape(payload.get('student') or '')}\n"
+            f"Доступ до: {html.escape(payload.get('expires_at') or '')}",
+            payload.get("url", "https://academy.professorit.ru/app/professor-it"),
+        )
+    if event_type == "lab.released":
+        return (
+            "🟢 <b>Учебный стенд свободен</b>\n"
+            f"Предыдущий сеанс: {html.escape(payload.get('student') or '')}\n"
+            f"Причина: {html.escape(payload.get('reason') or 'сеанс завершён')}",
+            payload.get("url", "https://academy.professorit.ru/app/professor-it"),
+        )
     title = "Повторная сдача" if event_type == "assignment.resubmitted" else "Новая работа"
     text = (
         f"<b>{title}</b>\n"
-        f"Ученик: {html.escape(payload.get('student', ''))}\n"
-        f"Курс: {html.escape(payload.get('course', ''))}\n"
-        f"Урок: {html.escape(payload.get('lesson', ''))}\n"
-        f"Задание: {html.escape(payload.get('assignment', ''))}\n"
-        f"Время: {html.escape(payload.get('occurred_at', ''))}"
+        f"Ученик: {html.escape(payload.get('student') or '')}\n"
+        f"Курс: {html.escape(payload.get('course') or '')}\n"
+        f"Урок: {html.escape(payload.get('lesson') or '')}\n"
+        f"Задание: {html.escape(payload.get('assignment') or '')}\n"
+        f"Время: {html.escape(payload.get('occurred_at') or '')}"
     )
     return text, payload.get("url", "https://academy.professorit.ru/app/professor-it")
 

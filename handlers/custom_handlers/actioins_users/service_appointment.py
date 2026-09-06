@@ -37,6 +37,12 @@ async def service_appointment_1(message: types.Message, state: FSMContext):
         f"Выбрана дата: {selected_date.day}-{selected_date.month}-{selected_date.year}"
     )
 
+    if await transactions.is_day_reserved(selected_date):
+        await message.message.answer("Этот день зарезервирован администратором. Выберите другую дату.")
+        await state.clear()
+        await start_command(message, state)
+        return
+
     try:
         busy_intervals = await get_busy_intervals(selected_date)
     except CalendarBackendError as err:

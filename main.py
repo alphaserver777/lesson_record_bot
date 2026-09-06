@@ -34,7 +34,8 @@ async def main(bot: Bot, dp: Dispatcher) -> None:
 
     services_task = asyncio.create_task(restarting_services())
 
-    await bot.delete_webhook(drop_pending_updates=True)
+    # При перезапуске не теряем сообщения, ожидающие получения ботом.
+    await bot.delete_webhook(drop_pending_updates=False)
     health_state.ready = True
     try:
         await dp.start_polling(bot)

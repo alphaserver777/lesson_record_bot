@@ -34,6 +34,7 @@ async def _restarting_services_loop() -> None:
     """
     await transactions.deleting_records_older_7_days()
     await transactions.deletes_old_users()
+    await remove_session()
 
     reminder_hour = 10
     reminder_minute = 0
@@ -93,4 +94,6 @@ async def _restarting_services_loop() -> None:
         except Exception as exc:  # pylint: disable=broad-except
             logger.warning("Reminder loop warning: %s", exc)
 
+        # Не удерживаем транзакцию PostgreSQL во время ожидания следующего прохода.
+        await remove_session()
         await asyncio.sleep(60)
