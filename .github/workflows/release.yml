@@ -1,0 +1,46 @@
+name: Создать выпуск
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Выпускная метка вида professorit-vX.Y.Z
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  quality:
+    uses: ./.github/workflows/quality.yml
+
+  tag_release:
+    name: Подписать выпуск
+    needs: quality
+    runs-on: ubuntu-latest
+    environment: release
+    if: github.ref == 'refs/heads/main'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Проверить основную ветку и имя метки
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          python -c 'import re, os, sys; sys.exit(not bool(re.fullmatch(r"professorit-v\d+\.\d+\.\d+", os.environ["VERSION"])))'
+          test "$GITHUB_SHA" = "$(git rev-parse origin/main)"
+          ! git rev-parse -q --verify "refs/tags/$VERSION"
+      - name: Создать аннотированную метку
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          git config user.name "Professor IT release"
+          git config user.email "release@users.noreply.github.com"
+          git tag -a "$VERSION" -m "Выпуск $VERSION" "$GITHUB_SHA"
+          git push origin "$VERSION"

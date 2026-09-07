@@ -3,6 +3,7 @@ import logging
 from asyncio import get_event_loop
 
 from aiogram import Bot, Dispatcher
+from aiogram.client.default import DefaultBotProperties
 from aiogram.client.session.aiohttp import AiohttpSession
 from aiogram.enums import ParseMode
 
@@ -26,7 +27,7 @@ telegram_session = (
 )
 bot = Bot(
     token=BOT_TOKEN,
-    parse_mode=ParseMode.HTML,
+    default=DefaultBotProperties(parse_mode=ParseMode.HTML),
     session=telegram_session,
 )
 loop = get_event_loop()
