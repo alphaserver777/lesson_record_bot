@@ -1,0 +1,105 @@
+name: Качество и безопасность
+
+on:
+  pull_request:
+    branches: [main, develop]
+  push:
+    branches: ["**"]
+  workflow_call:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: quality-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  static_checks:
+    name: Исходники и Ansible
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+      - run: python scripts/verify_crm_release.py
+      - run: python scripts/verify_cicd_source.py
+      - run: python -m compileall -q database webapi utils main.py main_webapi.py
+      - run: python -m pip install --no-cache-dir ruff==0.8.6 ansible-core==2.17.7
+      - run: ruff check --select=E9,F63,F7,F82 database webapi utils main.py main_webapi.py
+      - run: ansible-galaxy collection install -r infra/ansible/requirements.yml
+      - run: cd infra/ansible && ANSIBLE_LOCAL_TEMP=/tmp/ansible-local ansible-playbook --syntax-check deploy.yml
+
+  critical_business_flows:
+    name: Запись и оплата
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_DB: professorit_test
+          POSTGRES_USER: professorit_test
+          POSTGRES_PASSWORD: professorit_test
+        options: >-
+          --health-cmd "pg_isready -U professorit_test -d professorit_test"
+          --health-interval 2s
+          --health-timeout 2s
+          --health-retries 30
+        ports:
+          - 5432:5432
+    env:
+      TEST_DATABASE_URL: postgresql+asyncpg://professorit_test:professorit_test@127.0.0.1:5432/professorit_test
+      DATABASE_URL: postgresql+asyncpg://professorit_test:professorit_test@127.0.0.1:5432/professorit_test
+      BOT_TOKEN: 123456:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
+      BEGINNING_WORKING_DAY: "9"
+      END_WORKING_DAY: "18"
+      CALENDAR_TIMEZONE: Europe/Moscow
+      LMS_INTERNAL_SECRET: test-lms-internal-secret
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+      - run: python -m pip install --no-cache-dir -r requirements.txt
+      - run: python -m unittest tests.test_critical_business_flows -v
+
+  miniapp_build:
+    name: Сборка кабинета
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: miniapp
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - run: npm install --ignore-scripts
+      - run: npm run build
+
+  dependency_audit:
+    name: Проверка зависимостей
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+      - run: python -m pip install --no-cache-dir pip-audit==2.7.3
+      - run: pip-audit --requirement requirements.txt
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - run: cd miniapp && npm install --ignore-scripts && npm audit --omit=dev --audit-level=high
+
+  secret_scan:
+    name: Поиск секретов
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
