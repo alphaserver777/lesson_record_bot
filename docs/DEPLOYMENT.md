@@ -67,10 +67,18 @@ ssh deploy@192.168.50.111 'docker logs --tail 80 professorit-frontend'
 ## Оплата тест-драйва
 
 Prodamus вызывает `https://professorit.ru/api/public/payments/prodamus/webhook`.
-CRM сначала сохраняет оплату в PostgreSQL со статусом `payment_received`, затем
-создаёт доступ в LMS и переводит заявку в `quest_ready`. Ошибка LMS не отменяет
-оплату. При ошибке проверить `professorit-api`, наличие `LMS_INTERNAL_SECRET` в
-контейнере `lms-backend-1` и повторить уведомление в кабинете Prodamus.
+CRM сохраняет оплату и задачу выдачи в PostgreSQL, затем сразу пытается создать
+доступ. При недоступности LMS или Telegram задача автоматически повторяется ботом:
+сначала через 2 минуты, затем с увеличением паузы до часа. Повторное уведомление
+Prodamus для этого не нужно и не создаёт вторую выдачу.
+
+Очередь находится в таблице `test_drive_lms_deliveries`. Статусы: `pending` —
+ожидает первого запуска, `retrying` — ожидает повтора, `processing` — выполняется,
+`delivered` — доступ отправлен. Временный пароль не хранится в таблице: он
+повторяемо вычисляется из закрытого ключа интеграции и идентификатора задачи.
+При длительной ошибке проверить `professorit-api`, работающий Telegram-бот
+и наличие `LMS_INTERNAL_SECRET` в контейнере `lms-backend-1`; затем смотреть
+`last_error` и `next_retry_at` только через защищённый доступ к PostgreSQL.
 
 ## Rollback
 

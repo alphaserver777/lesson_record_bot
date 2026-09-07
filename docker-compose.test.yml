@@ -22,6 +22,7 @@ services:
       BEGINNING_WORKING_DAY: "9"
       END_WORKING_DAY: "18"
       CALENDAR_TIMEZONE: Europe/Moscow
+      LMS_INTERNAL_SECRET: test-lms-internal-secret
     volumes:
       - .:/app
     entrypoint: ["python", "-m", "unittest"]
