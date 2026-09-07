@@ -30,6 +30,7 @@ jobs:
       BEGINNING_WORKING_DAY: "9"
       END_WORKING_DAY: "18"
       CALENDAR_TIMEZONE: Europe/Moscow
+      LMS_INTERNAL_SECRET: test-lms-internal-secret
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5

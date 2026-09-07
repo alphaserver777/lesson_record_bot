@@ -9,6 +9,7 @@ from database.connect import remove_session
 from utils.calendar_backend import get_calendar_tz
 from utils.misc.reminder import reminder, reminder_before_delta, send_daily_admin_summary, send_presence_prompts
 from webapi.lms_notifications import check_lms_health, purge_old_events
+from webapi.lms_provisioning import process_due_lms_deliveries
 
 logger = logging.getLogger(__name__)
 
@@ -62,6 +63,13 @@ async def _restarting_services_loop() -> None:
             await check_lms_health()
         except Exception as exc:  # pylint: disable=broad-except
             logger.warning("LMS health check warning: %s", exc)
+
+        try:
+            result = await process_due_lms_deliveries(limit=10)
+            if result["retrying"]:
+                logger.warning("Повторная выдача LMS отложена: %s", result["retrying"])
+        except Exception as exc:  # pylint: disable=broad-except
+            logger.exception("LMS delivery queue warning: %s", exc)
 
         if last_lms_cleanup_date != current_date:
             try:

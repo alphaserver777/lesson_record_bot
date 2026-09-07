@@ -11,8 +11,9 @@ from sqlalchemy import func, select, text  # noqa: E402
 
 from database import transactions  # noqa: E402
 from database.connect import engine, remove_session, session  # noqa: E402
-from database.models import Contact, Opportunity, Payment, RecordDate, TestDriveEnrollment, WebAnalyticsEvent  # noqa: E402
+from database.models import Contact, Opportunity, Payment, RecordDate, TestDriveEnrollment, TestDriveLmsDelivery, WebAnalyticsEvent  # noqa: E402
 from webapi import main as api  # noqa: E402
+from webapi import lms_provisioning  # noqa: E402
 from webapi.prodamus import sign_payload  # noqa: E402
 
 
@@ -102,7 +103,8 @@ class CriticalBusinessFlowsTest(unittest.IsolatedAsyncioTestCase):
 
         with (
             patch.object(api, "PRODAMUS_SECRET_KEY", "critical-test-secret"),
-            patch.object(api, "provision_test_drive", provision),
+            patch.object(lms_provisioning, "provision_test_drive", provision),
+            patch.object(lms_provisioning, "_send_credentials", AsyncMock()),
             patch.object(api, "_notify_admins", notify),
         ):
             first = await api.public_prodamus_webhook(_WebhookRequest(payload, signature))
@@ -114,6 +116,7 @@ class CriticalBusinessFlowsTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(notify.await_count, 1)
         self.assertEqual((await session.execute(select(func.count(Payment.id)))).scalar_one(), 1)
         self.assertEqual((await session.execute(select(func.count(WebAnalyticsEvent.id)))).scalar_one(), 1)
+        self.assertEqual((await session.execute(select(func.count(TestDriveLmsDelivery.id)))).scalar_one(), 1)
         saved = await session.get(TestDriveEnrollment, enrollment.id)
         self.assertEqual(saved.status, "quest_ready")
         self.assertIsNotNone(saved.payment_id)
@@ -137,24 +140,79 @@ class CriticalBusinessFlowsTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(saved.status, "awaiting_payment")
         self.assertIsNone(saved.payment_id)
 
-    async def test_lms_failure_does_not_cancel_confirmed_payment(self) -> None:
+    async def test_lms_failure_is_retried_without_repeating_prodamus_notification(self) -> None:
         enrollment = await self._enrollment()
         payload = self._payment_payload(enrollment)
         signature = sign_payload(payload, "critical-test-secret")
 
+        failed_provision = AsyncMock(side_effect=RuntimeError("LMS unavailable"))
         with (
             patch.object(api, "PRODAMUS_SECRET_KEY", "critical-test-secret"),
-            patch.object(api, "provision_test_drive", AsyncMock(side_effect=RuntimeError("LMS unavailable"))),
+            patch.object(lms_provisioning, "provision_test_drive", failed_provision),
+            patch.object(lms_provisioning, "_send_credentials", AsyncMock()),
             patch.object(api, "_notify_admins", AsyncMock()),
         ):
-            with self.assertRaises(HTTPException) as failed_delivery:
-                await api.public_prodamus_webhook(_WebhookRequest(payload, signature))
+            response = await api.public_prodamus_webhook(_WebhookRequest(payload, signature))
 
-        self.assertEqual(failed_delivery.exception.status_code, 503)
+        self.assertEqual(response.body, b"ok")
         self.assertEqual((await session.execute(select(func.count(Payment.id)))).scalar_one(), 1)
         saved = await session.get(TestDriveEnrollment, enrollment.id)
         self.assertEqual(saved.status, "payment_received")
         self.assertIsNotNone(saved.payment_id)
+        delivery = (
+            await session.execute(select(TestDriveLmsDelivery).where(TestDriveLmsDelivery.enrollment_id == enrollment.id))
+        ).scalar_one()
+        self.assertEqual(delivery.status, "retrying")
+        password = failed_provision.await_args.kwargs["password"]
+        delivery.next_retry_at = "2000-01-01T00:00:00+00:00"
+        await session.commit()
+
+        provision = AsyncMock()
+        with (
+            patch.object(lms_provisioning, "provision_test_drive", provision),
+            patch.object(lms_provisioning, "_send_credentials", AsyncMock()),
+        ):
+            result = await lms_provisioning.process_due_lms_deliveries(enrollment_id=enrollment.id, limit=1)
+
+        self.assertEqual(result["delivered"], 1)
+        self.assertEqual(provision.await_args.kwargs["password"], password)
+        saved = await session.get(TestDriveEnrollment, enrollment.id)
+        self.assertEqual(saved.status, "quest_ready")
+        delivery = await session.get(TestDriveLmsDelivery, delivery.id)
+        self.assertEqual(delivery.status, "delivered")
+
+    async def test_telegram_failure_retries_delivery_without_resetting_lms_password(self) -> None:
+        enrollment = await self._enrollment()
+        payload = self._payment_payload(enrollment)
+        signature = sign_payload(payload, "critical-test-secret")
+        provision = AsyncMock()
+
+        with (
+            patch.object(api, "PRODAMUS_SECRET_KEY", "critical-test-secret"),
+            patch.object(lms_provisioning, "provision_test_drive", provision),
+            patch.object(lms_provisioning, "_send_credentials", AsyncMock(side_effect=RuntimeError("Telegram unavailable"))),
+            patch.object(api, "_notify_admins", AsyncMock()),
+        ):
+            response = await api.public_prodamus_webhook(_WebhookRequest(payload, signature))
+
+        self.assertEqual(response.body, b"ok")
+        self.assertEqual(provision.await_count, 1)
+        delivery = (
+            await session.execute(select(TestDriveLmsDelivery).where(TestDriveLmsDelivery.enrollment_id == enrollment.id))
+        ).scalar_one()
+        self.assertEqual(delivery.status, "retrying")
+        self.assertIsNotNone(delivery.provisioned_at)
+        delivery.next_retry_at = "2000-01-01T00:00:00+00:00"
+        await session.commit()
+
+        with (
+            patch.object(lms_provisioning, "provision_test_drive", AsyncMock()) as retry_provision,
+            patch.object(lms_provisioning, "_send_credentials", AsyncMock()),
+        ):
+            result = await lms_provisioning.process_due_lms_deliveries(enrollment_id=enrollment.id, limit=1)
+
+        self.assertEqual(result["delivered"], 1)
+        retry_provision.assert_not_awaited()
 
     async def test_approved_booking_blocks_a_second_overlapping_booking(self) -> None:
         telegram_id = 900000001

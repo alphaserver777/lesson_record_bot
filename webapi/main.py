@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import calendar
 import datetime
-import html
 import json
 import logging
 import os
@@ -32,7 +31,7 @@ from database.connect import (
     rollback_session,
     session,
 )
-from database.models import Contact, ExternalIdentity, FunnelStage, ManualWorkLog, MarketingCampaign, MarketingCampaignMetric, MarketingExpense, MarketingSource, MarketingTrackingLink, Opportunity, OpportunityStageEvent, Payment, RecordDate, ReviewBookingRequest, StudentProfile, TelegramIdentity, TestDriveEnrollment, WebAnalyticsEvent
+from database.models import Contact, ExternalIdentity, FunnelStage, ManualWorkLog, MarketingCampaign, MarketingCampaignMetric, MarketingExpense, MarketingSource, MarketingTrackingLink, Opportunity, OpportunityStageEvent, Payment, RecordDate, ReviewBookingRequest, StudentProfile, TelegramIdentity, TestDriveEnrollment, TestDriveLmsDelivery, WebAnalyticsEvent
 from loader import bot
 from utils.calendar_backend import get_busy_intervals, get_calendar_tz
 from utils.schedule import WEEK_SCHEDULE, is_time_in_schedule, refresh_schedule_cache, slots_for_date
@@ -44,8 +43,7 @@ from webapi.auth import (
 )
 from webapi.probes import router as probes_router
 from webapi.lms_notifications import router as lms_notifications_router
-from webapi.lms_provisioning import generate_temporary_password, provision_test_drive
-from webapi.telegram_delivery import send_lead_magnet_message
+from webapi.lms_provisioning import process_due_lms_deliveries
 from webapi.prodamus import build_payment_url, normalize_customer_email, verify_signature
 from webapi.schemas import (
     AdminBlockCreateIn,
@@ -1342,55 +1340,29 @@ async def public_prodamus_webhook(request: Request) -> PlainTextResponse:
             created_at=now,
         )
     )
-    await session.commit()
-    lms_delivery_error = None
     if lms_login:
-        temporary_password = generate_temporary_password()
-        try:
-            await provision_test_drive(
+        session.add(
+            TestDriveLmsDelivery(
+                enrollment_id=enrollment.id,
                 event_id=f"test-drive-payment:{enrollment.id}",
                 email=lms_login,
                 first_name=contact.first_name,
                 last_name=contact.last_name,
-                password=temporary_password,
+                status="pending",
+                attempts=0,
+                next_retry_at=now,
+                created_at=now,
+                updated_at=now,
             )
-            enrollment.status = "quest_ready"
-            enrollment.updated_at = _iso_utc_now()
-            identity = (
-                await session.execute(
-                    select(TelegramIdentity).where(TelegramIdentity.contact_id == contact.id)
-                )
-            ).scalar_one_or_none()
-            lead_magnet_identity = (
-                await session.execute(
-                    select(ExternalIdentity).where(
-                        ExternalIdentity.contact_id == contact.id,
-                        ExternalIdentity.provider == "telegram_bot:devops_start_bot",
-                    )
-                )
-            ).scalar_one_or_none()
-            message = (
-                "✅ <b>Оплата прошла. Доступ к тест-драйву открыт.</b>\n\n"
-                f"Логин: <code>{html.escape(lms_login)}</code>\n"
-                f"Пароль: <code>{html.escape(temporary_password)}</code>\n"
-                "Ссылка: https://academy.professorit.ru/lms/\n\n"
-                "После первого входа сохраните пароль в надёжном месте."
-            )
-            if lead_magnet_identity is not None:
-                await send_lead_magnet_message(int(lead_magnet_identity.subject), message)
-            elif identity is None:
-                lms_delivery_error = "у контакта не привязан Telegram"
-            else:
-                await bot.send_message(identity.telegram_id, message)
-        except Exception as exc:  # noqa: BLE001
-            logger.exception("LMS provisioning failed for enrollment=%s", enrollment.id)
-            enrollment.status = "payment_received"
-            enrollment.updated_at = _iso_utc_now()
-            await session.commit()
-            raise HTTPException(status_code=503, detail={"code": "LMS_PROVISIONING_FAILED"}) from exc
+        )
+    await session.commit()
+    lms_delivery_error = None
+    if lms_login:
+        result = await process_due_lms_deliveries(enrollment_id=enrollment.id, limit=1)
+        if not result["delivered"]:
+            lms_delivery_error = "выдача поставлена в очередь и будет повторена автоматически"
     else:
         lms_delivery_error = "в уведомлении Prodamus и карточке контакта нет почты"
-    await session.commit()
     await _notify_admins(
         "💳 Оплата тест-драйва подтверждена Prodamus\n"
         f"Контакт: {_contact_name(contact)}\n"
