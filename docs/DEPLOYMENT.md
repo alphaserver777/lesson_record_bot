@@ -35,8 +35,10 @@ Nginx VM в контейнеры frontend/API. Кабинет доступен �
 1. Закоммитить изменения атомарными commit'ами в локальном git-репозитории.
 2. Отправить commit в origin.
 3. Если меняются данные или schema — запустить проверенный PostgreSQL backup.
-4. Выполнить Ansible deploy с ID этого commit.
-5. Не запускать второго Telegram poller: активный бот только `professorit-bot`.
+4. Выполнить `./scripts/test_critical_flows.sh`; выпуск останавливается при
+   падении проверки записи или оплаты.
+5. Выполнить Ansible deploy с ID этого commit.
+6. Не запускать второго Telegram poller: активный бот только `professorit-bot`.
 
 ## Deploy
 
