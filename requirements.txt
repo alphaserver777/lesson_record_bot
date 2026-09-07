@@ -3,7 +3,7 @@ aiohttp-socks==0.8.4
 asyncpg==0.30.0
 python-dotenv==1.0.1
 SQLAlchemy==2.0.27
-Pillow==10.4.0
+Pillow==12.3.0
 fastapi==0.115.6
 python-multipart==0.0.20
 uvicorn==0.32.1
