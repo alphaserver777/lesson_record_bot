@@ -8,11 +8,27 @@
     release_path: "{{ runtime_root }}/releases/{{ release_id }}"
 
   pre_tasks:
-    - name: Require explicit release identifier
+    - name: Require exact release identifier and commit
       ansible.builtin.assert:
         that:
           - release_id is defined
-          - release_id | length > 0
+          - release_id is match('^professorit-v[0-9]+\\.[0-9]+\\.[0-9]+$')
+          - release_commit is defined
+          - release_commit is match('^[0-9a-f]{40}$')
+
+    - name: Verify exact tagged source on the control host
+      ansible.builtin.command:
+        argv:
+          - python3
+          - "{{ playbook_dir }}/../../scripts/verify_release_source.py"
+          - --tag
+          - "{{ release_id }}"
+          - --commit
+          - "{{ release_commit }}"
+          - --require-main
+      delegate_to: localhost
+      run_once: true
+      changed_when: false
 
     - name: Verify that source contains the complete CRM contour
       ansible.builtin.command:
@@ -33,114 +49,202 @@
       register: deploy_secrets
       failed_when: not deploy_secrets.stat.exists
 
-  tasks:
-    - name: Create immutable release directory
-      ansible.builtin.file:
-        path: "{{ release_path }}"
-        state: directory
-        owner: root
-        group: root
-        mode: "0755"
-
-    - name: Upload application source
-      ansible.posix.synchronize:
-        src: "{{ playbook_dir }}/../../"
-        dest: "{{ release_path }}/"
-        archive: true
-        delete: true
-        use_ssh_args: true
-        rsync_opts:
-          - "--chown=root:root"
-          - "--exclude=.git"
-          - "--exclude=.env*"
-          - "--exclude=node_modules"
-          - "--exclude=miniapp/node_modules"
-          - "--exclude=miniapp/dist"
-          - "--exclude=database/*.db"
-          - "--exclude=database_prod"
-          - "--exclude=database_dev"
-          - "--exclude=logs*"
-          - "--exclude=backups"
-
-    - name: Point current symlink to release
-      ansible.builtin.file:
-        src: "{{ release_path }}"
-        dest: "{{ runtime_root }}/current"
-        state: link
-        force: true
-
-    - name: Render runtime Compose project
-      ansible.builtin.template:
-        src: compose.yml.j2
-        dest: "{{ runtime_root }}/compose.yml"
-        owner: root
-        group: root
-        mode: "0644"
-
-    - name: Start database, API and frontend
-      community.docker.docker_compose_v2:
-        project_src: "{{ runtime_root }}"
-        files: [compose.yml]
-        state: present
-        build: always
-        profiles: "{{ ['bot'] if app_enable_bot else omit }}"
-      register: runtime_compose
-
-    # The marketing Nginx resolves Docker service names when its configuration
-    # is loaded. Compose may recreate API/frontend with new container IPs, so
-    # refresh the cached upstream addresses after every runtime deployment.
-    - name: Refresh marketing Nginx upstream addresses
+    - name: Save PostgreSQL before switching the release
       ansible.builtin.command:
-        argv:
-          - docker
-          - exec
-          - professorit-site
-          - sh
-          - -c
-          - nginx -t && nginx -s reload
+        argv: [systemctl, start, professorit-db-backup.service]
       changed_when: true
 
-    - name: Verify API health on the host
-      ansible.builtin.uri:
-        url: http://127.0.0.1:18000/health
-        status_code: 200
-      register: api_health
-      retries: 10
-      delay: 3
-      until: api_health.status == 200
+    - name: Verify PostgreSQL backup result
+      ansible.builtin.command:
+        argv: [systemctl, show, professorit-db-backup.service, -p, Result, -p, ExecMainStatus]
+      register: postgres_backup_result
+      changed_when: false
+      failed_when: >-
+        'Result=success' not in postgres_backup_result.stdout or
+        'ExecMainStatus=0' not in postgres_backup_result.stdout
 
-    - name: Verify frontend health on the host
-      ansible.builtin.uri:
-        url: http://127.0.0.1:15173/
-        status_code: 200
-      register: frontend_health
-      retries: 10
-      delay: 3
-      until: frontend_health.status == 200
+    - name: Remember previous active release
+      ansible.builtin.command:
+        argv: [readlink, -f, "{{ runtime_root }}/current"]
+      register: previous_release
+      changed_when: false
+      failed_when: false
 
-    - name: Verify cabinet authentication route through Nginx
-      ansible.builtin.uri:
-        url: http://127.0.0.1/cabinet/api/auth/telegram/login-widget
-        method: POST
-        headers:
-          Host: crm.professorit.ru
-        body_format: json
-        body: {}
-        status_code: 422
+  tasks:
+    - name: Deploy verified immutable release
+      block:
+        - name: Check release directory
+          ansible.builtin.stat:
+            path: "{{ release_path }}"
+          register: release_directory
 
-    - name: Verify CRM contacts route through Nginx
-      ansible.builtin.uri:
-        url: http://127.0.0.1/cabinet/api/admin/contacts?page=1&page_size=1
-        headers:
-          Host: crm.professorit.ru
-        status_code: 401
+        - name: Check release commit marker
+          ansible.builtin.stat:
+            path: "{{ release_path }}/.release-commit"
+          register: release_marker
 
-    - name: Verify CRM funnel route through Nginx
-      ansible.builtin.uri:
-        url: http://127.0.0.1/cabinet/api/admin/funnel/stages
-        headers:
-          Host: crm.professorit.ru
-        status_code: 401
+        - name: Reject unmarked or mismatched existing release
+          ansible.builtin.assert:
+            that:
+              - not release_directory.stat.exists or release_marker.stat.exists
+            fail_msg: "Каталог выпуска уже существует без проверяемого маркера. Не изменяйте его вручную."
+
+        - name: Read existing release commit marker
+          ansible.builtin.slurp:
+            src: "{{ release_path }}/.release-commit"
+          register: existing_release_marker
+          when: release_marker.stat.exists
+
+        - name: Verify existing release commit marker
+          ansible.builtin.assert:
+            that:
+              - (existing_release_marker.content | b64decode | trim) == release_commit
+            fail_msg: "Существующий каталог выпуска принадлежит другой фиксации."
+          when: release_marker.stat.exists
+
+        - name: Create immutable release directory
+          ansible.builtin.file:
+            path: "{{ release_path }}"
+            state: directory
+            owner: root
+            group: root
+            mode: "0755"
+          when: not release_directory.stat.exists
+
+        - name: Upload application source once
+          ansible.posix.synchronize:
+            src: "{{ playbook_dir }}/../../"
+            dest: "{{ release_path }}/"
+            archive: true
+            delete: true
+            use_ssh_args: true
+            rsync_opts:
+              - "--chown=root:root"
+              - "--exclude=.git"
+              - "--exclude=.env*"
+              - "--exclude=node_modules"
+              - "--exclude=miniapp/node_modules"
+              - "--exclude=miniapp/dist"
+              - "--exclude=database/*.db"
+              - "--exclude=database_prod"
+              - "--exclude=database_dev"
+              - "--exclude=logs*"
+              - "--exclude=backups"
+          when: not release_marker.stat.exists
+
+        - name: Write immutable release commit marker
+          ansible.builtin.copy:
+            content: "{{ release_commit }}\n"
+            dest: "{{ release_path }}/.release-commit"
+            owner: root
+            group: root
+            mode: "0444"
+          when: not release_marker.stat.exists
+
+        - name: Point current symlink to release
+          ansible.builtin.file:
+            src: "{{ release_path }}"
+            dest: "{{ runtime_root }}/current"
+            state: link
+            force: true
+
+        - name: Render runtime Compose project
+          ansible.builtin.template:
+            src: compose.yml.j2
+            dest: "{{ runtime_root }}/compose.yml"
+            owner: root
+            group: root
+            mode: "0644"
+
+        - name: Start database, API and frontend
+          community.docker.docker_compose_v2:
+            project_src: "{{ runtime_root }}"
+            files: [compose.yml]
+            state: present
+            build: always
+            profiles: "{{ ['bot'] if app_enable_bot else omit }}"
+
+        - name: Refresh marketing Nginx upstream addresses
+          ansible.builtin.command:
+            argv: [docker, exec, professorit-site, sh, -c, nginx -t && nginx -s reload]
+          changed_when: true
+
+        - name: Verify API health on the host
+          ansible.builtin.uri:
+            url: http://127.0.0.1:18000/health
+            status_code: 200
+          register: api_health
+          retries: 10
+          delay: 3
+          until: api_health.status == 200
+
+        - name: Verify frontend health on the host
+          ansible.builtin.uri:
+            url: http://127.0.0.1:15173/
+            status_code: 200
+          register: frontend_health
+          retries: 10
+          delay: 3
+          until: frontend_health.status == 200
+
+        - name: Verify Telegram bot readiness
+          ansible.builtin.command:
+            argv: [docker, exec, professorit-bot, python, -c, "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8081/ready', timeout=5)"]
+          register: bot_ready
+          changed_when: false
+          retries: 10
+          delay: 3
+          until: bot_ready.rc == 0
+          when: app_enable_bot
+
+        - name: Verify cabinet authentication route through Nginx
+          ansible.builtin.uri:
+            url: http://127.0.0.1/cabinet/api/auth/telegram/login-widget
+            method: POST
+            headers: {Host: crm.professorit.ru}
+            body_format: json
+            body: {}
+            status_code: 422
+
+        - name: Verify CRM contacts route through Nginx
+          ansible.builtin.uri:
+            url: http://127.0.0.1/cabinet/api/admin/contacts?page=1&page_size=1
+            headers: {Host: crm.professorit.ru}
+            status_code: 401
+
+        - name: Verify CRM funnel route through Nginx
+          ansible.builtin.uri:
+            url: http://127.0.0.1/cabinet/api/admin/funnel/stages
+            headers: {Host: crm.professorit.ru}
+            status_code: 401
+
+      rescue:
+        - name: Restore previous release link
+          ansible.builtin.file:
+            src: "{{ previous_release.stdout }}"
+            dest: "{{ runtime_root }}/current"
+            state: link
+            force: true
+          when: previous_release.rc == 0
+
+        - name: Restore previous runtime containers
+          community.docker.docker_compose_v2:
+            project_src: "{{ runtime_root }}"
+            files: [compose.yml]
+            state: present
+            build: always
+            profiles: "{{ ['bot'] if app_enable_bot else omit }}"
+          when: previous_release.rc == 0
+
+        - name: Restore marketing Nginx upstream addresses
+          ansible.builtin.command:
+            argv: [docker, exec, professorit-site, sh, -c, nginx -t && nginx -s reload]
+          changed_when: true
+          when: previous_release.rc == 0
+
+        - name: Stop failed deploy
+          ansible.builtin.fail:
+            msg: "Развёртывание не прошло; ссылка current возвращена на предыдущий выпуск. PostgreSQL не откатывалась."
 
     - name: Find stale releases
       ansible.builtin.find:

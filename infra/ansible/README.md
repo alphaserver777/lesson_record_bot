@@ -9,17 +9,23 @@
 Telegram poller запускать запрещено.
 
 ```bash
+git fetch origin main --tags
+git switch --detach professorit-vX.Y.Z
 cd infra/ansible
 python3 ../../scripts/verify_crm_release.py
-ansible-playbook provision.yml
-ansible-playbook deploy.yml -e release_id=$(git -C ../.. rev-parse --short HEAD)
+python3 ../../scripts/verify_release_source.py \
+  --tag professorit-vX.Y.Z --commit "$(git -C ../.. rev-parse HEAD)" --require-main
+ansible-playbook deploy.yml \
+  -e release_id=professorit-vX.Y.Z \
+  -e release_commit="$(git -C ../.. rev-parse HEAD)"
 ```
 
-Развёртывать CRM можно только из ветки `release/contact-unification` до её
-объединения с `dev`. Проверка `verify_crm_release.py` обязательна: она не даст
-выкатить старый контур бота, в котором нет PostgreSQL, контактов и воронки.
-После запуска playbook дополнительно проверяет эти адреса через Nginx, а не
-только общий адрес `/health`.
+Рабочее развёртывание обычно запускает GitHub Actions после подтверждения
+окружения `production`. Ручной путь оставлен только для аварийного случая и
+использует те же проверки. Playbook не принимает ветку, короткий SHA или
+текущую папку: ему нужны аннотированная метка и полный SHA одной фиксации.
 
-После финального dump/restore и остановки старого бота установить
-`app_enable_bot: true`, повторить deploy и проверить `/ready`.
+Перед переключением он запускает и проверяет резервную копию PostgreSQL. После
+запуска проверяются API, кабинет через Nginx и готовность единственного бота.
+При ошибке каталог кода возвращается к предыдущему выпуску; PostgreSQL не
+восстанавливается автоматически.
