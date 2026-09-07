@@ -293,6 +293,38 @@ class TestDriveEnrollment(Base):
     updated_at = Column(String(50), nullable=False)
 
 
+class TestDriveLmsDelivery(Base):
+    """Надёжная очередь выдачи доступа после подтверждённой оплаты."""
+
+    __tablename__ = "test_drive_lms_deliveries"
+    __table_args__ = (
+        UniqueConstraint("enrollment_id", name="uq_test_drive_lms_delivery_enrollment"),
+        UniqueConstraint("event_id", name="uq_test_drive_lms_delivery_event"),
+    )
+
+    id = Column(Integer, primary_key=True)
+    enrollment_id = Column(
+        Integer,
+        ForeignKey("test_drive_enrollments.id", ondelete="CASCADE"),
+        nullable=False,
+        unique=True,
+        index=True,
+    )
+    event_id = Column(String(96), nullable=False, unique=True, index=True)
+    email = Column(String(255), nullable=False)
+    first_name = Column(String(100), nullable=True)
+    last_name = Column(String(100), nullable=True)
+    status = Column(String(20), nullable=False, default="pending", index=True)
+    attempts = Column(Integer, nullable=False, default=0)
+    next_retry_at = Column(String(50), nullable=False, index=True)
+    locked_at = Column(String(50), nullable=True, index=True)
+    provisioned_at = Column(String(50), nullable=True)
+    delivered_at = Column(String(50), nullable=True)
+    last_error = Column(String(1000), nullable=True)
+    created_at = Column(String(50), nullable=False)
+    updated_at = Column(String(50), nullable=False)
+
+
 class ReviewBookingRequest(Base):
     """Thirty-minute review unlocked after the test-drive quest is submitted."""
 
