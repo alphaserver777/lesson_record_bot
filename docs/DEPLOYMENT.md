@@ -27,7 +27,7 @@ legacy backup-материалами. С 17 августа 2026 года ста�
 Nginx VM в контейнеры frontend/API. Кабинет доступен по `/cabinet/`.
 
 Полная инфраструктурная карта, включая публичный сайт, находится в
-[`PLAN/14-production-infrastructure.md`](../../Marketing_proffessor_it/PLAN/14-production-infrastructure.md)
+[`PLAN/14-production-infrastructure.md`](../../marketing_professorit/PLAN/14-production-infrastructure.md)
 в соседнем рабочем репозитории.
 
 ## Перед deploy

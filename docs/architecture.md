@@ -27,7 +27,7 @@ Proxmox-контуре.
 Публичный TLS и доменные маршруты обслуживает Traefik в CT 202
 `edge-proxy` (`192.168.50.112`).
 Полная схема и путь запросов описаны в
-[`PLAN/14-production-infrastructure.md`](../../Marketing_proffessor_it/PLAN/14-production-infrastructure.md).
+[`PLAN/14-production-infrastructure.md`](../../marketing_professorit/PLAN/14-production-infrastructure.md).
 
 Germany2 — выключенный legacy-контур. Его miniapp/API-контейнеры остановлены,
 SQLite сохранена только для аудита и не является источником runtime-данных.
